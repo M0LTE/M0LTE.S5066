@@ -157,7 +157,19 @@ public sealed record TimeConfig(int EpochYear, int EpochDay, int EpochSecond);
 /// sis.default_ttl: the default maximum TTL in the 2-second units of the TTL field, used when a
 /// request gives TTL 0 (A-0087, A-0088, A-0089, A-0091). 1 to <see cref="MaxTtl"/>.
 /// </param>
-public sealed record SisConfig(int DefaultTtl)
+/// <param name="SoftLinkIdleMs">
+/// sis.soft_link_idle_ms: how long a soft link carries no data before the SIS closes it, 0 or more
+/// (A-0011, A-0013; interp A-0320). Null: the SIS never closes an idle soft link (interp A-0321).
+/// </param>
+/// <param name="SoftLinkMinHoldMs">
+/// sis.soft_link_min_hold_ms: the least time a called node keeps a soft link before closing it on
+/// its own, 0 or more (A-0197). Null: no minimum (interp A-0321).
+/// </param>
+/// <param name="SoftLinkMaxMs">
+/// sis.soft_link_max_ms: the longest a soft link is kept while U_PDUs for another node wait for a
+/// link, 1 or more (A-0014, A-0015; interp A-0322). Null: no maximum (interp A-0321).
+/// </param>
+public sealed record SisConfig(int DefaultTtl, int? SoftLinkIdleMs = null, int? SoftLinkMinHoldMs = null, int? SoftLinkMaxMs = null)
 {
     /// <summary>The largest TTL the field may carry, 648000 units of 2 s, about 15 days (S-0116, S-0121).</summary>
     public const int MaxTtl = 648000;

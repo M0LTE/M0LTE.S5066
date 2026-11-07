@@ -116,7 +116,8 @@ internal sealed record CPhysicalLinkMake(uint Peer) : ToCas;
 
 /// <summary>C_PHYSICAL_LINK_MADE, CAS to SIS: the link is made (B-0011, B-0217, B-0219); the soft link is established (A-0194).</summary>
 /// <param name="Peer">The peer's address.</param>
-internal sealed record CPhysicalLinkMade(uint Peer) : ToSis;
+/// <param name="Called">This node is the called node of the link (B-0213), which the SIS needs for its minimum hold (A-0197); false for the Caller and for a link already made.</param>
+internal sealed record CPhysicalLinkMade(uint Peer, bool Called = false) : ToSis;
 
 /// <summary>C_PHYSICAL_LINK_REJECTED, CAS to SIS: a link make failed (B-0011, B-0220, B-0223).</summary>
 /// <param name="Peer">The peer's address.</param>
