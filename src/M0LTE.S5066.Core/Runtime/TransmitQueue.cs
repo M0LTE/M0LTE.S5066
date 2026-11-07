@@ -57,8 +57,18 @@ internal interface ITransmissionSource
 /// (C-0297, C-1041), each sent once with no TTD.
 /// </para>
 /// <para>
-/// ARQ requests for connected peers are held with their TTD (P4-1) and placed from P4-2.
-/// Not here yet: placing ARQ data (P4-2), block alignment, ACK-ONLY fill and PADDING (P4-3).
+/// ARQ data (P4-2, 16-bit family): an ARQ C_PDU for a peer with a connection is held whole, then
+/// cut into segments at its first placement and sent as DATA-ONLY (type 9) D_PDUs with
+/// consecutive FSNs, allocated in placement order while the peer's transmit window allows
+/// (C-0502 to C-0510, C-0766, C-0775, C-0850). One ACK-ONLY (type 10) goes to each peer owed an
+/// acknowledgement, merged into the first data D_PDU to that peer as DATA-ACK (type 11) when one
+/// goes in the same transmission (C-0238, C-0249, C-1128). D_PDUs known or taken to have failed
+/// are retransmitted ahead of first transmissions (C-0852, C-0904, C-0905). An ARQ C_PDU whose
+/// TTD passes is rejected, and its unacknowledged D_PDUs go as DROP PDUs (C-0859 to C-0862, C-1124).
+/// The class order is that of core-architecture.md 5.3: MANAGEMENT, WARNING, expedited, ACK-ONLY,
+/// retransmissions, first transmissions of data, non-ARQ repeats.
+/// Not here yet: block alignment, ACK-ONLY fill, PADDING and the other acknowledgement encodings
+/// (P4-3); the 8-bit family (P4-5).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -81,7 +91,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly IdSpace _expeditedIds = new();
     private readonly List<ControlItem> _control = [];
     private readonly SortedDictionary<uint, int> _owedEow = new();
-    private readonly List<(long Seq, DUnidataRequest Request)> _arqHeld = [];
+    private readonly List<ArqCPdu> _arq = [];
+    private readonly SortedDictionary<uint, ArqLink> _links = new();
+    private readonly SortedSet<uint> _sentArqPeers = new();
     private readonly List<int> _sentExpedited = [];
     private long _nextSeq;
 
@@ -149,10 +161,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
-    /// An ARQ D_UNIDATA_REQUEST for a peer with a connection (C-0653 and the matching rows): held
-    /// with its TTD, so <c>dts.ttd</c> covers it and it is dropped and rejected when the TTD passes
-    /// (C-0857, C-1050). Placing ARQ data in a transmission is P4-2's, so it never counts as
-    /// placeable here (K-0096; core-architecture.md 4.1).
+    /// An ARQ D_UNIDATA_REQUEST for a peer with a connection (C-0653, C-0673): held whole with its
+    /// TTD, so <c>dts.ttd</c> covers it (C-0857, C-1050), and placed by the planner when the peer's
+    /// connection uses the 16-bit family. On a link with the 8-bit family it stays held (P4-5).
     /// </summary>
     public void AddArq(DUnidataRequest r)
     {
@@ -162,30 +173,181 @@ internal sealed class TransmitQueue : ITransmissionSource
             return;
         }
 
-        _arqHeld.Add((_nextSeq++, r));
+        _arq.Add(new ArqCPdu(_nextSeq++, r));
+        _mac.QueueState(Placeable());
+        ReconcileTimer();
+    }
+
+    /// <summary>The ARQ machine of a connected 16-bit peer, or null.</summary>
+    public ArqLink? LinkOf(uint peer) => _links.TryGetValue(peer, out ArqLink? l) ? l : null;
+
+    /// <summary>
+    /// A connection with the 16-bit family is made: a new ARQ machine with the initial window edges
+    /// (C-0782, C-0787), and any ARQ C_PDUs already held for the peer can now be placed.
+    /// </summary>
+    public ArqLink OpenLink(uint peer)
+    {
+        var link = new ArqLink(peer);
+        _links[peer] = link;
+        _mac.QueueState(Placeable());
+        return link;
+    }
+
+    /// <summary>
+    /// The connection with the peer ended: ARQ processing stops and its state is reset (C-0652,
+    /// C-0672), and every ARQ C_PDU not fully processed is rejected to the CAS, oldest first (C-0866);
+    /// one already rejected for its TTD is not rejected again. <c>dts.ack_wait/&lt;peer&gt;</c> stops.
+    /// </summary>
+    public void RejectArq(uint peer)
+    {
+        _links.Remove(peer);
+        _context.Timers.Cancel(AckWaitTimer(peer));
+        List<ArqCPdu> gone = _arq.Where(a => a.Peer == peer).ToList();
+        _arq.RemoveAll(a => a.Peer == peer);
+        foreach (ArqCPdu a in gone)
+        {
+            if (!a.Dropped)
+            {
+                _context.Enqueue(new DUnidataRequestRejected(a.Request.Handle, DReason.NoConnection));
+            }
+        }
+
+        _mac.QueueState(Placeable());
         ReconcileTimer();
     }
 
     /// <summary>
-    /// The connection with the peer ended: its held ARQ C_PDUs are rejected to the CAS, oldest first
-    /// (C-0652, C-0672, C-0692, C-0712 notes).
+    /// Our transmission has ended (core-architecture.md 5.7): <c>dts.ack_wait/&lt;peer&gt;</c> starts,
+    /// or restarts, for each peer that had ARQ data D_PDUs in it and still has some awaiting an
+    /// acknowledgement, in ascending address order (C-1120). Its value is <c>dts.ack_wait_ms</c>, or
+    /// when that is unset <see cref="DerivedAckWaitMs"/>.
     /// </summary>
-    public void RejectArq(uint peer)
+    public void OnTransmitDone()
     {
-        List<(long Seq, DUnidataRequest Request)> gone = _arqHeld.Where(a => a.Request.Dst == peer).ToList();
-        if (gone.Count == 0)
+        foreach (uint peer in _sentArqPeers)
+        {
+            if (_links.TryGetValue(peer, out ArqLink? link) && link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
+            {
+                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.AckWaitMs ?? DerivedAckWaitMs());
+            }
+        }
+
+        _sentArqPeers.Clear();
+    }
+
+    /// <summary>
+    /// <c>dts.ack_wait/&lt;peer&gt;</c> expired with no acknowledgement: every D_PDU to the peer still
+    /// awaiting one is taken to have failed, and will be retransmitted (C-0906, C-0911, C-1120).
+    /// </summary>
+    public void OnAckWaitTimer(uint peer)
+    {
+        if (_links.TryGetValue(peer, out ArqLink? link))
+        {
+            foreach (ArqFrame f in link.Outstanding)
+            {
+                f.State = ArqFrameState.Failed;
+            }
+        }
+
+        _mac.QueueState(Placeable());
+    }
+
+    /// <summary>
+    /// The acknowledgement part of an ACK-ONLY or DATA-ACK from the peer (C-0679, C-0680).
+    /// <list type="number">
+    /// <item>An RX LWE beyond TX LWE (and no further than TX UWE + 1) acknowledges every FSN from TX
+    /// LWE up to it, and TX LWE moves to it (C-0780, C-0781). One outside that range says nothing
+    /// usable here; the synchronisation tests that catch it are P4-4's, so the D_PDU is ignored.</item>
+    /// <item>A bitmap (encoding 0) marks each FSN it covers, from RX LWE + 1 + 256 x offset
+    /// (C-0233, C-0250): a set bit acknowledges it (C-0202), a clear bit means it failed (C-0205,
+    /// C-0907, C-0908). Run length encoding is P4-3's: only its RX LWE is used.</item>
+    /// <item>The D_PDU at RX LWE is one the peer has not received (C-0776), so it failed too (C-0908).</item>
+    /// <item>Half duplex: every D_PDU awaiting an acknowledgement and sent after the last one this
+    /// D_PDU acknowledges explicitly is taken to have failed (C-0910, C-1121).</item>
+    /// </list>
+    /// Then <c>dts.ack_wait/&lt;peer&gt;</c> stops when nothing awaits an acknowledgement, each C_PDU
+    /// whose segments are all acknowledged is confirmed to the CAS in arrival order (C-1130), and
+    /// <c>dts.ttd</c> follows the queue.
+    /// </summary>
+    public void OnAck(uint peer, int rxLwe, int encoding, int offset, ReadOnlySpan<byte> bitmap)
+    {
+        if (!_links.TryGetValue(peer, out ArqLink? link))
         {
             return;
         }
 
-        _arqHeld.RemoveAll(a => a.Request.Dst == peer);
-        foreach ((long _, DUnidataRequest r) in gone)
+        SeqSpace seq = link.Seq;
+        if (!seq.InArc(rxLwe, link.TxLwe, seq.Add(link.TxUwe, 1)))
         {
-            _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.NoConnection));
+            return;   // Test 4 territory (C-0800), P4-4
         }
 
+        foreach (ArqFrame f in link.Outstanding.Where(f => seq.Distance(link.TxLwe, f.Fsn) < seq.Distance(link.TxLwe, rxLwe)).ToList())
+        {
+            Acknowledge(link, f);
+        }
+
+        link.TxLwe = rxLwe;
+        int lastExplicit = -1;   // position after RX LWE of the furthest FSN acknowledged by a set bit
+        var nacked = new HashSet<int>();   // looked up only, never enumerated
+        nacked.Add(rxLwe);   // RX LWE is the oldest FSN the peer has not received (C-0776, C-0907)
+        if (encoding == 0)
+        {
+            int first = (offset * 256) + 1;
+            for (int i = 0; i < bitmap.Length * 8; i++)
+            {
+                int fsn = seq.Add(rxLwe, first + i);
+                if ((bitmap[i / 8] & (1 << (i % 8))) != 0)
+                {
+                    lastExplicit = first + i;
+                    if (link.Outstanding.FirstOrDefault(f => f.Fsn == fsn) is ArqFrame acked)
+                    {
+                        Acknowledge(link, acked);
+                    }
+                }
+                else
+                {
+                    nacked.Add(fsn);
+                }
+            }
+        }
+
+        foreach (ArqFrame f in link.Outstanding)
+        {
+            if (f.State == ArqFrameState.Awaiting && (nacked.Contains(f.Fsn) || seq.Distance(rxLwe, f.Fsn) > lastExplicit))
+            {
+                f.State = ArqFrameState.Failed;   // C-0908, C-0910
+            }
+        }
+
+        if (!link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
+        {
+            _context.Timers.Cancel(AckWaitTimer(peer));
+        }
+
+        foreach (ArqCPdu a in _arq.Where(a => a.Peer == peer && a.Placed && !a.HasUnplacedSegment && a.Unacked == 0).ToList())
+        {
+            _arq.Remove(a);
+            if (!a.Dropped)
+            {
+                _context.Enqueue(new DUnidataRequestConfirm(a.Request.Handle));   // C-0679, C-0680, C-1130
+            }
+        }
+
+        _mac.QueueState(Placeable());
         ReconcileTimer();
     }
+
+    /// <summary>The receive side processed data from the peer and owes it an acknowledgement (C-0174, C-0242): the queue may now have something to place.</summary>
+    public void AckOwed() => _mac.QueueState(Placeable());
+
+    private static void Acknowledge(ArqLink link, ArqFrame f)
+    {
+        link.Outstanding.Remove(f);   // the FSN may be reused (C-0767)
+        f.Owner.Unacked--;
+    }
+
+    private static TimerName AckWaitTimer(uint peer) => TimerName.ForPeer(TimerKind.DtsAckWait, peer);
 
     /// <summary>The handles of expedited requests whose last D_PDU went in the transmission now ending, in placement order (C-1100).</summary>
     public List<int> TakeSentExpedited()
@@ -195,8 +357,8 @@ internal sealed class TransmitQueue : ITransmissionSource
         return sent;
     }
 
-    /// <summary>The held ARQ requests, in arrival order (P4-2 sends them).</summary>
-    internal IReadOnlyList<DUnidataRequest> HeldArq => _arqHeld.Select(a => a.Request).ToList();
+    /// <summary>The ARQ requests not yet confirmed, rejected or dropped, in arrival order.</summary>
+    internal IReadOnlyList<DUnidataRequest> HeldArq => _arq.Where(a => !a.Dropped).Select(a => a.Request).ToList();
 
     /// <summary>
     /// <c>dts.ttd</c> expired: drop and reject what has reached its TTD (C-0857, C-0864, C-1050),
@@ -260,7 +422,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         while (true)
         {
-            int first = FirstItemSize();
+            int first = FirstItemSize() ?? throw new InvalidOperationException("nothing can be placed");
             long capacity = Capacity(shape, first);
             long longest = shape.PreambleMs + ((capacity / shape.BytesPerBlock) * shape.BlockMs) + shape.FlushMs;
             List<Entry> late = _entries.Where(e => e.CommitEnd is long end && _context.Now + longest > end).ToList();
@@ -282,8 +444,12 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
     }
 
-    /// <summary>The size of the first D_PDU the selection would take (core-architecture.md 5.3), for the budget rule.</summary>
-    private int FirstItemSize()
+    /// <summary>
+    /// The size of the first D_PDU the selection would take (core-architecture.md 5.3), for the budget
+    /// rule, or null when nothing can be placed. It walks the classes in the order and with the
+    /// eligibility rules of <see cref="Select"/>, so a non-null answer is exactly what Select takes first.
+    /// </summary>
+    private int? FirstItemSize()
     {
         List<ControlItem> control = SortedControl();
         if (control.Count > 0)
@@ -299,13 +465,54 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        bool idFree = _normalIds.IsFree(_context.Now);
-        foreach (Entry e in Normal())
+        foreach (ArqLink link in _links.Values)
         {
-            if (e.HasUnplacedSegment && !HeldBehindExpedited(e) && (e.Placed || idFree))
+            if (link.AckOwed)
             {
+                return AckOnlySize(link.Peer, link.AckBitmap().Length);
+            }
+        }
+
+        foreach (ArqFrame f in FailedFrames())
+        {
+            return DataOnlySize(f.Owner.Peer, FrameLength(f));
+        }
+
+        bool idFree = _normalIds.IsFree(_context.Now);
+        foreach (object c in DataCandidates())
+        {
+            if (c is Entry e)
+            {
+                if (!e.HasUnplacedSegment || HeldBehindExpedited(e.Dst, e.DstIsGroup))
+                {
+                    continue;
+                }
+
+                if (!e.Placed && !idFree)
+                {
+                    break;
+                }
+
                 return SizeOf(e.NextSegmentLength(MaxSegment), false, e.Dst);
             }
+
+            var a = (ArqCPdu)c;
+            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link)
+            {
+                continue;
+            }
+
+            if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
+            {
+                if (a.Partial)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            return DataOnlySize(a.Peer, a.Dropped ? 0 : a.NextSegmentLength(MaxSegment));
         }
 
         foreach (Entry e in Normal())
@@ -316,41 +523,11 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        throw new InvalidOperationException("nothing can be placed");
+        return null;
     }
 
     /// <summary>True when a transmission now could place at least one D_PDU (K-0096; core-architecture.md 4.1).</summary>
-    private bool Placeable()
-    {
-        if (_control.Count > 0)
-        {
-            return true;
-        }
-
-        long now = _context.Now;
-        foreach (Entry e in _entries)
-        {
-            if (e.OwedRepeat() is not null)
-            {
-                return true;
-            }
-
-            if (!e.HasUnplacedSegment)
-            {
-                continue;
-            }
-
-            if (e.Placed || (e.Expedited ? _expeditedIds : _normalIds).IsFree(now))
-            {
-                if (e.Expedited || !HeldBehindExpedited(e))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
+    private bool Placeable() => FirstItemSize() is not null;
 
     /// <summary>
     /// The queued MANAGEMENT and WARNING D_PDUs in class order, each class oldest first (C-0297,
@@ -359,7 +536,6 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     private List<ControlItem> SortedControl()
     {
-        NodeConfig config = _context.Config;
         foreach (ControlItem c in _control)
         {
             c.Size = DpduCodec.Encode(c.Build(Header(0, 0, c.Dst))).Length;
@@ -373,19 +549,53 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// Chooses the D_PDUs of one transmission (core-architecture.md 5.3, C-1041): MANAGEMENT and
     /// WARNING first (C-0297; P3-6), each oldest first, a misfit skipped; then expedited first
-    /// transmissions (C-0288), oldest first, a misfit skipped; then normal first transmissions by
-    /// priority and age (C-0851, C-0853, C-0854), a misfit stopping the class (C-0880); then the
-    /// repeats still owed (C-0848, C-0884), by priority and age, round by round, a misfit stopping
-    /// the class. A C_PDU is segmented and given its ID when its first segment is taken.
+    /// transmissions (C-0288), oldest first, a misfit skipped; then one ACK-ONLY per peer owed one,
+    /// in address order (C-0370, C-1128); then retransmissions of failed ARQ D_PDUs (C-0852, C-0905,
+    /// C-1132), a misfit skipped; then first transmissions of data, ARQ and non-ARQ together, by
+    /// priority and age (C-0851, C-0853, C-0854), a C_PDU whose ARQ segments are partly sent first
+    /// (C-0850, C-1127), a misfit stopping the class (C-0880); then the non-ARQ repeats still owed
+    /// (C-0848, C-0884), by priority and age, round by round, a misfit stopping the class. A C_PDU is
+    /// segmented when its first segment is taken. An ARQ data D_PDU to a peer whose ACK-ONLY was
+    /// taken carries the acknowledgement instead, as DATA-ACK, when it fits in 18 bytes (C-0238,
+    /// C-0249, C-1128).
     /// </summary>
     private (List<ControlItem> Control, List<Piece> Data) Select(long capacity)
     {
         var chosenControl = new List<ControlItem>();
         var chosen = new List<Piece>();
+        var acks = new SortedDictionary<uint, AckPiece>();
         long used = 0;
         int maxSegment = MaxSegment;
 
-        bool Fits(int size) => used + size <= capacity;
+        bool Fits(long size) => used + size <= capacity;
+
+        // Takes an ARQ data D_PDU, merging the peer's ACK-ONLY into it when there is one to merge.
+        bool TakeArq(ArqLink link, int length, Func<ArqFrame> frame)
+        {
+            int plain = DataOnlySize(link.Peer, length);
+            if (acks.TryGetValue(link.Peer, out AckPiece? ack) && !ack.Merged && ack.Bitmap.Length <= ArqLink.MaxDataAckBytes)
+            {
+                int merged = DataAckSize(link.Peer, length, ack.Bitmap.Length);
+                if (!Fits(merged - ack.Size))
+                {
+                    return false;   // DATA-ACK is smaller than DATA-ONLY plus ACK-ONLY, so neither fits
+                }
+
+                ack.Merged = true;
+                used += merged - ack.Size;
+                chosen.Add(new ArqPiece(link, frame(), merged, ack.Bitmap));
+                return true;
+            }
+
+            if (!Fits(plain))
+            {
+                return false;
+            }
+
+            used += plain;
+            chosen.Add(new ArqPiece(link, frame(), plain, null));
+            return true;
+        }
 
         foreach (ControlItem c in SortedControl())
         {
@@ -417,25 +627,81 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        bool stop = false;
-        foreach (Entry e in Normal())
+        foreach (ArqLink link in _links.Values)
         {
-            if (HeldBehindExpedited(e))
+            if (!link.AckOwed)
             {
-                continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044)
+                continue;
             }
 
-            while (e.HasUnplacedSegment)
+            byte[] bitmap = link.AckBitmap();
+            int size = AckOnlySize(link.Peer, bitmap.Length);
+            if (Fits(size))
             {
-                int size = SizeOf(e.NextSegmentLength(maxSegment), false, e.Dst);
-                if ((!e.Placed && !_normalIds.IsFree(_context.Now)) || !Fits(size))
+                var ack = new AckPiece(link, size, bitmap);
+                acks[link.Peer] = ack;
+                chosen.Add(ack);
+                used += size;
+            }
+        }
+
+        foreach (ArqFrame f in FailedFrames())
+        {
+            TakeArq(_links[f.Owner.Peer], FrameLength(f), () => f);   // a misfit is skipped
+        }
+
+        bool stop = false;
+        bool idFree() => _normalIds.IsFree(_context.Now);
+        foreach (object c in DataCandidates())
+        {
+            if (c is Entry e)
+            {
+                if (HeldBehindExpedited(e.Dst, e.DstIsGroup))
                 {
-                    stop = true;   // never let lower priority data overtake (C-0851); the rest waits (C-0880)
-                    break;
+                    continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044)
                 }
 
-                chosen.Add(TakeFirstCopy(e, maxSegment, _normalIds, size));
-                used += size;
+                while (e.HasUnplacedSegment)
+                {
+                    int size = SizeOf(e.NextSegmentLength(maxSegment), false, e.Dst);
+                    if ((!e.Placed && !idFree()) || !Fits(size))
+                    {
+                        stop = true;   // never let lower priority data overtake (C-0851); the rest waits (C-0880)
+                        break;
+                    }
+
+                    chosen.Add(TakeFirstCopy(e, maxSegment, _normalIds, size));
+                    used += size;
+                }
+            }
+            else
+            {
+                var a = (ArqCPdu)c;
+                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link)
+                {
+                    continue;   // fully sent, or its connection does not use the 16-bit family (P4-5)
+                }
+
+                bool started = a.Partial;
+                while (a.HasUnplacedSegment)
+                {
+                    if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
+                    {
+                        // C-0775, C-1131: no new D_PDU now. A C_PDU not yet started is passed over;
+                        // one already started stops the class, so nothing splits it (C-0850, C-1127).
+                        stop = started;
+                        break;
+                    }
+
+                    int length = a.Dropped ? 0 : a.NextSegmentLength(maxSegment);
+                    if (!TakeArq(link, length, () => NewFrame(link, a, maxSegment)))
+                    {
+                        stop = true;   // C-0851, C-0880
+                        break;
+                    }
+
+                    started = true;
+                }
             }
 
             if (stop)
@@ -455,12 +721,27 @@ internal sealed class TransmitQueue : ITransmissionSource
                 }
 
                 e.Sent[seg]++;
-                chosen.Add(new Piece(e, seg, e.Sent[seg], size));
+                chosen.Add(new DataPiece(e, seg, e.Sent[seg], size));
                 used += size;
             }
         }
 
         return (chosenControl, chosen);
+    }
+
+    /// <summary>Gives the next segment of an ARQ C_PDU an FSN (C-0189, C-0191, C-0510), cutting the C_PDU at its first placement (C-0502 to C-0509).</summary>
+    private static ArqFrame NewFrame(ArqLink link, ArqCPdu a, int maxSegment)
+    {
+        if (!a.Placed)
+        {
+            a.Cut(maxSegment);
+        }
+
+        var frame = new ArqFrame(a, a.NextSegment, link.AllocateFsn());
+        a.NextSegment++;
+        a.Unacked++;
+        link.Outstanding.Add(frame);
+        return frame;
     }
 
     private Piece TakeFirstCopy(Entry e, int maxSegment, IdSpace ids, int size)
@@ -472,8 +753,53 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         int seg = e.FirstUnsent;
         e.Sent[seg] = 1;
-        return new Piece(e, seg, 1, size);
+        return new DataPiece(e, seg, 1, size);
     }
+
+    /// <summary>
+    /// The failed ARQ D_PDUs owed a retransmission, by priority, then the age of their C_PDU, then
+    /// FSN order (C-0852, C-0853, C-0905, C-1132). Those to a peer with unsent expedited data wait
+    /// for it (C-1131).
+    /// </summary>
+    private List<ArqFrame> FailedFrames()
+    {
+        var failed = new List<ArqFrame>();
+        foreach (ArqLink link in _links.Values)
+        {
+            if (!HeldBehindExpedited(link.Peer, false))
+            {
+                failed.AddRange(link.Outstanding.Where(f => f.State == ArqFrameState.Failed));
+            }
+        }
+
+        failed.Sort((a, b) =>
+            a.Owner.Priority != b.Owner.Priority ? b.Owner.Priority.CompareTo(a.Owner.Priority)
+            : a.Owner.Seq != b.Owner.Seq ? a.Owner.Seq.CompareTo(b.Owner.Seq)
+            : a.Segment.CompareTo(b.Segment));
+        return failed;
+    }
+
+    /// <summary>
+    /// The first transmissions of data, non-ARQ (type 7) entries and ARQ C_PDUs together: an ARQ
+    /// C_PDU already partly sent first (C-0850, C-1127), then by priority, highest first, then age
+    /// (C-0851, C-0853, C-0854).
+    /// </summary>
+    private List<object> DataCandidates()
+    {
+        var list = new List<(object Item, bool Partial, int Priority, long Seq)>();
+        list.AddRange(Normal().Select(e => ((object)e, false, e.Priority, e.Seq)));
+        list.AddRange(_arq.Select(a => ((object)a, a.Partial && _links.ContainsKey(a.Peer), a.Priority, a.Seq)));
+        list.Sort((x, y) =>
+            x.Partial != y.Partial ? y.Partial.CompareTo(x.Partial)
+            : x.Priority != y.Priority ? y.Priority.CompareTo(x.Priority)
+            : x.Seq.CompareTo(y.Seq));
+        return list.Select(x => x.Item).ToList();
+    }
+
+    /// <summary>The segment length a frame carries: none once its C_PDU has been dropped (C-0182, C-0183).</summary>
+    private static int FrameLength(ArqFrame f) => f.Owner.Dropped ? 0 : f.Owner.Segments![f.Segment].Length;
+
+    private int MaxTxWindow => Math.Min(ArqLink.MaxWindowSize, _context.Config.Dts.MaxWindow);
 
     /// <summary>
     /// The byte capacity of this transmission (core-architecture.md 5.3): whole blocks within the
@@ -520,17 +846,17 @@ internal sealed class TransmitQueue : ITransmissionSource
     {
         NodeConfig config = _context.Config;
         long now = _context.Now;
-        var ordered = chosen.Select((p, i) => (p, i)).ToList();
+        var ordered = chosen.Where(p => p is not AckPiece { Merged: true }).Select((p, i) => (p, i)).ToList();
         ordered.Sort((a, b) => a.p.Copy != b.p.Copy ? a.p.Copy.CompareTo(b.p.Copy) : a.i.CompareTo(b.i));
 
-        long total = chosenControl.Sum(c => (long)c.Size) + chosen.Sum(p => (long)p.Size);
+        long total = chosenControl.Sum(c => (long)c.Size) + ordered.Sum(x => (long)x.p.Size);
         BurstPlan plan = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, (int)total);
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
 
         // The extra time each C_PDU's window must cover for copies left for later transmissions (C-1051).
         // Entries in the order they were first chosen; no dictionary is enumerated (core-architecture.md 6 rule 3).
         var owners = new List<Entry>();
-        foreach (Piece p in chosen)
+        foreach (DataPiece p in chosen.OfType<DataPiece>())
         {
             if (!owners.Contains(p.Owner))
             {
@@ -561,8 +887,24 @@ internal sealed class TransmitQueue : ITransmissionSource
             c.Placed?.Invoke();
         }
 
-        foreach ((Piece p, int _) in ordered)
+        foreach ((Piece piece, int _) in ordered)
         {
+            if (piece is not DataPiece p)
+            {
+                long arqBlock = offset / plan.BytesPerBlock;
+                long arqStart = plan.PreambleMs + (arqBlock * plan.BlockMs);
+                int arqEot = (int)((plan.DurationMs - arqStart + HalfSecondMs - 1) / HalfSecondMs);   // as below (C-0104, C-1043)
+                byte[] arqBytes = EncodeArq(piece, arqEot);
+                if (arqBytes.Length != piece.Size)
+                {
+                    throw new InvalidOperationException("a D_PDU's size changed between planning and encoding");
+                }
+
+                arqBytes.CopyTo(bytes, offset);
+                offset += arqBytes.Length;
+                continue;
+            }
+
             Entry e = p.Owner;
 
             // Air start of the D_PDU: the start of the block holding its first byte (C-1043).
@@ -623,6 +965,67 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
+    /// Encodes an ARQ D_PDU of this transmission. A data D_PDU carries its segment (none for a
+    /// DROP PDU, C-0182, C-0183), C_PDU START and END for its place in the C_PDU (C-0176, C-0177,
+    /// C-1124), the C_PDU's DELIVER IN ORDER (C-0178), and TX WIN UWE and TX WIN LWE when its FSN is
+    /// the transmit window's upper or lower edge once this transmission's FSNs are allocated
+    /// (C-0185, C-0186, C-1122). With the peer's acknowledgement merged it is a DATA-ACK carrying RX
+    /// LWE and the bitmap (C-0238, C-0245 to C-0247, C-1007); otherwise DATA-ONLY. An ACK-ONLY
+    /// carries RX LWE, bitmap encoding, offset 0 and the bitmap (C-0196 to C-0211, C-1128).
+    /// </summary>
+    private byte[] EncodeArq(Piece piece, int eot)
+    {
+        switch (piece)
+        {
+            case AckPiece a:
+            {
+                a.Link.AckOwed = false;
+                var header = Header(TakeEow(a.Link.Peer, false), eot, a.Link.Peer);
+                return DpduCodec.Encode(new AckOnly(header, a.Link.RxLwe, 0, 0, new Octets(a.Bitmap), null));
+            }
+
+            case ArqPiece d:
+            {
+                ArqLink link = d.Link;
+                ArqFrame f = d.Frame;
+                ArqCPdu owner = f.Owner;
+                (int segOffset, int segLength) = owner.Segments![f.Segment];
+                var segment = owner.Dropped ? Octets.Empty : new Octets(owner.Request.CPdu.Span.Slice(segOffset, segLength));
+                var flags = new DataFlags(
+                    f.Segment == 0,
+                    f.Segment == owner.Segments.Count - 1,
+                    owner.Request.DeliverInOrder,
+                    owner.Dropped,
+                    f.Fsn == link.TxUwe,
+                    f.Fsn == link.TxLwe);
+                var header = Header(TakeEow(link.Peer, false), eot, link.Peer);
+                f.State = ArqFrameState.Awaiting;
+                link.ArqUsed = true;
+                _sentArqPeers.Add(link.Peer);
+                if (d.AckBitmap is byte[] map)
+                {
+                    link.AckOwed = false;
+                    return DpduCodec.Encode(new DataAck(header, flags, f.Fsn, link.RxLwe, 0, new Octets(map), segment, true));
+                }
+
+                return DpduCodec.Encode(new DataOnly(header, flags, f.Fsn, segment, true));
+            }
+
+            default:
+                throw new InvalidOperationException($"unexpected piece {piece.GetType().Name}");
+        }
+    }
+
+    private int DataOnlySize(uint dst, int segmentLength) =>
+        DpduCodec.Encode(new DataOnly(Header(0, 0, dst), default, 0, new Octets(new byte[segmentLength]), true)).Length;
+
+    private int DataAckSize(uint dst, int segmentLength, int ackBytes) =>
+        DpduCodec.Encode(new DataAck(Header(0, 0, dst), default, 0, 0, 0, new Octets(new byte[ackBytes]), new Octets(new byte[segmentLength]), true)).Length;
+
+    private int AckOnlySize(uint dst, int ackBytes) =>
+        DpduCodec.Encode(new AckOnly(Header(0, 0, dst), 0, 0, 0, new Octets(new byte[ackBytes]), null)).Length;
+
+    /// <summary>
     /// The EOW for the next D_PDU to an address: the one owed to that individual peer, used once, or
     /// EMPTY (C-0398, C-1079). Group and broadcast destinations always get EMPTY.
     /// </summary>
@@ -661,6 +1064,18 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
+    /// The acknowledgement wait when <c>dts.ack_wait_ms</c> is unset (C-1120): the longest the peer may
+    /// wait before it transmits after hearing us, the longer LBT wait (K-0067, K-0077) plus the longest
+    /// contention wait (K-0080), then a transmission of the configured length, by whose end a peer
+    /// that heard us and shares our settings has answered unless it chose to send elsewhere.
+    /// </summary>
+    private long DerivedAckWaitMs()
+    {
+        CsmaConfig csma = _context.Config.Csma;
+        return Budget + Math.Max(csma.LbtWaitDcdMs, csma.LbtWaitVdcdMs) + ((long)csma.NumContSlots * csma.ContSlotWidthMs);
+    }
+
+    /// <summary>
     /// The time allowed per later transmission in a reception window (C-1051; core-architecture.md
     /// 10 item 5): the configured transmission length, the LBT wait after an own transmission
     /// (K-0074; the common value in ed3 mode, K-0107) and the longest contention wait.
@@ -674,24 +1089,31 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>
     /// Drops every queued C_PDU whose TTD is at or before now, in (TTD, arrival) order, and
-    /// rejects each to the CAS with reason TTL expired (C-0857, C-0859, C-0864, C-1050).
+    /// rejects each to the CAS with reason TTL expired (C-0857, C-0859, C-0864, C-1050). An ARQ C_PDU
+    /// none of whose segments has an FSN is simply removed; one partly or wholly sent stays, marked
+    /// dropped, so its D_PDUs not yet acknowledged go as DROP PDUs and the windows stay in step
+    /// (C-0858, C-0860 to C-0862, C-1124).
     /// </summary>
     private void DropExpired()
     {
         var expired = _entries.Where(e => e.Ttd is long ttd && ttd <= _context.Now)
-            .Select(e => (Ttd: e.Ttd!.Value, e.Seq, e.Request!, Entry: (Entry?)e))
-            .Concat(_arqHeld.Where(a => a.Request.Ttd <= _context.Now).Select(a => (a.Request.Ttd, a.Seq, a.Request, Entry: (Entry?)null)))
+            .Select(e => (Ttd: e.Ttd!.Value, e.Seq, e.Request!, Entry: (Entry?)e, Arq: (ArqCPdu?)null))
+            .Concat(_arq.Where(a => !a.Dropped && a.Request.Ttd <= _context.Now).Select(a => (a.Request.Ttd, a.Seq, a.Request, Entry: (Entry?)null, Arq: (ArqCPdu?)a)))
             .ToList();
         expired.Sort((a, b) => a.Ttd != b.Ttd ? a.Ttd.CompareTo(b.Ttd) : a.Seq.CompareTo(b.Seq));
-        foreach ((long _, long seq, DUnidataRequest request, Entry? e) in expired)
+        foreach ((long _, long _, DUnidataRequest request, Entry? e, ArqCPdu? a) in expired)
         {
             if (e is not null)
             {
                 _entries.Remove(e);
             }
+            else if (!a!.Placed)
+            {
+                _arq.Remove(a);
+            }
             else
             {
-                _arqHeld.RemoveAll(a => a.Seq == seq);
+                a.Dropped = true;
             }
 
             _context.Enqueue(new DUnidataRequestRejected(request.Handle, DReason.TtlExpired));
@@ -708,9 +1130,12 @@ internal sealed class TransmitQueue : ITransmissionSource
     {
         long now = _context.Now;
         long? next = null;
-        foreach ((long _, DUnidataRequest r) in _arqHeld)
+        foreach (ArqCPdu a in _arq)
         {
-            next = next is long n ? Math.Min(n, r.Ttd) : r.Ttd;
+            if (!a.Dropped)
+            {
+                next = next is long n ? Math.Min(n, a.Request.Ttd) : a.Request.Ttd;
+            }
         }
 
         foreach (Entry e in _entries)
@@ -740,8 +1165,9 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
     }
 
-    private bool HeldBehindExpedited(Entry normal) =>
-        _entries.Any(x => x.Expedited && x.HasUnplacedSegment && x.Dst == normal.Dst && x.DstIsGroup == normal.DstIsGroup);
+    /// <summary>An expedited C_PDU to the same destination is not yet fully placed (C-1044; for ARQ data C-1131).</summary>
+    private bool HeldBehindExpedited(uint dst, bool dstIsGroup) =>
+        _entries.Any(x => x.Expedited && x.HasUnplacedSegment && x.Dst == dst && x.DstIsGroup == dstIsGroup);
 
     private List<Entry> Expedited()
     {
@@ -778,8 +1204,44 @@ internal sealed class TransmitQueue : ITransmissionSource
         return new DpduHeader(eow, eot, DpduAddress.MinimumSize(dst, src), dst, src);
     }
 
-    /// <summary>One D_PDU chosen for a transmission: a copy (1 = first) of one segment of a C_PDU.</summary>
-    private sealed record Piece(Entry Owner, int Segment, int Copy, int Size);
+    /// <summary>One D_PDU chosen for a transmission, with its encoded size.</summary>
+    private abstract class Piece(int size)
+    {
+        public int Size { get; } = size;
+
+        /// <summary>The copy number for the round order of non-ARQ repeats (C-1054); 1 for everything else.</summary>
+        public virtual int Copy => 1;
+    }
+
+    /// <summary>A non-ARQ D_PDU: a copy (1 = first) of one segment of a C_PDU.</summary>
+    private sealed class DataPiece(Entry owner, int segment, int copy, int size) : Piece(size)
+    {
+        public Entry Owner { get; } = owner;
+
+        public int Segment { get; } = segment;
+
+        public override int Copy => copy;
+    }
+
+    /// <summary>An ACK-ONLY to a peer, with the bitmap fixed at selection. Merged: a DATA-ACK carries it instead.</summary>
+    private sealed class AckPiece(ArqLink link, int size, byte[] bitmap) : Piece(size)
+    {
+        public ArqLink Link { get; } = link;
+
+        public byte[] Bitmap { get; } = bitmap;
+
+        public bool Merged { get; set; }
+    }
+
+    /// <summary>An ARQ data D_PDU, first transmission or retransmission; with an acknowledgement bitmap it goes as DATA-ACK.</summary>
+    private sealed class ArqPiece(ArqLink link, ArqFrame frame, int size, byte[]? ackBitmap) : Piece(size)
+    {
+        public ArqLink Link { get; } = link;
+
+        public ArqFrame Frame { get; } = frame;
+
+        public byte[]? AckBitmap { get; } = ackBitmap;
+    }
 
     /// <summary>
     /// One C_PDU ID space (C-0326, C-0328): the next ID, allocated in ascending order modulo 4096

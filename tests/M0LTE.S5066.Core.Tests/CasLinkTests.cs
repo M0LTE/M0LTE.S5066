@@ -43,7 +43,7 @@ public class CasLinkTests
             new TimerStart(TimerName.Of(TimerKind.DtsTtd), 648000L * 2000));   // the released ARQ C_PDU's TTD (C-1050)
         rig.Sis.SoftLinkOf(X).Should().Be("Established");
         rig.Dts.HeldArq.Should().ContainSingle().Which.Dst.Should().Be(X);   // released at once (A-0194)
-        rig.Dts.Peers.StateOf(X).Should().Be(DtsPeerState.IdleConnected);   // C-0571
+        rig.Dts.Peers.StateOf(X).Should().Be(DtsPeerState.DataConnected);   // C-0571, then the released ARQ request moves it on (C-0653)
     }
 
     [Fact]

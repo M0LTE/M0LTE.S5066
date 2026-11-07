@@ -25,7 +25,8 @@ public static class ConfigReader
         "csma.mode", "csma.cont_slot_width_ms", "csma.num_cont_slots", "csma.lbt_wait_dcd_ms",
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
-        "sis.default_ttl", "dts.max_segment_size", "dts.max_transmission_ms", "drc.default_speed",
+        "sis.default_ttl", "dts.max_segment_size", "dts.max_transmission_ms", "dts.max_window", "dts.ack_wait_ms",
+        "drc.default_speed",
         "cas.max_links", "cas.link_request_timeout_ms", "cas.link_request_retries", "cas.first_data_timeout_ms",
     ];
 
@@ -194,7 +195,10 @@ public static class ConfigReader
         return new SisConfig(ttl);
     }
 
-    /// <summary>dts.*: segment size 1 to 1023 (C-0503, C-0523), transmission length 1 to 127500 ms (K-0094).</summary>
+    /// <summary>
+    /// dts.*: segment size 1 to 1023 (C-0503, C-0523), transmission length 1 to 127500 ms (K-0094),
+    /// window 1 to 32768 (C-0772, C-0773), acknowledgement wait 1 or more ms or null (C-1120).
+    /// </summary>
     private static DtsConfig ReadDts(JsonObject config)
     {
         JsonObject dts = Object(config, "dts");
@@ -210,7 +214,19 @@ public static class ConfigReader
             throw new ConfigException("dts.max_transmission_ms", $"must be at most {DtsConfig.MaxTransmissionLimitMs}");
         }
 
-        return new DtsConfig(segment, transmission);
+        int window = Required(dts, "max_window", "dts.", 1);
+        if (window > DtsConfig.MaxWindowLimit)
+        {
+            throw new ConfigException("dts.max_window", $"must be at most {DtsConfig.MaxWindowLimit}");   // C-0773
+        }
+
+        int? ackWait = Int(dts, "ack_wait_ms", "dts.");
+        if (ackWait is 0)
+        {
+            throw new ConfigException("dts.ack_wait_ms", "must be at least 1");
+        }
+
+        return new DtsConfig(segment, transmission, window, ackWait);
     }
 
     /// <summary>drc.default_speed: an object with <c>wn</c> and <c>interleaver</c>.</summary>

@@ -30,8 +30,18 @@ internal enum DtsPeerState
 /// unconnected, with no anomaly report (C-0572, C-0592, C-0612, C-0632, C-0652, C-0672, C-0692,
 /// C-0712). In the CONNECTED states types 7 and 8 are received as in the UNCONNECTED ones, with the
 /// CONNECTED transitions (C-0665, C-0666, C-0685, C-0686, C-0705, C-0706, C-0725, C-0726), and
-/// MANAGEMENT, EXTENSION, PADDING and WARNING as there. The ARQ types from a connected peer are
-/// P4-2's and P4-6's; until then they are discarded with no response.
+/// MANAGEMENT, EXTENSION, PADDING and WARNING as there.
+/// </para>
+/// <para>
+/// ARQ (P4-2, 16-bit family): DATA-ONLY, ACK-ONLY and DATA-ACK (types 9, 10 and 11) from a peer
+/// whose connection uses the 16-bit family are processed in every CONNECTED state, as Tables C-18,
+/// C-20, C-22 and C-24 say: the data part is reassembled, delivered with D_UNIDATA_INDICATION and
+/// owes an acknowledgement (C-0658, C-0660, C-0678, C-0680, C-0698, C-0700, C-0718, C-0720; C-1129), and the
+/// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
+/// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
+/// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). Still discarded
+/// with no response: RESET/WIN-RESYNC (P4-4), the 8-bit family and the 16-bit types on an 8-bit
+/// link (P4-5), EXPEDITED-DATA and EXPEDITED-ACK (P4-6).
 /// </para>
 /// <para>
 /// State is kept per remote node (C-0565, C-0568) and driven only by D_PDUs addressed to this node,
@@ -98,7 +108,7 @@ internal sealed class DtsPeers
     /// <summary>The state kept for a peer, for tests; IDLE(UNCONNECTED) for a peer never heard.</summary>
     internal DtsPeerState StateOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.State : DtsPeerState.IdleUnconnected;
 
-    /// <summary>A whole D_PDU with good CRCs, whoever it is addressed to (C-0838).</summary>
+    /// <summary>A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), or a DATA-ACK whose data CRC alone failed (C-1133).</summary>
     public void OnDpdu(Dpdu pdu)
     {
         NodeConfig config = _context.Config;
@@ -142,14 +152,22 @@ internal sealed class DtsPeers
             return;   // C-0566; no other type has a group form (C-0122)
         }
 
+        if (pdu is DataAck { SegmentCrcOk: false, Flags.DropCPdu: false } && _tx.LinkOf(h.Src) is null)
+        {
+            return;   // a failed data CRC with no ARQ machine to take the acknowledgement: discarded (C-0836, C-0839)
+        }
+
         OweEowIfUnrecognised(h, true);
         switch (pdu)
         {
+            case DataOnly or AckOnly or DataAck when _tx.LinkOf(h.Src) is ArqLink link:
+                OnArq(PeerOf(h.Src), link, pdu);
+                break;
             case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
                 or DataOnly or AckOnly or DataAck or ResetWinResync:
                 if (PeerOf(h.Src).Connected)
                 {
-                    break;   // the CONNECTED-state ARQ tables are P4-2's and P4-6's
+                    break;   // RESET (P4-4), the 8-bit family (P4-5), expedited ARQ (P4-6)
                 }
 
                 // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
@@ -199,6 +217,66 @@ internal sealed class DtsPeers
         peer.PeerIsEd4 = c.PeerIsEd4;
         peer.ShortFamily = c.ShortFamily;
         peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
+        if (!c.ShortFamily)
+        {
+            _tx.OpenLink(c.Peer);   // the ARQ machine starts from the initial window edges (C-0782, C-0787)
+        }
+    }
+
+    /// <summary>An ARQ D_UNIDATA_REQUEST for a connected peer: IDLE(CONNECTED) goes to DATA(CONNECTED) (C-0653); DATA stays (C-0673).</summary>
+    public void OnArqRequest(uint peerAddress)
+    {
+        Peer peer = PeerOf(peerAddress);
+        if (peer.State == DtsPeerState.IdleConnected)
+        {
+            peer.State = DtsPeerState.DataConnected;
+        }
+    }
+
+    /// <summary>
+    /// A DATA-ONLY, ACK-ONLY or DATA-ACK from a peer with a 16-bit ARQ machine (a DATA-ACK whose data
+    /// CRC failed brings its acknowledgement part only, which is neither stored nor acknowledged, C-1133). The data part first:
+    /// each C_PDU it lets be delivered goes to the CAS with D_UNIDATA_INDICATION (C-0514, C-0517);
+    /// then the acknowledgement part, which may confirm C_PDUs to the CAS (C-0680).
+    /// </summary>
+    private void OnArq(Peer peer, ArqLink link, Dpdu pdu)
+    {
+        DpduHeader h = pdu.Header;
+        if (peer.State == DtsPeerState.IdleConnected)
+        {
+            peer.State = DtsPeerState.DataConnected;   // C-0658, C-0659, C-0660
+            if (pdu is AckOnly)
+            {
+                Warn(h.Src, pdu.Type, 3);   // C-0659: nothing of ours to acknowledge yet
+                return;
+            }
+        }
+
+        (DataFlags flags, int fsn, Octets segment)? data = pdu switch
+        {
+            DataOnly d => (d.Flags, d.TxFsn, d.Segment),
+            DataAck d when d.SegmentCrcOk || d.Flags.DropCPdu => (d.Flags, d.TxFsn, d.Segment),
+            _ => null,   // an ACK-ONLY, or a DATA-ACK whose data CRC failed: acknowledgement part only (C-1133)
+        };
+        if (data is var (f, txFsn, seg))
+        {
+            foreach (ReadOnlyMemory<byte> cpdu in link.Receive(txFsn, f.CPduStart, f.CPduEnd, f.DeliverInOrder, f.DropCPdu, seg.Span))
+            {
+                _context.Enqueue(new DUnidataIndication(h.Src, h.Dst, false, true, cpdu));
+            }
+
+            _tx.AckOwed();
+        }
+
+        switch (pdu)
+        {
+            case AckOnly a:
+                _tx.OnAck(h.Src, a.RxLwe, a.Encoding, a.Offset, a.AckData.Span);
+                break;
+            case DataAck d:
+                _tx.OnAck(h.Src, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span);   // offset 0 (C-0250)
+                break;
+        }
     }
 
     /// <summary>
@@ -241,7 +319,8 @@ internal sealed class DtsPeers
         if (!_tx.PendingControl.Any(c => c is ManagementAck a && a.Dst == m.Header.Src && a.FrameId == m.ManagementFrameId))
         {
             peer.AcksOutstanding++;
-            _tx.AddControl(new ManagementAck(m.Header.Src, m.ManagementFrameId) { Placed = () => AckPlaced(peer) });   // C-0296, C-1073, C-1074
+            uint src = m.Header.Src;
+            _tx.AddControl(new ManagementAck(src, m.ManagementFrameId) { Placed = () => AckPlaced(src, peer) });   // C-0296, C-1073, C-1074
         }
 
         if (isNew && EowCodec.Decode(m.Header.Eow).Type is 1 or 2 or 5 or 6)
@@ -256,9 +335,10 @@ internal sealed class DtsPeers
     /// <summary>
     /// The acknowledgement went into a transmission: when it was the last one owed, the management
     /// exchange with this peer is finished (C-1070) and the peer leaves MANAGEMENT(UNCONNECTED) for
-    /// IDLE(UNCONNECTED) (C-0738: no non-ARQ data is pending in a state that would hold it).
+    /// IDLE(UNCONNECTED) (C-0738: no non-ARQ data is pending in a state that would hold it), or
+    /// MANAGEMENT(CONNECTED) for DATA(CONNECTED) or IDLE(CONNECTED) (C-0738).
     /// </summary>
-    private static void AckPlaced(Peer peer)
+    private void AckPlaced(uint address, Peer peer)
     {
         peer.AcksOutstanding--;
         if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementUnconnected)
@@ -267,7 +347,8 @@ internal sealed class DtsPeers
         }
         else if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementConnected)
         {
-            peer.State = DtsPeerState.IdleConnected;   // C-0738: no ARQ data flows before P4-2
+            // C-0738: DATA(CONNECTED) once regular ARQ D_PDUs have flowed on this connection, else IDLE(CONNECTED).
+            peer.State = _tx.LinkOf(address)?.ArqUsed == true ? DtsPeerState.DataConnected : DtsPeerState.IdleConnected;
         }
     }
 

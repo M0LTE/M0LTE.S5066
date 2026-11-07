@@ -121,6 +121,11 @@ internal sealed class CasSublayer : ICasSublayer
                 break;
             case DWarningTransmitted:
                 break;   // nothing in the CAS depends on WARNINGs we send
+            case DUnidataRequestConfirm c:
+                // The DTS delivered an ARQ C_PDU (C-0679): the request is confirmed upward, handle
+                // unchanged (B-0018). Every ARQ C_PDU here is a client DATA C_PDU.
+                _context.Enqueue(new CUnidataRequestConfirm(c.Handle));
+                break;
             case DUnidataRequestRejected j:
                 // The DTS refused or dropped a C_PDU (C-0859, C-1050, C-0731, C-0652): the request
                 // fails upward with the same reason, handle unchanged (B-0018, A-0206).
