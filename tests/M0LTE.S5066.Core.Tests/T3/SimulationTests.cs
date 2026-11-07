@@ -66,6 +66,38 @@ public class SimulationTests(ITestOutputHelper output)
         output.WriteLine($"seed {seed}: {sim.Bursts.Count} bursts, {sim.Collisions} collisions, {sim.Deliveries.Count} of {sent.Count * 2} deliveries");
     }
 
+    [Theory]
+    [InlineData(1UL)]
+    [InlineData(2UL)]
+    [InlineData(3UL)]
+    public void Fades_mid_burst_never_overlap_an_announced_eot(ulong seed)
+    {
+        // C-0844 "even if it hears no signal": long bursts (two segments of a 2000-byte U_PDU, about
+        // eight blocks) and a 5% chance per block that a receiver loses the signal for the rest of
+        // the burst. After such a fade only the EOTs it already holds keep it quiet. Without fades
+        // DCD alone does, so the broadcast test above cannot tell whether VDCD works.
+        var channel = Realistic with { BlockErrorPpm = 20_000, FadePpm = 50_000 };
+        var sim = new Simulation(seed, channel, [Node("0.0.1.1"), Node("0.0.1.2"), Node("0.0.1.3")]);
+        var sent = new List<(int Node, string Text)>();
+        for (int n = 0; n < 3; n++)
+        {
+            sim.Bind(n, 0, Sap);
+        }
+
+        for (int i = 0; i < 10; i++)
+        {
+            Send(sim, sent, 0, 1_000 + (i * 120_000L), $"n0-{i:00}".PadRight(2000, '.'), 0);
+            Send(sim, sent, 1 + (i % 2), 5_000 + (i * 120_000L), $"n{1 + (i % 2)}-{i:00}", 0);
+        }
+
+        sim.Run(3_600_000);
+
+        sim.Violations.Should().BeEmpty();
+        AssertDeliveriesAreGenuine(sim, sent);
+        sim.FadesUnderEot.Should().BePositive("the test must exercise a fade under an announced EOT (seed {0})", seed);
+        output.WriteLine($"seed {seed}: {sim.Bursts.Count} bursts, {sim.FadesUnderEot} fades under an EOT, {sim.Deliveries.Count} deliveries");
+    }
+
     [Fact]
     public void Without_loss_one_sender_delivers_everything_once_and_sends_every_copy()
     {

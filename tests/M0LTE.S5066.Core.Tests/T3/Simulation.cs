@@ -16,12 +16,14 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// <param name="HostLatencyMs">Delay from a modem event to the core input that reports it (burst start, each block, burst end, transmit done).</param>
 /// <param name="TurnaroundMs">Delay from the core's <c>transmit</c> output to the start of the burst on air (host to modem, receive to transmit switch).</param>
 /// <param name="EndOfBurstDelayMs">Extra delay on the end-of-burst reports, <c>transmit_done</c> and <c>burst_ended</c>, on top of the host latency.</param>
+/// <param name="FadePpm">Chance, after each block but the last, that one receiver loses the signal for the rest of the burst (<c>burst_ended</c> signal lost while the burst is still on air).</param>
 internal sealed record ChannelModel(
     int BlockErrorPpm = 0,
     int BurstMissPpm = 0,
     int HostLatencyMs = 0,
     int TurnaroundMs = 0,
-    int EndOfBurstDelayMs = 0);
+    int EndOfBurstDelayMs = 0,
+    int FadePpm = 0);
 
 /// <summary>One burst on air: who sent it, when, its plan and the D_PDUs it holds.</summary>
 internal sealed class SimBurst
@@ -98,6 +100,13 @@ internal sealed class Simulation
             NodeConfig config = ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, overlay));
             var modem = new FixtureModem(config.Modem);
             _nodes.Add(new SimNode(_nodes.Count, config, modem, (core ?? CoreDriver.ForNode)(config, master.NextUInt64(), modem)));
+
+            // The end report of one burst must reach the core before the start report of the next
+            // one can (DCD comes after the preamble), or a receiver would see them out of order.
+            if (channel.EndOfBurstDelayMs >= config.Modem.PreambleMs)
+            {
+                throw new ArgumentException("the end-of-burst delay must be shorter than every preamble", nameof(channel));
+            }
         }
 
         _prng = new SplitMix64(master.NextUInt64());
@@ -115,6 +124,12 @@ internal sealed class Simulation
 
     /// <summary>Times one node started a burst while another node's burst was on air (true collisions, which CSMA allows).</summary>
     public int Collisions { get; private set; }
+
+    /// <summary>
+    /// Fades that left a receiver with no signal while an EOT it had been given still announced
+    /// the burst on air: the cases where only the EOT keeps it quiet (C-0844, "even if it hears no signal").
+    /// </summary>
+    public int FadesUnderEot { get; private set; }
 
     /// <summary>Requests the client of a node had rejected.</summary>
     public int Rejections { get; private set; }
@@ -202,7 +217,8 @@ internal sealed class Simulation
                 n.Timers.Remove(c.Name);
                 break;
             case Transmit tx:
-                At(t + _channel.TurnaroundMs, PhaseChannel, now => AirStart(n, t, now, tx));
+                int given = n.Heard.Count;   // the headers this core had been given when it decided
+                At(t + _channel.TurnaroundMs, PhaseChannel, now => AirStart(n, t, now, tx, given));
                 break;
             case SisBytesOut b:
                 SisPrimitive? p = SisCodec.DecodeFrame(b.Bytes.Span).Primitive;
@@ -224,7 +240,7 @@ internal sealed class Simulation
     }
 
     /// <summary>A burst goes on air: the C-0844 and C-0889 check, half duplex, then each receiver.</summary>
-    private void AirStart(SimNode sender, long emitT, long start, Transmit tx)
+    private void AirStart(SimNode sender, long emitT, long start, Transmit tx, int given)
     {
         if (sender.OnAirUntil > start)
         {
@@ -241,13 +257,25 @@ internal sealed class Simulation
         };
         _bursts.Add(burst);
 
+        // C-0891: every EOT announces an end no earlier than the true end of the burst; otherwise
+        // the check below would be weaker than it looks.
+        foreach (SimDpdu d in burst.Dpdus)
+        {
+            if (d.Pdu.Header.Eot > 0 && d.AnnouncedEnd < burst.End)
+            {
+                _violations.Add($"node {sender.Index}: burst {burst.Id} announces an end at {d.AnnouncedEnd} before its true end {burst.End}");
+            }
+        }
+
         // C-0844, C-0889: a node never starts a transmission before the end time announced by the
         // EOT of any D_PDU of another node whose header its core had been given by the time it
-        // decided to transmit. The announced end is taken from the true start of the D_PDU's block,
-        // which is never later than what the receiving core computes (it uses the arrival time).
-        foreach ((long inputT, long end, int burstId) in sender.Heard)
+        // decided to transmit (fed before or with the input that produced the transmit output).
+        // The announced end is taken from the true start of the D_PDU's block, which is never
+        // later than what the receiving core computes (it uses the arrival time).
+        for (int i = 0; i < given; i++)
         {
-            if (inputT <= emitT && start < end)
+            (long end, int burstId) = sender.Heard[i];
+            if (start < end)
             {
                 _violations.Add($"node {sender.Index}: burst {burst.Id} starts at {start} before {end}, announced by burst {burstId}");
             }
@@ -292,6 +320,17 @@ internal sealed class Simulation
             }
 
             var rx = new RxState(burst, start + plan.PreambleMs + _channel.HostLatencyMs);
+
+            // A burst already on air that this receiver is not locked on (it missed it, or was
+            // transmitting when it began) still corrupts the blocks of this one that it overlaps.
+            foreach (SimBurst other in _bursts)
+            {
+                if (other != burst && other.Sender != r.Index && other.End > start)
+                {
+                    rx.Corrupt.Add((start, other.End));
+                }
+            }
+
             r.Rx = rx;
             Modem(r, new BurstStarted(rx.StartedInputT));
             for (int k = 0; k < plan.Blocks; k++)
@@ -335,18 +374,39 @@ internal sealed class Simulation
         }
 
         rx.Clean.Add(!(collided || lost));
-        long inputT = now + _channel.HostLatencyMs;
-        Modem(r, new BytesReceived(inputT, bytes));
 
-        // Headers this receiver now holds intact: each lies wholly in delivered clean blocks.
+        // Headers these bytes complete intact: each lies wholly in delivered clean blocks.
+        var heard = new List<(long End, int BurstId)>();
         foreach (SimDpdu d in burst.Dpdus)
         {
             int first = d.Offset / plan.BytesPerBlock;
             int last = (d.Offset + d.HeaderLength - 1) / plan.BytesPerBlock;
             if (last == k && Enumerable.Range(first, last - first + 1).All(b => rx.Clean[b]) && d.Pdu.Header.Eot > 0)
             {
-                r.Heard.Add((inputT, d.AnnouncedEnd, burst.Id));
+                heard.Add((d.AnnouncedEnd, burst.Id));
             }
+        }
+
+        // Recorded as the core is given them, so a transmit decided earlier in the same ms does not count them.
+        var input = new BytesReceived(now + _channel.HostLatencyMs, bytes);
+        At(input.T, PhaseModem, _ =>
+        {
+            r.Heard.AddRange(heard);
+            Feed(r, input);
+        });
+        rx.HeardEot |= heard.Count > 0;
+
+        // A fade: the receiver loses the signal for the rest of the burst.
+        if (k < plan.Blocks - 1 && Draw(_channel.FadePpm))
+        {
+            r.Rx = null;
+            if (rx.HeardEot)
+            {
+                FadesUnderEot++;
+            }
+
+            Modem(r, new BurstEnded(now + _channel.EndOfBurstDelayMs + _channel.HostLatencyMs, BurstEndReason.SignalLost,
+                burst.Output.Wn, burst.Output.Interleaver, burst.Output.K, null, k + 1));
         }
     }
 
@@ -402,7 +462,7 @@ internal sealed class Simulation
         public long TimerGen { get; set; }
         public long OnAirUntil { get; set; }
         public RxState? Rx { get; set; }
-        public List<(long InputT, long End, int BurstId)> Heard { get; } = [];
+        public List<(long End, int BurstId)> Heard { get; } = [];
     }
 
     private sealed class RxState(SimBurst burst, long startedInputT)
@@ -411,5 +471,6 @@ internal sealed class Simulation
         public long StartedInputT { get; } = startedInputT;
         public List<(long From, long To)> Corrupt { get; } = [];
         public List<bool> Clean { get; } = [];
+        public bool HeardEot { get; set; }
     }
 }
