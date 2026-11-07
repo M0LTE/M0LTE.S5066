@@ -78,8 +78,10 @@ internal sealed class ArqLink
     /// edges, and returns the C_PDUs it completes that may now be delivered, in delivery order
     /// (C-0511 to C-0517, C-0178, C-0179). Every one owes an acknowledgement (C-0174, C-0242),
     /// including a copy behind RX LWE (C-1126). An FSN not within the maximum window ahead of RX LWE
-    /// is not accepted and no acknowledgement covers it (C-0779): with a window of half the circle,
-    /// every such FSN lies behind RX LWE, and the acknowledgement it causes carries RX LWE only.
+    /// is not accepted and no acknowledgement covers it (C-0779). The caller has already applied
+    /// Tests 1 to 3 (<see cref="InSyncAsDestination"/>), so such an FSN here is a copy behind RX LWE
+    /// inside the arc of Equation 3, and the acknowledgement it causes carries RX LWE only; one in
+    /// the gap Equation 3 leaves out of sync never reaches here and draws no acknowledgement (C-1170).
     /// </summary>
     public List<ReadOnlyMemory<byte>> Receive(int fsn, bool start, bool end, bool inOrder, bool drop, ReadOnlySpan<byte> segment)
     {
@@ -174,6 +176,166 @@ internal sealed class ArqLink
         }
 
         return map;
+    }
+
+    // ---- synchronisation (C-0790 to C-0802) and reset (C-0812, C-0822, C-0265) ----
+
+    /// <summary>
+    /// Regular-data D_PDUs (DATA-ONLY, ACK-ONLY, DATA-ACK) to the peer are held back while this node
+    /// waits for the acknowledgement of a RESET/WIN-RESYNC command it sent (C-0257, C-1175).
+    /// </summary>
+    public bool Suspended { get; set; }
+
+    /// <summary>
+    /// The destination-node tests on a DATA-ONLY or DATA-ACK from the peer, before it changes any
+    /// window edge (C-0793, C-1180), each an arc on the FSN circle (C-0786) with the maximum window
+    /// size (C-0796): Test 1, Equation 1, when TX WIN UWE is set (C-0794); Test 2, Equation 2, when
+    /// TX WIN LWE is set (C-0797); Test 3, Equation 3, always (C-0798). The flags say the FSN is the
+    /// sender's TX UWE or TX LWE. False means the peers have lost synchronisation (C-0802).
+    /// </summary>
+    public bool InSyncAsDestination(int fsn, bool txWinUwe, bool txWinLwe)
+    {
+        const int span = MaxWindowSize - 1;
+        if (txWinUwe && !Seq.InArc(fsn, RxUwe, Seq.Add(RxLwe, span)))
+        {
+            return false;   // Equation 1 (C-0794)
+        }
+
+        if (txWinLwe && !Seq.InArc(fsn, Seq.Add(RxUwe, -span), RxLwe))
+        {
+            return false;   // Equation 2 (C-0797)
+        }
+
+        return Seq.InArc(fsn, Seq.Add(RxUwe, -span), Seq.Add(RxLwe, span));   // Equation 3 (C-0798)
+    }
+
+    /// <summary>
+    /// The originating-node tests on an ACK-ONLY or DATA-ACK from the peer, before it moves TX LWE
+    /// (C-0799, C-1180): Test 4, Equation 4, on its RX LWE (C-0800), and Test 5, Equation 5, on
+    /// each FSN it acknowledges explicitly (C-0801). With nothing outstanding (TX UWE = TX LWE - 1)
+    /// no explicitly acknowledged FSN is in sync (C-0786). False means the peers have lost
+    /// synchronisation (C-0802).
+    /// </summary>
+    public bool InSyncAsOriginator(int rxLwe, IEnumerable<int> acknowledged)
+    {
+        if (!Seq.InArc(rxLwe, TxLwe, Seq.Add(TxUwe, 1)))
+        {
+            return false;   // Equation 4 (C-0800)
+        }
+
+        bool nothingOutstanding = TxUwe == Seq.Add(TxLwe, -1);
+        foreach (int fsn in acknowledged)
+        {
+            if (nothingOutstanding || !Seq.InArc(fsn, TxLwe, TxUwe, lowerExclusive: true))
+            {
+                return false;   // Equation 5 (C-0801, C-0786)
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The FULL RESET of this ARQ machine, in either role (C-0812, C-0814, C-0822, C-0824): window
+    /// edges back to the initial values of C.7.2 (C-0782, C-0825), the receive buffers flushed
+    /// (partly reassembled C_PDUs are lost), no acknowledgement owed, and nothing outstanding. The
+    /// transmit queue rejects the C_PDUs whose D_PDUs this drops (C-0813, C-0823, C-0826, C-1176).
+    /// </summary>
+    public void Reset()
+    {
+        TxLwe = 0;
+        TxUwe = 65535;
+        RxLwe = 0;
+        RxUwe = 65535;
+        Outstanding.Clear();
+        _received.Clear();
+        _pendingInOrder.Clear();
+        AckOwed = false;
+        ArqUsed = false;
+    }
+
+    /// <summary>
+    /// A RESET RX WIN CMND from the peer, read as C-0274 settles it: RX LWE becomes the NEW RECEIVE
+    /// LWE the peer sent, which is its TX LWE (C-0263, C-0265, C-0274). Segments held that lie in
+    /// the new receive window are kept, those behind it are discarded, RX UWE becomes the furthest
+    /// segment kept (or NEW RECEIVE LWE - 1 when none), RX LWE then passes every segment already
+    /// received (C-0776), and the in-order C_PDUs that leaves behind RX LWE are returned for delivery,
+    /// oldest first (C-0178, C-1178). Our transmit window is not touched. A NEW RECEIVE LWE that
+    /// would pass Test 2 (Equation 2, C-0797) changes nothing: the peer's TX LWE is already in step
+    /// with our window, and moving RX LWE back would forget C_PDUs already delivered, so the peer's
+    /// retransmissions of them would be delivered twice (C-0777, C-1178).
+    /// </summary>
+    public List<ReadOnlyMemory<byte>> ResyncReceive(int newRxLwe)
+    {
+        if (Seq.InArc(newRxLwe, Seq.Add(RxUwe, -(MaxWindowSize - 1)), RxLwe))
+        {
+            return [];   // in sync by Equation 2 (C-0797): RX LWE never moves back (C-0777, C-1178)
+        }
+
+        // The FSNs that can be held: every one from RX LWE to RX UWE, and the unconsumed segments
+        // just behind RX LWE that belong to a C_PDU not yet complete. They are visited in FSN order
+        // and looked up, so the dictionary is never enumerated (core-architecture.md 6 rule 3).
+        var held = new List<int>();
+        for (int f = Seq.Add(RxLwe, -1); _received.ContainsKey(f) && held.Count < MaxWindowSize; f = Seq.Add(f, -1))
+        {
+            held.Insert(0, f);
+        }
+
+        int span = Seq.Distance(RxLwe, Seq.Add(RxUwe, 1));
+        for (int i = 0; i < span; i++)
+        {
+            int f = Seq.Add(RxLwe, i);
+            if (_received.ContainsKey(f))
+            {
+                held.Add(f);
+            }
+        }
+
+        var kept = new Dictionary<int, InFrame>();
+        int furthest = -1;
+        foreach (int f in held)
+        {
+            int ahead = Seq.Distance(newRxLwe, f);
+            if (ahead < MaxWindowSize)
+            {
+                kept[f] = _received[f];
+                furthest = Math.Max(furthest, ahead);
+            }
+        }
+
+        _received.Clear();
+        foreach (int f in held)
+        {
+            if (kept.TryGetValue(f, out InFrame? frame))
+            {
+                _received[f] = frame;
+            }
+        }
+
+        _pendingInOrder.RemoveAll(r => !_received.ContainsKey(r.First) || !_received.ContainsKey(r.Last));
+        RxLwe = newRxLwe;
+        RxUwe = Seq.Add(newRxLwe, furthest);   // NEW RECEIVE LWE - 1 when nothing is kept
+        while (_received.TryGetValue(RxLwe, out InFrame? f))
+        {
+            if (f.Consumed)
+            {
+                _received.Remove(RxLwe);
+            }
+
+            RxLwe = Seq.Add(RxLwe, 1);
+        }
+
+        var deliver = new List<ReadOnlyMemory<byte>>();
+        int origin = Seq.Add(RxLwe, -MaxWindowSize);
+        _pendingInOrder.Sort((a, b) => Seq.Distance(origin, a.First).CompareTo(Seq.Distance(origin, b.First)));
+        while (_pendingInOrder.Count > 0 && Behind(_pendingInOrder[0].Last))
+        {
+            CPduRun r = _pendingInOrder[0];
+            _pendingInOrder.RemoveAt(0);
+            deliver.Add(Consume(r));
+        }
+
+        return deliver;
     }
 
     private bool Behind(int fsn) => Seq.Distance(RxLwe, fsn) >= MaxWindowSize;

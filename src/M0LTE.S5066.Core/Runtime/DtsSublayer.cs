@@ -46,6 +46,9 @@ internal sealed class DtsSublayer : IDtsSublayer
             case TimerKind.DtsReceptionWindow:
                 _peers.OnReceptionWindowTimer();
                 break;
+            case TimerKind.DtsResetWait:
+                _peers.OnResetWaitTimer(name.Peer!.Value);   // C-0255, C-1172
+                break;
             default:
                 throw new InvalidOperationException($"DTS timer {name} expired, but the DTS does not start it (now {_context.Now})");
         }
@@ -66,11 +69,13 @@ internal sealed class DtsSublayer : IDtsSublayer
     /// <summary>
     /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed
     /// to the CAS, in placement order (C-1100). First, the ARQ bookkeeping of core-architecture.md 5.7:
-    /// <c>dts.ack_wait</c> for each peer the transmission carried ARQ data to (C-1120).
+    /// <c>dts.ack_wait</c> for each peer the transmission carried ARQ data to (C-1120), then
+    /// <c>dts.reset_wait</c> for each peer it carried a RESET/WIN-RESYNC command to (C-1172).
     /// </summary>
     public void OnTransmitDone()
     {
         _tx.OnTransmitDone();
+        _peers.OnTransmitDone();
         foreach (int handle in _tx.TakeSentExpedited())
         {
             _context.Enqueue(new DExpeditedUnidataRequestConfirm(handle));
