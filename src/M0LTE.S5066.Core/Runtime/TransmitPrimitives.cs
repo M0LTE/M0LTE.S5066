@@ -20,6 +20,9 @@ internal enum CReason
 {
     /// <summary>The DTS dropped the C_PDU because its TTL expired (C-0859, C-1050); the SIS reason 1, TTL Expired (A-0107).</summary>
     TtlExpired,
+
+    /// <summary>The DTS refused an ARQ C_PDU with no connection to the peer (C-0731), or rejected it when the connection ended (C-0652).</summary>
+    NoConnection,
 }
 
 /// <summary>D_EXPEDITED_UNIDATA_REQUEST, CAS to DTS: one C_PDU for a peer with expedited delivery (C-0025, C-0029).</summary>

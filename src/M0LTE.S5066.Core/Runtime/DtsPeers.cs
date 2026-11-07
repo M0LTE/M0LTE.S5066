@@ -2,23 +2,37 @@ using M0LTE.S5066.Core.Dts;
 
 namespace M0LTE.S5066.Core.Runtime;
 
-/// <summary>The four UNCONNECTED DTS states of Figure C-54 (C-0562). The CONNECTED half arrives with P4-1.</summary>
+/// <summary>The eight DTS states of Figure C-54 (C-0562).</summary>
 internal enum DtsPeerState
 {
     IdleUnconnected,
     DataUnconnected,
     ExpeditedDataUnconnected,
     ManagementUnconnected,
+    IdleConnected,
+    DataConnected,
+    ExpeditedDataConnected,
+    ManagementConnected,
 }
 
 /// <summary>
-/// The receive side of the DTS state machine for peers with no ARQ connection, which before CAS-1
-/// linking (P4-1) is every peer: Tables C-10, C-12, C-14 and C-16 (C-0577 to C-0589, C-0597 to
+/// The per-peer DTS state machine. For peers with no ARQ connection, the receive side of Tables C-10, C-12, C-14 and C-16 (C-0577 to C-0589, C-0597 to
 /// C-0609, C-0617 to C-0629, C-0637 to C-0649), the MANAGEMENT receive procedure [Ed4 C.4.10,
 /// p.C-43 to C-45], WARNING generation [Ed4 C.4.15, p.C-54 to C-56] and the UNRECOGNIZED-TYPE-ERROR
 /// EOW [Ed4 C.6.3, p.C-70].
 /// </summary>
 /// <remarks>
+/// <para>
+/// Connections (P4-1): D_CONNECTION_MADE moves a peer from an UNCONNECTED state to IDLE(CONNECTED),
+/// or from MANAGEMENT(UNCONNECTED) to MANAGEMENT(CONNECTED), and is ignored when connected (C-0571,
+/// C-0591, C-0611, C-0631, C-0651, C-0671, C-0691, C-0711). D_CONNECTION_TERMINATED returns a
+/// connected peer to IDLE(UNCONNECTED) and rejects its held ARQ C_PDUs, and is ignored when
+/// unconnected, with no anomaly report (C-0572, C-0592, C-0612, C-0632, C-0652, C-0672, C-0692,
+/// C-0712). In the CONNECTED states types 7 and 8 are received as in the UNCONNECTED ones, with the
+/// CONNECTED transitions (C-0665, C-0666, C-0685, C-0686, C-0705, C-0706, C-0725, C-0726), and
+/// MANAGEMENT, EXTENSION, PADDING and WARNING as there. The ARQ types from a connected peer are
+/// P4-2's and P4-6's; until then they are discarded with no response.
+/// </para>
 /// <para>
 /// State is kept per remote node (C-0565, C-0568) and driven only by D_PDUs addressed to this node,
 /// or for types 7 and 8 to a group it belongs to, from that node (C-0566). Every valid D_PDU is
@@ -31,7 +45,7 @@ internal enum DtsPeerState
 /// connection-related type, 0 to 5 and 9 to 12, in all four states (C-0578 to C-0583 and the matching
 /// rows; C-0734 over C-0389 and C-0390). Reason 4 for every EXTENSION, since no extended type is
 /// implemented (C-0392, C-0735; the stream receiver already resumed after its header CRC, C-0365).
-/// Reason 0 for a type undefined in Ed3 from a peer read as Ed3 (C-0388; none before P4-1). Reason 3
+/// Reason 0 for a type undefined in Ed3 from a peer the CAS recorded Ed3 (C-0388, B-0408). Reason 3
 /// for an Ed3 DRC or frequency change request in a MANAGEMENT D_PDU, after acknowledging it (C-0920,
 /// C-0921, C-1071). Never for a received WARNING (C-0393). A WARNING already queued and unsent with
 /// the same peer, type and reason is not queued again, and the CAS is told D_WARNING_TRANSMITTED
@@ -57,7 +71,7 @@ internal enum DtsPeerState
 /// peer (C-0396, C-1079). Recognised EOWs are for data rate selection and capability, phase 7.
 /// </para>
 /// </remarks>
-internal sealed class UnconnectedPeers
+internal sealed class DtsPeers
 {
     /// <summary>RX MANAGEMENT FRAME ID NUMBER before any MANAGEMENT D_PDU is received: above 255 (C-0310).</summary>
     private const int NoFrameId = 256;
@@ -67,7 +81,7 @@ internal sealed class UnconnectedPeers
     private readonly NonArqReassembler _reassembler;
     private readonly SortedDictionary<uint, Peer> _peers = new();
 
-    public UnconnectedPeers(CoreContext context, TransmitQueue tx)
+    public DtsPeers(CoreContext context, TransmitQueue tx)
     {
         _context = context;
         _tx = tx;
@@ -76,6 +90,10 @@ internal sealed class UnconnectedPeers
 
     /// <summary>The non-ARQ reassembly, for tests and the <c>dts.reception_window</c> expiry.</summary>
     internal NonArqReassembler Reassembler => _reassembler;
+
+    /// <summary>For tests: the Ed4 and short-family flags D_CONNECTION_MADE gave a connected peer, or null when not connected.</summary>
+    internal (bool PeerIsEd4, bool ShortFamily)? ConnectionOf(uint peer) =>
+        _peers.TryGetValue(peer, out Peer? p) && p.Connected ? (p.PeerIsEd4, p.ShortFamily) : null;
 
     /// <summary>The state kept for a peer, for tests; IDLE(UNCONNECTED) for a peer never heard.</summary>
     internal DtsPeerState StateOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.State : DtsPeerState.IdleUnconnected;
@@ -99,10 +117,19 @@ internal sealed class UnconnectedPeers
             OweEowIfUnrecognised(h, toUs && !f.GroupAddress);
             bool expedited = pdu is ExpeditedNonArqData;
             Peer peer = PeerOf(h.Src);
-            if (peer.State != DtsPeerState.ManagementUnconnected)
+            if (!peer.Connected)
             {
-                // C-0585, C-0586, C-0605, C-0606, C-0625, C-0626; C-0645 and C-0646 stay in MANAGEMENT.
-                peer.State = expedited ? DtsPeerState.ExpeditedDataUnconnected : DtsPeerState.DataUnconnected;
+                if (peer.State != DtsPeerState.ManagementUnconnected)
+                {
+                    // C-0585, C-0586, C-0605, C-0606, C-0625, C-0626; C-0645 and C-0646 stay in MANAGEMENT.
+                    peer.State = expedited ? DtsPeerState.ExpeditedDataUnconnected : DtsPeerState.DataUnconnected;
+                }
+            }
+            else if (peer.State == DtsPeerState.IdleConnected || (expedited && peer.State == DtsPeerState.DataConnected))
+            {
+                // C-0665, C-0666, C-0686; DATA stays on type 7 (C-0685), EXPEDITED-DATA and
+                // MANAGEMENT stay on both (C-0705, C-0706, C-0725, C-0726).
+                peer.State = expedited ? DtsPeerState.ExpeditedDataConnected : DtsPeerState.DataConnected;
             }
 
             Octets segment = pdu is NonArqData d2 ? d2.Segment : ((ExpeditedNonArqData)pdu).Segment;
@@ -120,6 +147,11 @@ internal sealed class UnconnectedPeers
         {
             case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
                 or DataOnly or AckOnly or DataAck or ResetWinResync:
+                if (PeerOf(h.Src).Connected)
+                {
+                    break;   // the CONNECTED-state ARQ tables are P4-2's and P4-6's
+                }
+
                 // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
                 // (C-0578 to C-0583, C-0598 to C-0603, C-0618 to C-0623, C-0638 to C-0643; C-0734).
                 Warn(h.Src, pdu.Type, 1);
@@ -138,13 +170,52 @@ internal sealed class UnconnectedPeers
             case Padding:
                 break;   // C-0588, C-0608, C-0628, C-0648: ignored; its EOT was used by the receiver
             case Warning w:
-                // C-0589, C-0609, C-0629, C-0649: tell the CAS; never answer it (C-0393). Nothing this
-                // node does before P4-1 can be stopped by a WARNING.
+                // C-0589, C-0609, C-0629, C-0649, C-0669, C-0689, C-0709, C-0729: tell the CAS, which
+                // acts on it (B-0229); never answer it (C-0393).
                 _context.Enqueue(new DWarningReceived(h.Src, h.Dst, w.ReceivedFrameType, w.Reason));
                 break;
             default:
                 throw new InvalidOperationException($"unhandled D_PDU {pdu.GetType().Name}");
         }
+    }
+
+    /// <summary>Whether an ARQ connection with the peer exists (D_CONNECTION_MADE received and not terminated).</summary>
+    public bool IsConnected(uint peer) => _peers.TryGetValue(peer, out Peer? p) && p.Connected;
+
+    /// <summary>
+    /// D_CONNECTION_MADE (C-0571, C-0591, C-0611, C-0631): ARQ state starts afresh, IDLE(CONNECTED),
+    /// or MANAGEMENT(CONNECTED) from MANAGEMENT(UNCONNECTED). Ignored when already connected (C-0651,
+    /// C-0671, C-0691, C-0711). The negotiated family is kept for P4-2 and P4-5.
+    /// </summary>
+    public void OnConnectionMade(DConnectionMade c)
+    {
+        Peer peer = PeerOf(c.Peer);
+        if (peer.Connected)
+        {
+            return;
+        }
+
+        peer.Connected = true;
+        peer.PeerIsEd4 = c.PeerIsEd4;
+        peer.ShortFamily = c.ShortFamily;
+        peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
+    }
+
+    /// <summary>
+    /// D_CONNECTION_TERMINATED: a connected peer goes to IDLE(UNCONNECTED) and its held ARQ C_PDUs
+    /// are rejected (C-0652, C-0672, C-0692, C-0712); an unconnected one is left as it is, with no
+    /// anomaly report (C-0572, C-0592, C-0612, C-0632).
+    /// </summary>
+    public void OnConnectionTerminated(uint peerAddress)
+    {
+        if (!_peers.TryGetValue(peerAddress, out Peer? peer) || !peer.Connected)
+        {
+            return;
+        }
+
+        peer.Connected = false;
+        peer.State = DtsPeerState.IdleUnconnected;
+        _tx.RejectArq(peerAddress);
     }
 
     /// <summary>The <c>dts.reception_window</c> expiry (C-0336).</summary>
@@ -158,8 +229,9 @@ internal sealed class UnconnectedPeers
             return;   // an acknowledgement only (C-0302, C-1072)
         }
 
-        // C-0584, C-0604, C-0624, C-0644: go to (or stay in) MANAGEMENT(UNCONNECTED).
-        peer.State = DtsPeerState.ManagementUnconnected;
+        // C-0584, C-0604, C-0624, C-0644: go to (or stay in) MANAGEMENT(UNCONNECTED); connected,
+        // MANAGEMENT(CONNECTED) (C-0664, C-0684, C-0704, C-0724).
+        peer.State = peer.Connected ? DtsPeerState.ManagementConnected : DtsPeerState.ManagementUnconnected;
         bool isNew = m.ManagementFrameId != peer.RxFrameId;   // C-0314 to C-0316
         if (isNew)
         {
@@ -192,6 +264,10 @@ internal sealed class UnconnectedPeers
         if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementUnconnected)
         {
             peer.State = DtsPeerState.IdleUnconnected;
+        }
+        else if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementConnected)
+        {
+            peer.State = DtsPeerState.IdleConnected;   // C-0738: no ARQ data flows before P4-2
         }
     }
 
@@ -237,5 +313,14 @@ internal sealed class UnconnectedPeers
         public int RxFrameId { get; set; } = NoFrameId;
 
         public int AcksOutstanding { get; set; }
+
+        /// <summary>D_CONNECTION_MADE received and not terminated.</summary>
+        public bool Connected { get; set; }
+
+        /// <summary>From D_CONNECTION_MADE: the link was negotiated Ed4 (for P4-2 and P4-3).</summary>
+        public bool PeerIsEd4 { get; set; }
+
+        /// <summary>From D_CONNECTION_MADE: the 8-bit FSN family is in force (for P4-5).</summary>
+        public bool ShortFamily { get; set; }
     }
 }

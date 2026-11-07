@@ -73,7 +73,8 @@ public class SisCasTests
         rig.Connect(1, Bind(5, new ServiceType(1, Confirm: 2, Order: 0)));
         rig.Send(0, 1, Unidata(4, 6, Peer, ServiceType.Default, 10, [7]));
         rig.Dts.PendingNonArq.Should().BeEmpty();
-        rig.MacLog.Should().BeEmpty();
+        rig.MacLog.Should().Equal("QueueState:True");   // the PHYSICAL LINK REQUEST the SIS asked for (A-0193, P4-1)
+        rig.Sis.SoftLinkOf(0x0103).Should().Be("Making");
         CUnidataRequest held = rig.Sis.AwaitingSoftLink.Should().ContainSingle().Subject;
         held.Arq.Should().BeTrue();
         held.DeliverInOrder.Should().BeTrue();

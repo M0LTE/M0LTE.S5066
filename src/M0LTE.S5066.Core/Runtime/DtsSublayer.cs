@@ -12,7 +12,7 @@ internal sealed class DtsSublayer : IDtsSublayer
     private readonly IMacObserver _mac;
     private readonly DtsReceiver _receiver;
     private readonly TransmitQueue _tx;
-    private readonly UnconnectedPeers _peers;
+    private readonly DtsPeers _peers;
 
     public DtsSublayer(CoreContext context, IMacObserver mac)
     {
@@ -20,11 +20,11 @@ internal sealed class DtsSublayer : IDtsSublayer
         _mac = mac;
         _receiver = new DtsReceiver(context, mac, OnDpduReceived);
         _tx = new TransmitQueue(context, mac);
-        _peers = new UnconnectedPeers(context, _tx);
+        _peers = new DtsPeers(context, _tx);
     }
 
     /// <summary>The unconnected-state receive machine (P3-6), for tests.</summary>
-    internal UnconnectedPeers Peers => _peers;
+    internal DtsPeers Peers => _peers;
 
     /// <summary>The D_PDU stream receiver, for tests.</summary>
     internal DtsReceiver Receiver => _receiver;
@@ -56,13 +56,20 @@ internal sealed class DtsSublayer : IDtsSublayer
 
     /// <summary>
     /// A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), to the per-peer state
-    /// machine, which acts only on the ones addressed to this node or its groups (C-0566). Before
-    /// CAS-1 linking (P4-1) every peer is unconnected (P3-6).
+    /// machine, which acts only on the ones addressed to this node or its groups (C-0566).
     /// </summary>
     private void OnDpduReceived(Dts.Dpdu pdu) => _peers.OnDpdu(pdu);
 
+    /// <summary>
+    /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed
+    /// to the CAS, in placement order (C-1100). The ARQ bookkeeping of core-architecture.md 5.7 is P4-2's.
+    /// </summary>
     public void OnTransmitDone()
     {
+        foreach (int handle in _tx.TakeSentExpedited())
+        {
+            _context.Enqueue(new DExpeditedUnidataRequestConfirm(handle));
+        }
     }
 
     public void On(ToDts primitive)
@@ -72,10 +79,18 @@ internal sealed class DtsSublayer : IDtsSublayer
             case DUnidataRequest { Arq: false } r:
                 _tx.Add(r);
                 break;
+            case DUnidataRequest r when _peers.IsConnected(r.Dst):
+                _tx.AddArq(r);   // C-0653; held until P4-2 places ARQ data
+                break;
             case DUnidataRequest r:
-                // No ARQ connection exists before CAS-1 linking (P4-1): every peer is in an
-                // UNCONNECTED state, which rejects ARQ requests (C-0573, C-0593, C-0613, C-0633; C-0731).
+                // An UNCONNECTED state rejects ARQ requests (C-0573, C-0593, C-0613, C-0633; C-0731).
                 _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.NoConnection));
+                break;
+            case DConnectionMade c:
+                _peers.OnConnectionMade(c);
+                break;
+            case DConnectionTerminated t:
+                _peers.OnConnectionTerminated(t.Peer);
                 break;
             case DExpeditedUnidataRequest { Arq: false } r:
                 _tx.AddExpedited(r);
@@ -88,6 +103,9 @@ internal sealed class DtsSublayer : IDtsSublayer
                 throw new InvalidOperationException($"the DTS does not handle {primitive.GetType().Name} yet");
         }
     }
+
+    /// <summary>The ARQ C_PDUs held for connected peers, in arrival order (placed from P4-2).</summary>
+    internal IReadOnlyList<DUnidataRequest> HeldArq => _tx.HeldArq;
 
     /// <summary>The non-ARQ C_PDUs queued for normal delivery, in arrival order.</summary>
     internal IReadOnlyList<DUnidataRequest> PendingNonArq => _tx.PendingNonArq;
