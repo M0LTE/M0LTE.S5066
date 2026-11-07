@@ -24,9 +24,8 @@ internal interface ITransmissionSource
 }
 
 /// <summary>
-/// The DTS transmit queue and the transmission planner of core-architecture.md 5, for what phase 3
-/// can send: non-ARQ C_PDUs, type 7 for normal delivery and type 8 for expedited delivery, through
-/// the unconnected request tables C-9, C-11, C-13 and C-15 (C-0570, C-0575, C-0576, C-0590,
+/// The DTS transmit queue and the transmission planner of core-architecture.md 5: non-ARQ C_PDUs,
+/// type 7 for normal delivery and type 8 for expedited delivery, through the unconnected request tables C-9, C-11, C-13 and C-15 (C-0570, C-0575, C-0576, C-0590,
 /// C-0595, C-0596, C-0610, C-0615, C-0616, C-0630, C-0635, C-0636).
 /// </summary>
 /// <remarks>
@@ -67,8 +66,15 @@ internal interface ITransmissionSource
 /// TTD passes is rejected, and its unacknowledged D_PDUs go as DROP PDUs (C-0859 to C-0862, C-1124).
 /// The class order is that of core-architecture.md 5.3: MANAGEMENT, WARNING, expedited, ACK-ONLY,
 /// retransmissions, first transmissions of data, non-ARQ repeats.
-/// Not here yet: block alignment, ACK-ONLY fill, PADDING and the other acknowledgement encodings
-/// (P4-3); the 8-bit family (P4-5).
+/// </para>
+/// <para>
+/// Acknowledgement encodings, fill and block alignment (P4-3): an acknowledgement carries the more
+/// compact of the bitmap and run length encoding, and is split into ACK-ONLY D_PDUs with offsets when
+/// neither fits 255 bytes (C-0222 to C-0233, C-1150, C-1151); it merges into a DATA-ACK only as one
+/// ACK-ONLY of at most 18 bytes (C-1152). The spare bytes of a transmission's last block are filled
+/// with copies of its acknowledgements, then PADDING when every addressee is known Ed4 (C-0367,
+/// C-0882, C-0886, C-1154). Towards a peer known Ed4, ARQ segments are cut short so D_PDUs end at block
+/// boundaries and fill the capacity (C-0553, C-0872, C-1155). Not here yet: the 8-bit family (P4-5).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -384,8 +390,8 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
-    /// The build algorithm of core-architecture.md 5.3 for the classes phase 3 fills, then layout
-    /// (with the P3-5 round order, C-1054) and stamping (5.6). The waveform is <c>drc.default_speed</c>
+    /// The build algorithm of core-architecture.md 5.3, then layout (with the P3-5 round order, C-1054),
+    /// fill (5.5, C-1154) and stamping (5.6). The waveform is <c>drc.default_speed</c>
     /// (C-0894, plan 6.2).
     /// </summary>
     public Transmit Build()
@@ -549,15 +555,15 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// Chooses the D_PDUs of one transmission (core-architecture.md 5.3, C-1041): MANAGEMENT and
     /// WARNING first (C-0297; P3-6), each oldest first, a misfit skipped; then expedited first
-    /// transmissions (C-0288), oldest first, a misfit skipped; then one ACK-ONLY per peer owed one,
-    /// in address order (C-0370, C-1128); then retransmissions of failed ARQ D_PDUs (C-0852, C-0905,
+    /// transmissions (C-0288), oldest first, a misfit skipped; then the ACK-ONLY D_PDUs of each peer
+    /// owed an acknowledgement, all of a peer's or none, in address order (C-0370, C-1128, C-1151); then retransmissions of failed ARQ D_PDUs (C-0852, C-0905,
     /// C-1132), a misfit skipped; then first transmissions of data, ARQ and non-ARQ together, by
     /// priority and age (C-0851, C-0853, C-0854), a C_PDU whose ARQ segments are partly sent first
     /// (C-0850, C-1127), a misfit stopping the class (C-0880); then the non-ARQ repeats still owed
-    /// (C-0848, C-0884), by priority and age, round by round, a misfit stopping the class. A C_PDU is
-    /// segmented when its first segment is taken. An ARQ data D_PDU to a peer whose ACK-ONLY was
-    /// taken carries the acknowledgement instead, as DATA-ACK, when it fits in 18 bytes (C-0238,
-    /// C-0249, C-1128).
+    /// (C-0848, C-0884), by priority and age, round by round, a misfit stopping the class. An ARQ C_PDU
+    /// is cut one segment at a time as each is taken, short where block alignment asks (C-1155). An
+    /// ARQ data D_PDU to a peer whose acknowledgement is one ACK-ONLY of at most 18 bytes of Ack Data
+    /// carries it instead, as DATA-ACK (C-0238, C-0249, C-1128, C-1152).
     /// </summary>
     private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, int bytesPerBlock)
     {
@@ -882,7 +888,8 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>
     /// Lays the chosen D_PDUs out (MANAGEMENT and WARNING first, P3-6; then first copies in the order
-    /// chosen, then each round of repeats in the order chosen, C-1054) back to back with no pre-fill (D-0003), stamps EOT and the
+    /// chosen, then each round of repeats in the order chosen, C-1054; then the fill, C-1154) back to
+    /// back with no pre-fill (D-0003), stamps EOT and the
     /// reception window, encodes, records each C_PDU's window commitment, and removes what owes
     /// nothing more.
     /// </summary>
@@ -1037,8 +1044,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// C-1124), the C_PDU's DELIVER IN ORDER (C-0178), and TX WIN UWE and TX WIN LWE when its FSN is
     /// the transmit window's upper or lower edge once this transmission's FSNs are allocated
     /// (C-0185, C-0186, C-1122). With the peer's acknowledgement merged it is a DATA-ACK carrying RX
-    /// LWE and the bitmap (C-0238, C-0245 to C-0247, C-1007); otherwise DATA-ONLY. An ACK-ONLY
-    /// carries RX LWE, bitmap encoding, offset 0 and the bitmap (C-0196 to C-0211, C-1128).
+    /// LWE, the encoding bit and the Selective Acks (C-0238, C-0245 to C-0247, C-1007, C-1152);
+    /// otherwise DATA-ONLY. An ACK-ONLY carries RX LWE, the encoding, the offset and the Ack Data of
+    /// its part of the acknowledgement (C-0195 to C-0233, C-1150, C-1151); the codec puts Ack Data of
+    /// more than 21 bytes in the long form with its CRC-32 (C-0219, C-0220, C-0234, C-0235).
     /// </summary>
     private byte[] EncodeArq(Piece piece, int eot)
     {

@@ -29,6 +29,7 @@ internal sealed class ArqLink
 
     private readonly Dictionary<int, InFrame> _received = new();   // looked up by FSN only, never enumerated (core-architecture.md 6 rule 3)
     private readonly List<CPduRun> _pendingInOrder = [];
+    private IReadOnlyList<AckUnit>? _acknowledgement;   // cached until the receive window next changes
 
     public ArqLink(uint peer) => Peer = peer;
 
@@ -87,6 +88,7 @@ internal sealed class ArqLink
     {
         var deliver = new List<ReadOnlyMemory<byte>>();
         ArqUsed = true;
+        _acknowledgement = null;   // the receive window may change
         int ahead = Seq.Distance(RxLwe, fsn);
         if (ahead >= MaxWindowSize)
         {
@@ -188,7 +190,9 @@ internal sealed class ArqLink
     /// encoding fits, and the next starts where it ends (interp C-1151). With nothing beyond RX LWE
     /// received there is one D_PDU with no Ack Data.
     /// </summary>
-    public List<AckUnit> Acknowledgement()
+    public IReadOnlyList<AckUnit> Acknowledgement() => _acknowledgement ??= BuildAcknowledgement();
+
+    private List<AckUnit> BuildAcknowledgement()
     {
         List<bool> bits = AckBits();
         var units = new List<AckUnit>();

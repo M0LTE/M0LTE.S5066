@@ -238,6 +238,108 @@ public class TransmitQueueTests
         badIl.Should().Throw<ConfigException>();
     }
 
+    [Fact]
+    public void Padding_fills_only_when_every_addressee_is_known_ed4()
+    {
+        // C-0367, C-0055, C-0560, C-1154: a 35-byte type 7 in a 96-byte block leaves 61 bytes.
+        var q = new Rig();
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        q.Decode(q.Tx.Build()).Select(p => p.Type).Should().Equal(7);   // X of unknown edition: zero fill
+
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        List<Dpdu> padded = q.Decode(q.Tx.Build());
+        padded.Select(p => p.Type).Should().Equal(7, 14, 14, 14, 14, 14);   // 35 + 5 x 11 = 90 of 96
+        padded.Skip(1).Should().OnlyContain(p => p.Header.Dst == X && p.Header.Eow == 0);
+
+        q.Context.Peers.SetEdition(Y, KnownEdition.Ed3);
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        q.Tx.Add(Normal(Y, 0, new byte[1]));
+        q.Decode(q.Tx.Build()).Select(p => p.Type).Should().Equal(7, 7);   // one addressee recorded Ed3
+    }
+
+    [Fact]
+    public void No_padding_when_an_addressee_is_a_group()
+    {
+        // C-0560, C-1154: the group's receivers are of unknown edition.
+        var q = new Rig();
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        q.Tx.Add(new DUnidataRequest(Y, true, false, 0, 1_000_000, false, 0, new byte[4], 2));
+        q.Decode(q.Tx.Build()).Select(p => p.Type).Should().Equal(7, 7);
+    }
+
+    [Fact]
+    public void A_segment_that_would_pass_the_capacity_is_cut_to_end_at_it_towards_an_Ed4_peer()
+    {
+        // C-1155 with C-1042: the budget is one 96-byte block, but the first 119-byte D_PDU stretches the
+        // transmission to two blocks (192 bytes). The first segment, not the C_PDU's last, is cut so its
+        // D_PDU ends at the boundary at 96 (19 + 77); the next would pass the capacity and is cut to end at it.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        List<Dpdu> pdus = q.Decode(q.Tx.Build());
+        pdus.Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+            .Should().Equal((0, 77, true, false), (1, 77, false, false));
+        List<Dpdu> rest = q.Decode(q.Tx.Build());   // a 65-byte DATA-ONLY, then two PADDINGs in the 31 bytes left (C-1154)
+        rest.Select(p => p.Type).Should().Equal(9, 14, 14);
+        rest.OfType<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduEnd)).Should().Equal((2, 46, true));
+    }
+
+    [Fact]
+    public void Towards_a_peer_not_known_ed4_segments_keep_the_maximum_size()
+    {
+        // C-0554, C-0870, C-1155: the same C_PDU to a peer of unknown edition.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        q.Decode(q.Tx.Build()).Cast<DataOnly>().Select(d => d.Segment.Length).Should().Equal(100);
+    }
+
+    [Fact]
+    public void A_run_length_acknowledgement_is_processed_like_a_bitmap()
+    {
+        // C-0226, C-1153: FSNs 0 to 2 sent; RX LWE 0 and RLE 81 (two 1s: FSNs 1 and 2) acknowledge 1 and 2,
+        // and FSN 0, at RX LWE, has failed (C-0908).
+        var q = new Rig();
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        ArqLink link = q.Tx.OpenLink(X);
+        for (int i = 0; i < 3; i++)
+        {
+            q.Tx.AddArq(Arq(X, 4));
+        }
+
+        q.Decode(q.Tx.Build()).OfType<DataOnly>().Select(d => d.TxFsn).Should().Equal(0, 1, 2);
+        q.Tx.OnAck(X, 0, 1, 0, [0x81]);
+        link.Outstanding.Should().ContainSingle().Which.Should().Match<ArqFrame>(f => f.Fsn == 0 && f.State == ArqFrameState.Failed);
+    }
+
+    [Fact]
+    public void An_acknowledgement_of_several_ack_onlys_is_not_merged_into_a_data_ack()
+    {
+        // C-1151, C-1152: FSN 1 and every eighth FSN to 2048 need two ACK-ONLYs, so data to the peer goes as
+        // DATA-ONLY after them; the fill then repeats them in turn.
+        var q = new Rig(blockBytes: 400);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        ArqLink link = q.Tx.OpenLink(X);
+        link.Receive(1, true, true, false, false, [1]);
+        for (int f = 8; f <= 2048; f += 8)
+        {
+            link.Receive(f, false, false, false, false, [1]);
+        }
+
+        q.Tx.AckOwed();
+        q.Tx.AddArq(Arq(X, 4));
+        List<Dpdu> pdus = q.Decode(q.Tx.Build());
+        pdus.Select(p => p.Type).Take(3).Should().Equal(10, 10, 9);
+        pdus.OfType<AckOnly>().Take(2).Select(a => a.Offset).Should().Equal(0, 7);
+        link.AckOwed.Should().BeFalse();
+    }
+
+    private static DUnidataRequest Arq(uint dst, int length) =>
+        new(dst, false, true, 0, 1_000_000, false, 0, new byte[length], 1);
+
     private static int Id(Dpdu p) => p switch
     {
         NonArqData d => d.Fields.CPduId,

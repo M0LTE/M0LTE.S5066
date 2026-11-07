@@ -1,3 +1,4 @@
+using M0LTE.S5066.Core.Dts;
 using M0LTE.S5066.Core.Runtime;
 
 namespace M0LTE.S5066.Core.Tests;
@@ -59,6 +60,47 @@ public class ArqLinkTests
         link.Receive(1, true, true, false, false, [9]);
         link.RxLwe.Should().Be(3);
         link.AckBitmap().Should().Equal(0x01);   // FSN 4 only
+    }
+
+    [Fact]
+    public void The_acknowledgement_takes_the_more_compact_encoding_and_the_bitmap_on_a_tie()
+    {
+        // C-0225, C-1150
+        var link = new ArqLink(1);
+        link.Acknowledgement().Should().ContainSingle().Which.Data.Should().BeEmpty();   // nothing beyond RX LWE
+        link.Receive(2, true, true, false, false, [9]);
+        AckUnit tie = link.Acknowledgement().Should().ContainSingle().Subject;   // bits 0 1: bitmap 1 byte, RLE 2 bytes
+        (tie.RxLwe, tie.Encoding, tie.Offset).Should().Be((0, 0, 0));
+        tie.Data.Should().Equal(0x02);
+        for (int f = 3; f <= 20; f++)
+        {
+            link.Receive(f, false, false, false, false, [9]);
+        }
+
+        // FSN 1 missing, 2 to 20 held: bits 0 then nineteen 1s. Bitmap 3 bytes, RLE 2 bytes.
+        AckUnit rle = link.Acknowledgement().Single();
+        rle.Encoding.Should().Be(1);
+        rle.Data.Should().Equal(0x00, 0x92);
+    }
+
+    [Fact]
+    public void The_acknowledgement_is_split_by_offset_when_it_does_not_fit()
+    {
+        // C-0222, C-0223, C-0233, C-1151: FSN 3 and every third FSN to 3000; no single field of 255 bytes holds it.
+        var link = new ArqLink(1);
+        for (int f = 3; f <= 3000; f += 3)
+        {
+            link.Receive(f, false, false, false, false, [9]);
+        }
+
+        IReadOnlyList<AckUnit> units = link.Acknowledgement();
+        units.Select(u => u.Offset).Should().Equal(0, 7);
+        units.Should().OnlyContain(u => u.RxLwe == 0 && u.Encoding == 0 && u.Data.Length <= ArqLink.MaxAckBytes);
+        units[0].Data.Length.Should().Be(224);                  // seven 256-FSN units as a bitmap
+        units[1].Data.Length.Should().Be((3000 - 1792 + 7) / 8);  // the rest, FSN 1793 to 3000
+        var bits = units.SelectMany(u => AckData.Decode(u.Encoding, u.Data).Take(u == units[0] ? 1792 : 3000 - 1792)).ToList();
+        bits.Should().HaveCount(3000);
+        bits.Select((b, i) => (b, i)).Should().OnlyContain(x => x.b == ((x.i + 2) % 3 == 1));
     }
 
     [Fact]
