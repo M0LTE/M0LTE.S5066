@@ -235,7 +235,7 @@ The primitives of Tables B-1 and C-1 become records on the dispatcher FIFO. Each
 
 ```csharp
 // CAS to DTS (C-0039, C-0040, C-0041)
-internal sealed record DUnidataRequest(uint Dst, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
+internal sealed record DUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
                                        int MinRetransmissions, ReadOnlyMemory<byte> CPdu, int Handle);
 internal sealed record DExpeditedUnidataRequest(uint Dst, bool Arq, ReadOnlyMemory<byte> CPdu, int Handle);
 internal sealed record DConnectionMade(uint Peer, DpduFamily Family, bool PeerIsEd4);
@@ -253,7 +253,7 @@ internal sealed record DConnectionLost(uint Peer);
 // SIS to CAS (B-0018)
 internal sealed record CPhysicalLinkMake(uint Peer);
 internal sealed record CPhysicalLinkBreak(uint Peer, SisBreakReason Reason);
-internal sealed record CUnidataRequest(uint Dst, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
+internal sealed record CUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
                                        int MinRetransmissions, ReadOnlyMemory<byte> SPdu, int Handle);
 
 // CAS to SIS
@@ -266,6 +266,8 @@ internal sealed record CUnidataIndication(uint Src, uint Dst, bool DstIsGroup, b
 ```
 
 In P3-0 only the routing bases exist (`ToSis`, `ToCas`, `ToDts`, by destination); each record above is added by the item that first sends it, with the reason enums it needs (P3-1, P4-1).
+
+`DstIsGroup` on the two request records was added by P3-1: a non-ARQ D_PDU to a group says so in its own header (C-0122), and the destination value alone cannot tell.
 
 `Handle` is our addition: the standard's request primitives carry no identifier, and the confirm and reject primitives of Table C-1 implicitly refer to "the request". An integer handle, allocated from one counter in the dispatcher, makes the reference explicit and deterministic. It never appears on the wire.
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using M0LTE.S5066.Core.Dts;
+using M0LTE.S5066.Core.Sis;
 
 namespace M0LTE.S5066.Core.Runtime;
 
@@ -20,10 +21,11 @@ public static class ConfigReader
     /// <summary>Every leaf key this reader knows, dotted, in the order of corpus-format.md section 6.</summary>
     public static IReadOnlyList<string> KnownKeys { get; } =
     [
-        "local_address", "address_size", "prng_seed",
+        "local_address", "address_size", "groups", "time.epoch_year", "time.epoch_day", "time.epoch_second", "prng_seed",
         "csma.mode", "csma.cont_slot_width_ms", "csma.num_cont_slots", "csma.lbt_wait_dcd_ms",
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
+        "sis.default_ttl",
     ];
 
     /// <summary>
@@ -105,7 +107,68 @@ public static class ConfigReader
         }
 
         var fixture = new ModemFixture(Int(modem, "preamble_ms", "modem."), Int(modem, "flush_ms", "modem."), waveforms);
-        return new NodeConfig(local, addressSize, csmaConfig, fixture);
+        return new NodeConfig(local, addressSize, csmaConfig, fixture)
+        {
+            Groups = ReadGroups(config),
+            Time = ReadTime(config),
+            Sis = ReadSis(config),
+        };
+    }
+
+    /// <summary>groups: a list of dotted addresses (A-0120).</summary>
+    private static List<uint> ReadGroups(JsonObject config)
+    {
+        if (config["groups"] is not JsonArray list)
+        {
+            throw new ConfigException("groups", "must be a list");
+        }
+
+        var groups = new List<uint>();
+        foreach (JsonNode? entry in list)
+        {
+            if (entry is null || entry.GetValueKind() != JsonValueKind.String
+                || !DpduAddress.TryParse(entry.GetValue<string>(), out uint g))
+            {
+                throw new ConfigException("groups", "entries must be dotted addresses w.x.y.z");
+            }
+
+            groups.Add(g);
+        }
+
+        return groups;
+    }
+
+    /// <summary>time.*: the UTC instant of core time 0 (A-0251).</summary>
+    private static TimeConfig ReadTime(JsonObject config)
+    {
+        JsonObject time = Object(config, "time");
+        int year = Required(time, "epoch_year", "time.", 1);
+        int day = Required(time, "epoch_day", "time.", 1);
+        int second = Int(time, "epoch_second", "time.") ?? throw new MissingSettingException("time.epoch_second");
+        if (day > TtdCalendar.DaysInYear(year))
+        {
+            throw new ConfigException("time.epoch_day", "must be a day of the year, 1 to 365 or 366");
+        }
+
+        if (second >= TtdCalendar.SecondsPerDay)
+        {
+            throw new ConfigException("time.epoch_second", "must be 0 to 86399");
+        }
+
+        return new TimeConfig(year, day, second);
+    }
+
+    /// <summary>sis.*.</summary>
+    private static SisConfig ReadSis(JsonObject config)
+    {
+        JsonObject sis = Object(config, "sis");
+        int ttl = Required(sis, "default_ttl", "sis.", 1);
+        if (ttl > SisConfig.MaxTtl)
+        {
+            throw new ConfigException("sis.default_ttl", $"must be at most {SisConfig.MaxTtl}");
+        }
+
+        return new SisConfig(ttl);
     }
 
     private static string? FirstUnknown(JsonObject obj, string prefix)

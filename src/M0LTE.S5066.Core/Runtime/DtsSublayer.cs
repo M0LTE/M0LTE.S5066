@@ -10,6 +10,7 @@ internal sealed class DtsSublayer : IDtsSublayer
 {
     private readonly CoreContext _context;
     private readonly IMacObserver _mac;
+    private readonly List<DUnidataRequest> _pendingNonArq = [];
 
     public DtsSublayer(CoreContext context, IMacObserver mac)
     {
@@ -40,6 +41,29 @@ internal sealed class DtsSublayer : IDtsSublayer
     {
     }
 
-    public void On(ToDts primitive) =>
-        throw new InvalidOperationException($"the DTS does not handle {primitive.GetType().Name} yet (queue observer: {_mac.GetType().Name})");
+    public void On(ToDts primitive)
+    {
+        switch (primitive)
+        {
+            case DUnidataRequest { Arq: false } r:
+                OnNonArqRequest(r);
+                break;
+            default:
+                throw new InvalidOperationException($"the DTS does not handle {primitive.GetType().Name} yet");
+        }
+    }
+
+    /// <summary>The non-ARQ C_PDUs accepted for transmission, in arrival order (P3-1 placeholder; P3-4 builds the real queue).</summary>
+    internal IReadOnlyList<DUnidataRequest> PendingNonArq => _pendingNonArq;
+
+    /// <summary>
+    /// P3-1: a non-ARQ C_PDU is accepted into the transmit queue and the MAC is told the queue
+    /// holds something it may send (K-0096; core-architecture.md 4.1). Nothing is transmitted until
+    /// the planner (P3-4), which replaces this list with the queue of core-architecture.md 5.2.
+    /// </summary>
+    private void OnNonArqRequest(DUnidataRequest r)
+    {
+        _pendingNonArq.Add(r);
+        _mac.QueueState(true);
+    }
 }
