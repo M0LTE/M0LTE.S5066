@@ -1,12 +1,13 @@
 # STANAG 5066 over MIL-STD-188-110D Appendix D
 
-Architecture, design and implementation plan. Version 1.1, 2026-11-07. Decisions D1 to D8 settled (section 13); work has started at phase 0.
+Architecture, design and implementation plan. Version 1.2, 2026-11-07. Decisions D1 to D8 settled (section 13); phase 0 complete.
 
 History:
 - Draft 2 corrected every citation after an independent check (`notes/plan-review.md`).
 - Draft 3 made the plan general-purpose: nothing amateur-specific is built into the node.
 - Version 1.0 adds a dedicated 5066 test client as the test bed (section 11.6).
 - Version 1.1 records Tom's decisions and the project organisation (sections 13 and 15).
+- Version 1.2 (end of phase 0) applies the corrections collected in issue #9 and points at the matrix as the authority on interpretations.
 
 ## Summary
 
@@ -168,7 +169,7 @@ The application profile must list at least one application [Ed4 main 7.3, p.14].
 | Hard links (S_HARD_LINK_*, CAS LINK bit) | Not implemented. Reject the LINK bit with reason 5. | Deprecated profile option HARD LINKS [Ed4 main Table 1; B.7.1.2, p.B-16] |
 | Expedited data user service (S_EXPEDITED_*) | Not implemented | Deprecated profile option EXPEDITED DATA [Ed4 main Table 1] |
 | D_PDU type 8 (expedited non-ARQ) | Implement. CAS-1 C_PDUs types 1-5 travel in it. | Ed4 B.7.1.2 to B.7.1.6 |
-| D_PDU types 4 and 5 (expedited ARQ) | Implement receive and acknowledge for robustness. No procedure in our profile sends on expedited ARQ: only the ALE C_PDUs 7 to 10 do. | Ed4 B.7.2.9, p.B-37; B.7.1.10, p.B-25 |
+| D_PDU types 4 and 5 (expedited ARQ) | Implement receive and acknowledge for robustness. No procedure in our profile sends on expedited ARQ: only the ALE C_PDUs 7 to 10 do. | Ed4 B.7.2.9, p.B-37; B.7.1.11, pp.B-24 to B-25 |
 | D_PDU type 6 (MANAGEMENT) | Implement: stop-and-wait, one outstanding, acknowledged with a type 6 carrying the ACK flag, precedence over other D_PDUs | Ed4 C, MANAGEMENT D_PDU section, pp.C-43 to C-45 |
 | Ed4 ARQ family (types 9-12), EXTENSION (13), PADDING (14) | Implement | Ed4 Table C-2, p.C-8 |
 | Ed3 ARQ family (types 0-3) | Implement, used only towards peers found to be Edition 3, or if both peers negotiate Short | Ed4 C.4.3, p.C-22; B.7.2.2 |
@@ -179,7 +180,7 @@ The application profile must list at least one application [Ed4 main 7.3, p.14].
 | High Data Rate Change Request PDU | Not implemented | Deprecated HDRCR [Ed4 main Table 1; C.9.1] |
 | Non-ARQ with errors | Not implemented | Not part of the CSMA Fixed Frequency profile [Ed4 main Table 2, p.13] |
 | ALE (all of B.3, B.6.2 to B.6.4, C_PDU types 7-10) | Not implemented | The ALE profile options (ALE 1:1, MULTICAST ALE, DUPLEX WITH ALE, MAC ALE) are not in our profile [Ed4 main Tables 1 and 2, pp.11, 13]. Without ALE, CAS-1 linking is used [Ed4 B.7, p.B-12]. |
-| C_PDU type 6 PHYSICAL LINK BREAK REQUEST and the Clean Close procedure | Implement, towards Ed4 peers only. Type 6 travels on regular ARQ, not type 8. | Required by the non-ALE break procedure [Ed4 B.7.2.8 via B.7.2.4, pp.B-31, B-35]; B.7.1.6, pp.B-22 to B-23 |
+| C_PDU type 6 PHYSICAL LINK BREAK REQUEST and the Clean Close procedure | Implement, towards Ed4 peers only. Type 6 travels on regular ARQ, not type 8. | Required by the non-ALE break procedure [Ed4 B.7.2.8 via B.7.2.4, pp.B-31, B-35]; B.7.1.7, pp.B-22 to B-23 |
 | Annex L WTRP | Not implemented. A received WTRP D_PDU draws a WARNING, as Annex J requires. | Ed4 J.4.1, p.J-5 to J-8 |
 | Annex R routing, Annex T TRANSEC | Not implemented. Annex T would also clash, for amateur deployments, with OFW611 clause 19(b), which forbids encryption "for the purpose of obscuring" meaning. | Optional [Ed4 main 7.2, p.12]; OFW611 clause 19(b), p.7 |
 | Annex D synchronous serial interface | Not implemented. We use our own modem port (section 5). Annex D says the DTS-to-equipment interface "shall" be Annex D or Annex T [Ed4 D, p.D-1], but the main body allows "other communication mechanisms" [Ed4 main 3.1, p.4] and Annex C says STANAG 5066 "does not specify or require an interface here" [Ed4 C.7.7.3.1, p.C-124]. Recorded as an interpretation in 4.4. The Annex D rules that still make sense are kept as matrix rows: nothing between D_PDUs, EOT covers any post-fill, the receiver searches for the sync. | Ed4 D, p.D-1 |
@@ -187,7 +188,7 @@ The application profile must list at least one application [Ed4 main 7.3, p.14].
 
 ### 4.4 Ambiguities in Ed4 and how we resolve them
 
-Each resolution goes in the conformance matrix as a documented interpretation.
+Each resolution goes in the conformance matrix as a documented interpretation. Phase 0 found many more than are listed here: the complete, authoritative set is every row with strength `interp` in M0LTE/s5066-conformance `matrix/*.tsv` (over 150 rows). This table keeps only the ones that shape the design.
 
 | Issue | Our reading |
 |---|---|
@@ -233,6 +234,7 @@ So we define our own **modem port**. It is an in-process interface, and it can a
 | `BurstStarted(time)` | Carrier detect for CSMA [Ed4 K.2.2.4, p.K-2] | Ed4 K |
 | `BytesReceived(bytes, time)`, per decoded block | Feeds the D_PDU sync search | Ed4 C.7.7.3.2, p.C-124 |
 | `BurstEnded(time, reason, wn, interleaver, k, snrDb, blocks)` | End of transmission and receive quality | Ed4 main 3.4 items 2, 3 |
+| `TransmitDone(time)` | End of our own burst: the core needs it for EOT bookkeeping and the CSMA "last transmission by this node" rule [Ed4 K.3.2.3, p.K-10] | Ours (accepted in phase 0) |
 | `ChannelBusy(bool)` from an optional external detector | Extension, section 7.3 | Ours |
 
 ### 5.2 Gaps in M0LTE.Ms110d to close first
@@ -531,7 +533,7 @@ Each phase ends with its tests green, its conformance matrix rows filled, and a 
 | D4 | Identification hooks: a pre-session hook and a periodic hook (section 9.1), intended for a CW ID. Nothing at the end of transmissions. |
 | D5 | Withdrawn: callsign mapping is external. |
 | D6 | Implement the minimum Ed3 interop. It is mandatory in Edition 4: Ed4 requires peer edition detection and Ed3 behaviour towards Ed3 peers [Ed4 main 6, p.10], and Isode's Edition 5 paper says Ed3 support is "no longer mandatory" only from Edition 5 (p.2). |
-| D7 | CSMA mode (jitter or slotted, and slot settings) is operator-selectable, documented as a network-wide setting. No GPS needed. The default is chosen after T3/T4 measurement. |
+| D7 | CSMA mode is operator-selectable (jitter, slotted, or ed3-compatible), documented as a network-wide setting. No GPS needed. The default is chosen after T3/T4 measurement. |
 | D8 | Build the dedicated test client `s5066-test` (section 11.6). |
 
 ---

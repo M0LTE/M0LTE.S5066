@@ -4,15 +4,15 @@ Last updated: 2026-11-07.
 
 ## Now
 
-Phase 0 (foundations) started. Work items are tracked as issues labelled `phase-0`.
+Phase 0 is complete. Phase 1 (codecs) and phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) are next.
 
 ## Phases
 
 | Phase | State |
 |---|---|
-| 0. Foundations: requirements matrix, corpus format, harness contract | in progress |
-| 1. Codecs | not started |
-| 2. Modem work (M0LTE.Ms110d, ms110d-cpp) | not started |
+| 0. Foundations: requirements matrix, corpus format, harness contract | done |
+| 1. Codecs | next |
+| 2. Modem work (M0LTE.Ms110d, ms110d-cpp) | design in progress (#8) |
 | 3. DTS non-ARQ | not started |
 | 4. DTS ARQ | not started |
 | 5. CAS and MAC | not started |
@@ -23,6 +23,12 @@ Phase 0 (foundations) started. Work items are tracked as issues labelled `phase-
 | 10. Applications | not started |
 | C++ port | not started |
 
+## Phase 0 outcome
+
+- Requirements matrix in M0LTE/s5066-conformance `matrix/`: 1,980 rows (1,101 shall, 59 should, 107 may, 559 info, 154 interp); 1,704 apply, 268 do not, 8 not applicable. Every file was independently reviewed against the annex text (s5066-conformance PRs #1, #2, #4, #5, #6).
+- Corpus format, harness contract and SplitMix64 PRNG spec in `docs/`; 27 seed T1 cases; validator in `tools/` (PR #3).
+- Coordinator rulings are recorded in the matrix rows themselves (search notes for "Coordinator ruling") and in issue #9.
+
 ## Open questions for Tom
 
 None.
@@ -30,3 +36,4 @@ None.
 ## Log
 
 - 2026-11-07: repos created (public). Plan v1.1 committed with decisions D1 to D8.
+- 2026-11-07: phase 0 complete; plan v1.2.
