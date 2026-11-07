@@ -199,12 +199,12 @@ public class SoftLinkSessionTests
     [InlineData((int)SisBreakReason.HigherPriorityLink, 9)]
     [InlineData((int)SisBreakReason.ShareChannel, 10)]
     [InlineData((int)SisBreakReason.Idle, 11)]
-    [InlineData((int)SisBreakReason.Operator, -1)]
+    [InlineData((int)SisBreakReason.Operator, 3)]
     public void Rejections_caused_by_a_close_of_ours_carry_its_reason(int reason, int sisReason)
     {
         // A-0207, A-0324: the C_PDU held by the clean close is rejected when the connection ends; the
         // client asked for confirmation, so reasons 9 to 11 reach it (A-0105, A-0107). An operator
-        // break has no SIS reason and is left to P6-1.
+        // break has no SIS reason and keeps the no-connection reason, 3 (interp A-0340).
         var rig = Rig();
         CallerLink(rig, confirm: 1);
         rig.Deliver(new CPhysicalLinkBreak(X, (SisBreakReason)reason));
@@ -255,7 +255,9 @@ public class SoftLinkSessionTests
         int handle = rig.Sis.Outstanding.Single().Handle;
         rig.Deliver(new CPhysicalLinkBreak(X, SisBreakReason.Idle));
         rig.Deliver(new DUnidataRequestRejected(handle, DReason.TtlExpired));
-        rig.Outputs.OfType<SisBytesOut>().Should().BeEmpty("TTL Expired is P6-1's to report (A-0232)");
+        var expected = new SisUnidataRequestRejected(1, 9, new SisAddress(X), new byte[] { 1 });
+        rig.Outputs.OfType<SisBytesOut>().Should().ContainSingle("TTL Expired, reason 1 (A-0229; interp A-0340)")
+            .Which.Bytes.ToArray().Should().Equal(SisCodec.Encode(expected));
         rig.Sis.Outstanding.Should().BeEmpty();
     }
 

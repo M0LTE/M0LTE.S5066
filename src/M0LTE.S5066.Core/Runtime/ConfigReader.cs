@@ -26,6 +26,7 @@ public static class ConfigReader
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
         "sis.default_ttl", "sis.soft_link_idle_ms", "sis.soft_link_min_hold_ms", "sis.soft_link_max_ms",
+        "sis.frag_size", "sis.confirm_wait_ms",
         "dts.max_segment_size", "dts.max_transmission_ms", "dts.max_window", "dts.ack_wait_ms",
         "drc.default_speed",
         "cas.max_links", "cas.link_request_timeout_ms", "cas.link_request_retries", "cas.first_data_timeout_ms",
@@ -197,7 +198,11 @@ public static class ConfigReader
         return new TimeConfig(year, day, second);
     }
 
-    /// <summary>sis.*: the default TTL (A-0087), and the soft link times, each null or at least 0 (idle, A-0013; minimum hold) or 1 (maximum session).</summary>
+    /// <summary>
+    /// sis.*: the default TTL (A-0087); the soft link times, each null or at least 0 (idle, A-0013;
+    /// minimum hold) or 1 (maximum session); the response fragment size, null or at least 0 (A-0102,
+    /// A-0114); and the confirmation wait, null or at least 1 (A-0221, A-0226).
+    /// </summary>
     private static SisConfig ReadSis(JsonObject config)
     {
         JsonObject sis = Object(config, "sis");
@@ -207,7 +212,8 @@ public static class ConfigReader
             throw new ConfigException("sis.default_ttl", $"must be at most {SisConfig.MaxTtl}");
         }
 
-        return new SisConfig(ttl, AtLeast(sis, "soft_link_idle_ms", 0), AtLeast(sis, "soft_link_min_hold_ms", 0), AtLeast(sis, "soft_link_max_ms", 1));
+        return new SisConfig(ttl, AtLeast(sis, "soft_link_idle_ms", 0), AtLeast(sis, "soft_link_min_hold_ms", 0), AtLeast(sis, "soft_link_max_ms", 1),
+                             AtLeast(sis, "frag_size", 0), AtLeast(sis, "confirm_wait_ms", 1));
 
         static int? AtLeast(JsonObject sis, string key, int min)
         {

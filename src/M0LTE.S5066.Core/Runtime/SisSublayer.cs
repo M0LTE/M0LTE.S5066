@@ -38,7 +38,20 @@ namespace M0LTE.S5066.Core.Runtime;
 /// close causes come back with its reason (A-0207, interp A-0324).
 /// </para>
 /// <para>
-/// Not here yet: delivery confirmation and the TTD check on receipt are P6-1; flow control and
+/// Delivery confirmation (P6-1): a U_PDU that asked for node or client delivery confirmation is
+/// answered with S_UNIDATA_REQUEST_CONFIRM or S_UNIDATA_REQUEST_REJECTED (A-0094, A-0105). Node
+/// confirmation follows the CAS answer (A-0222, A-0223); client confirmation needs the CAS confirm and
+/// the peer's DATA DELIVERY CONFIRM, and a CAS reject or a DATA DELIVERY FAIL rejects (A-0227 to
+/// A-0229; interp A-0185, A-0340, A-0343). The waits are one collapsed timer, <c>sis.confirm_wait</c>
+/// (A-0221, A-0225, A-0226, A-0230; interp A-0232, A-0342). On receipt, a DATA S_PDU whose TTD has
+/// passed is discarded (interp A-0167, A-0241); one that asks for client confirmation is answered
+/// with DATA DELIVERY CONFIRM, or DATA DELIVERY FAIL when no client is bound (A-0169, A-0177, A-0237
+/// to A-0239; interp A-0344), marked so a clean close lets it start (B-0246; interp B-0318). Every
+/// copy of a U_PDU in a response is cut to <c>sis.frag_size</c> (A-0099 to A-0102, A-0112 to A-0114;
+/// interp A-0341).
+/// </para>
+/// <para>
+/// Not here yet: flow control and
 /// other management messages are P6-2 (P5-3 sends the MAC-mode discovery report, interp J-0082). The node sends no unprompted keep-alive and never unbind
 /// reason 2 (S-0045), never unbind reasons 1 or 4 (A-0060), and never bind reason 4, having no
 /// exclusive broadcast session (A-0052).
@@ -63,6 +76,8 @@ internal sealed class SisSublayer : ISisSublayer
     private const byte UnbindTooManyInvalid = 3;
 
     // Unidata reject reasons (A-0107, A-0108).
+    private const byte RejectTtlExpired = 1;
+    private const byte RejectSapNotBound = 2;
     private const byte RejectOverMtu = 4;
     private const byte RejectTxModeNotSpecified = 5;
     private const byte RejectBroadcastNotAllowed = 6;
@@ -80,6 +95,11 @@ internal sealed class SisSublayer : ISisSublayer
     // Delivery Confirmation values (S-0081).
     private const byte ConfirmNone = 0;
     private const byte ConfirmClient = 2;
+
+    // DATA DELIVERY FAIL reason (A-0181).
+    private const byte FailSapNotBound = 1;
+
+    private static readonly TimerName ConfirmWaitTimer = new(TimerKind.SisConfirmWait);
     private const byte ConfirmUndefined = 3;
 
     private readonly CoreContext _context;
@@ -88,6 +108,14 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly List<Held> _awaitingSoftLink = [];
     private readonly SortedDictionary<uint, SoftLink> _softLinks = new();
     private readonly SortedDictionary<int, Held> _outstanding = new();
+
+    // Delivery confirmation (P6-1): the U_PDUs awaiting an answer for their client, by handle, and the
+    // deadline list behind the one sis.confirm_wait timer (core-architecture.md 3.2, collapsing rule),
+    // ordered by deadline then insertion sequence number.
+    private readonly SortedDictionary<int, Pending> _pending = new();
+    private readonly SortedSet<(long Deadline, long Seq, int Handle)> _deadlines = new();
+    private long _deadlineSeq;
+    private long? _armedDeadline;
 
     public SisSublayer(CoreContext context) => _context = context;
 
@@ -120,6 +148,12 @@ internal sealed class SisSublayer : ISisSublayer
 
     public void OnTimer(TimerName name)
     {
+        if (name.Kind == TimerKind.SisConfirmWait)
+        {
+            OnConfirmWait();
+            return;
+        }
+
         uint peer = name.Peer ?? throw new InvalidOperationException($"SIS timer {name} has no peer");
         if (name.Kind == TimerKind.SisHeldOff)
         {
@@ -202,9 +236,8 @@ internal sealed class SisSublayer : ISisSublayer
         switch (primitive)
         {
             case CUnidataRequestConfirm c:
-                // S_UNIDATA_REQUEST_CONFIRM for node delivery confirmation is P6-1's (A-0094 to
-                // A-0103). Here the request is no longer outstanding on its soft link (A-0011).
-                Settled(c.Handle);
+                OnCasConfirm(c.Handle);
+                Settled(c.Handle);   // no longer outstanding on its soft link (A-0011)
                 break;
             case CUnidataRequestRejected j:
                 OnRejected(j);
@@ -402,8 +435,29 @@ internal sealed class SisSublayer : ISisSublayer
             arq ? 0 : mode.MinRetx,              // valid only for non-ARQ (A-0080, A-0081, S-0095)
             SpduCodec.Encode(spdu),              // A-0143 to A-0147
             _context.AllocateHandle());
-        var held = new Held(srcSap, request, r.DestSap, r.DestAddress, r.UPdu, mode.Confirm != ConfirmNone);
-        if (arq && _softLinks.TryGetValue(request.Dst, out SoftLink? link) && link.State == SoftLinkState.Established && !link.Closing)
+        var held = new Held(srcSap, request, r.DestSap, r.DestAddress, r.UPdu);
+        if (mode.Confirm != ConfirmNone)
+        {
+            // Only ARQ gets here: confirmation with non-ARQ is refused above (A-0073, S-0092).
+            _pending.Add(request.Handle, new Pending(held, mode.Confirm == ConfirmClient));
+        }
+
+        Submit(held);
+        return true;
+    }
+
+    /// <summary>
+    /// Sends an accepted request on: ARQ down an established soft link (A-0194, A-0200), or held for
+    /// one (A-0008, A-0188), with a U_PDU that asked for confirmation waiting at most until its TTD
+    /// (interp A-0232, A-0342); non-ARQ straight to the CAS (A-0189). A client confirmation goes down
+    /// a soft link the SIS is closing too, since the close lets it start (B-0246; interp B-0318).
+    /// </summary>
+    private void Submit(Held held)
+    {
+        CUnidataRequest request = held.Request;
+        bool arq = request.Arq;
+        if (arq && _softLinks.TryGetValue(request.Dst, out SoftLink? link) && link.State == SoftLinkState.Established
+            && (!link.Closing || request.ClientConfirmation))
         {
             HandDown(held);                      // the soft link exists (A-0194, A-0200)
             UpdateIdle(request.Dst);
@@ -415,6 +469,11 @@ internal sealed class SisSublayer : ISisSublayer
             // already being made or the SIS is holding off (A-0193, B-0028).
             // One the SIS is closing gets a new link once the old one is broken.
             _awaitingSoftLink.Add(held);
+            if (_pending.TryGetValue(request.Handle, out Pending? p))
+            {
+                SetDeadline(p, request.Ttd);     // reason 1 if the TTD passes first (interp A-0232)
+            }
+
             if (!_softLinks.TryGetValue(request.Dst, out SoftLink? existing))
             {
                 AskForLink(request.Dst);
@@ -428,17 +487,17 @@ internal sealed class SisSublayer : ISisSublayer
         {
             _context.Enqueue(request);           // non-ARQ needs no soft link under MSPA (A-0189)
         }
-
-        return true;
     }
 
     /// <summary>
-    /// A DATA S_PDU from the CAS (A-0233): the U_PDU and its attributes are taken from it (A-0234)
-    /// and delivered with S_UNIDATA_INDICATION to the client bound to the destination SAP
-    /// (A-0116 to A-0124, A-0133, A-0236), whatever its size (A-0046); with no such client it is
-    /// discarded (A-0235). The indication carries no error fields (A-0125). Addresses go out with
-    /// SIZE 7 (S-0137). DATA DELIVERY CONFIRM and FAIL, client confirmation and the TTD check are
-    /// P6-1; anything that does not decode is discarded.
+    /// An S_PDU from the CAS (A-0233). A DATA S_PDU's U_PDU and attributes are taken from it (A-0234):
+    /// one whose valid TTD has passed is discarded with no answer (interp A-0167, A-0241); otherwise
+    /// it is delivered with S_UNIDATA_INDICATION to the client bound to the destination SAP
+    /// (A-0116 to A-0124, A-0133, A-0236), whatever its size (A-0046), or discarded when there is none
+    /// (A-0235). The indication carries no error fields (A-0125); addresses go out with SIZE 7
+    /// (S-0137). When it asks for client confirmation the sender gets DATA DELIVERY CONFIRM, or DATA
+    /// DELIVERY FAIL reason 1 when no client was bound (A-0237 to A-0239). A DATA DELIVERY CONFIRM or
+    /// FAIL answers a U_PDU of ours (A-0176, A-0184). Anything that does not decode is discarded.
     /// </summary>
     private void OnUnidataIndication(CUnidataIndication ind)
     {
@@ -447,20 +506,235 @@ internal sealed class SisSublayer : ISisSublayer
             Received(ind.Src);
         }
 
-        if (SpduCodec.Decode(ind.SPdu.Span).Value is not SpduData d || !_sapOwner.TryGetValue(d.DstSap, out int conn))
+        switch (SpduCodec.Decode(ind.SPdu.Span).Value)
+        {
+            case SpduData d:
+                OnData(ind, d);
+                break;
+            case SpduDeliveryConfirm c:
+                OnPeerAnswer(ind.Src, c.SrcSap, c.DstSap, c.UPdu, null);
+                break;
+            case SpduDeliveryFail f:
+                OnPeerAnswer(ind.Src, f.SrcSap, f.DstSap, f.UPdu, f.Reason);
+                break;
+        }
+    }
+
+    private void OnData(CUnidataIndication ind, SpduData d)
+    {
+        if (d.Ttd is SpduTtd ttd && TtdCalendar.HasPassed(_context.Config.Time, ttd, _context.Now))
+        {
+            return;   // A-0241: not delivered, and no DATA DELIVERY FAIL
+        }
+
+        bool bound = _sapOwner.TryGetValue(d.DstSap, out int conn);
+        if (bound)
+        {
+            Send(conn, new SisUnidataIndication(
+                d.Priority,
+                d.DstSap,
+                new SisAddress(ind.Dst, ind.DstIsGroup),
+                ind.Arq ? TxModeArq : TxModeNonArq,
+                d.SrcSap,
+                new SisAddress(ind.Src),
+                d.UPdu));
+        }
+
+        if (d.ClientConfirm)
+        {
+            SendClientConfirmation(ind, d, bound);
+        }
+    }
+
+    /// <summary>
+    /// DATA DELIVERY CONFIRM (A-0169 to A-0175) or DATA DELIVERY FAIL reason 1 (A-0177 to A-0183) to
+    /// the peer SIS that sent the DATA S_PDU, with its priority and its two SAP IDs unswapped and a
+    /// copy of the U_PDU cut to <c>sis.frag_size</c>. Interp A-0344: it goes as the DATA S_PDU came,
+    /// ARQ over the soft link or non-ARQ with no repeats, to the sender's own address, with the TTD
+    /// of a U_PDU given TTL 0 and no in-order delivery, marked as a client confirmation so a clean
+    /// close lets it start (B-0246; interp B-0318). Its own rejection is told to nobody.
+    /// </summary>
+    private void SendClientConfirmation(CUnidataIndication ind, SpduData d, bool delivered)
+    {
+        ReadOnlyMemory<byte> copy = Copy(d.UPdu);
+        SPdu answer = delivered
+            ? new SpduDeliveryConfirm(d.Priority, d.SrcSap, d.DstSap, copy)
+            : new SpduDeliveryFail(FailSapNotBound, d.SrcSap, d.DstSap, copy);
+        var request = new CUnidataRequest(
+            ind.Src,
+            false,
+            ind.Arq,
+            d.Priority,
+            _context.Now + (_context.Config.Sis.DefaultTtl * 2000L),
+            false,
+            0,
+            SpduCodec.Encode(answer),
+            _context.AllocateHandle(),
+            ClientConfirmation: true);
+        Submit(new Held(null, request, d.SrcSap, new SisAddress(ind.Src), d.UPdu));
+    }
+
+    /// <summary>
+    /// A DATA DELIVERY CONFIRM or FAIL from <paramref name="src"/>. Interp A-0343: it answers the
+    /// oldest U_PDU handed down to that node that asked for client confirmation and has no peer answer
+    /// yet, with the same source and destination SAP IDs, whose start the returned copy is (A-0103).
+    /// A confirm completes the client confirmation once the CAS has confirmed too (A-0227); a fail
+    /// rejects it with the reason mapped by interp A-0185 (A-0228, A-0229). One that answers nothing is
+    /// discarded.
+    /// </summary>
+    private void OnPeerAnswer(uint src, byte srcSap, byte dstSap, ReadOnlyMemory<byte> copy, byte? failReason)
+    {
+        Pending? match = _pending.Values.FirstOrDefault(p =>
+            p.Client && p.HandedDown && !p.PeerConfirmed
+            && p.Held.Request.Dst == src && p.Held.Sap == srcSap && p.Held.DestSap == dstSap
+            && copy.Length <= p.Held.UPdu.Length && p.Held.UPdu.Span[..copy.Length].SequenceEqual(copy.Span));
+        if (match is null)
         {
             return;
         }
 
-        Send(conn, new SisUnidataIndication(
-            d.Priority,
-            d.DstSap,
-            new SisAddress(ind.Dst, ind.DstIsGroup),
-            ind.Arq ? TxModeArq : TxModeNonArq,
-            d.SrcSap,
-            new SisAddress(ind.Src),
-            d.UPdu));
+        if (failReason is byte reason)
+        {
+            Answer(match, reason == FailSapNotBound ? RejectSapNotBound : RejectOther);
+        }
+        else if (match.CasConfirmed)
+        {
+            Answer(match, null);
+        }
+        else
+        {
+            match.PeerConfirmed = true;
+        }
     }
+
+    /// <summary>C_UNIDATA_REQUEST_CONFIRM: node confirmation is complete (A-0222); client confirmation once the peer's DATA DELIVERY CONFIRM is in too (A-0227).</summary>
+    private void OnCasConfirm(int handle)
+    {
+        if (!_pending.TryGetValue(handle, out Pending? p))
+        {
+            return;
+        }
+
+        if (!p.Client || p.PeerConfirmed)
+        {
+            Answer(p, null);
+        }
+        else
+        {
+            p.CasConfirmed = true;
+        }
+    }
+
+    /// <summary>
+    /// The wait of every U_PDU whose deadline has come is over (A-0225, A-0230; interp A-0232,
+    /// A-0342), in list order: one still held for a soft link reached its TTD and is dropped with
+    /// reason 1, one handed down had no answer in time and gets reason 3. A later answer is ignored.
+    /// </summary>
+    private void OnConfirmWait()
+    {
+        _armedDeadline = null;
+        while (_deadlines.Count > 0 && _deadlines.Min.Deadline <= _context.Now)
+        {
+            Expire(_pending[_deadlines.Min.Handle]);
+        }
+
+        ArmConfirmWait();
+    }
+
+    private void Expire(Pending p)
+    {
+        if (p.HandedDown)
+        {
+            Answer(p, RejectNodeNotResponding);
+        }
+        else
+        {
+            _awaitingSoftLink.Remove(p.Held);
+            Answer(p, RejectTtlExpired);
+        }
+    }
+
+    /// <summary>
+    /// Ends the confirmation of a U_PDU: S_UNIDATA_REQUEST_CONFIRM when <paramref name="reason"/> is
+    /// null, otherwise S_UNIDATA_REQUEST_REJECTED with it, each with the request's destination SAP and
+    /// address and the U_PDU cut to <c>sis.frag_size</c> (A-0096 to A-0101, A-0109 to A-0113).
+    /// </summary>
+    private void Answer(Pending p, byte? reason)
+    {
+        Held h = p.Held;
+        if (h.Sap is byte sap && _sapOwner.TryGetValue(sap, out int conn))
+        {
+            Send(conn, reason is byte r
+                ? new SisUnidataRequestRejected(r, h.DestSap, h.DestAddress, Copy(h.UPdu))
+                : new SisUnidataRequestConfirm(h.DestSap, h.DestAddress, Copy(h.UPdu)));
+        }
+
+        Forget(p);   // the answer first, then the timer change it causes
+    }
+
+    /// <summary>Drops a confirmation record and its deadline, re-arming the timer.</summary>
+    private void Forget(Pending p)
+    {
+        _pending.Remove(p.Held.Request.Handle);
+        if (p.Entry is { } e)
+        {
+            _deadlines.Remove(e);
+            p.Entry = null;
+        }
+
+        ArmConfirmWait();
+    }
+
+    /// <summary>Gives a confirmation record a new deadline; one already due is handled at once (core-architecture.md 3.2).</summary>
+    private void SetDeadline(Pending p, long deadline)
+    {
+        if (p.Entry is { } e)
+        {
+            if (e.Deadline == deadline)
+            {
+                return;
+            }
+
+            _deadlines.Remove(e);
+            p.Entry = null;
+        }
+
+        if (deadline <= _context.Now)
+        {
+            Expire(p);   // never put in the list (zero-duration rule)
+            return;
+        }
+
+        p.Entry = (deadline, _deadlineSeq++, p.Held.Request.Handle);
+        _deadlines.Add(p.Entry.Value);
+        ArmConfirmWait();
+    }
+
+    /// <summary>Runs <c>sis.confirm_wait</c> to the head deadline: started or restarted only when the head changes, cancelled when the list empties.</summary>
+    private void ArmConfirmWait()
+    {
+        if (_deadlines.Count == 0)
+        {
+            if (_armedDeadline is not null)
+            {
+                _context.Timers.Cancel(ConfirmWaitTimer);
+                _armedDeadline = null;
+            }
+
+            return;
+        }
+
+        long head = _deadlines.Min.Deadline;
+        if (_armedDeadline != head)
+        {
+            _context.Timers.Start(ConfirmWaitTimer, head - _context.Now);
+            _armedDeadline = head;
+        }
+    }
+
+    /// <summary>A copy of the U_PDU for a response: its first <c>sis.frag_size</c> bytes, or all of it when the setting is null or the U_PDU no longer (interp A-0341, issue #30).</summary>
+    private ReadOnlyMemory<byte> Copy(ReadOnlyMemory<byte> uPdu) =>
+        _context.Config.Sis.FragSize is int f && f < uPdu.Length ? uPdu[..f] : uPdu;
 
     private void AskForLink(uint peer)
     {
@@ -469,10 +743,20 @@ internal sealed class SisSublayer : ISisSublayer
         _context.Enqueue(new CPhysicalLinkMake(peer));
     }
 
-    /// <summary>Passes an ARQ request to the CAS and keeps it outstanding until it is confirmed or rejected.</summary>
+    /// <summary>
+    /// Passes an ARQ request to the CAS and keeps it outstanding until it is confirmed or rejected.
+    /// One that asked for confirmation now waits <c>sis.confirm_wait_ms</c>, or until its TTD when
+    /// that is null (A-0221, A-0226; interp A-0232, A-0342).
+    /// </summary>
     private void HandDown(Held h)
     {
         _outstanding.Add(h.Request.Handle, h);
+        if (_pending.TryGetValue(h.Request.Handle, out Pending? p))
+        {
+            p.HandedDown = true;
+            SetDeadline(p, _context.Config.Sis.ConfirmWaitMs is int wait ? _context.Now + wait : h.Request.Ttd);
+        }
+
         _context.Enqueue(h.Request);
     }
 
@@ -511,25 +795,23 @@ internal sealed class SisSublayer : ISisSublayer
     }
 
     /// <summary>
-    /// C_UNIDATA_REQUEST_REJECTED. One caused by a soft link close of ours carries the reason the
-    /// close gave (A-0207), and the client gets S_UNIDATA_REQUEST_REJECTED with it if it asked for
-    /// confirmation (A-0105, A-0107: reasons 9, 10 and 11), with the whole U_PDU (A-0109 to A-0111).
-    /// Rejections for any other reason are answered by P6-1 (A-0223, A-0232), so nothing is sent for
-    /// them yet.
+    /// C_UNIDATA_REQUEST_REJECTED: a U_PDU that asked for node or client confirmation is rejected to
+    /// its client (A-0223, A-0228), with the reason derived from the CAS one (A-0229; interp A-0340):
+    /// TTL Expired 1; for a rejection caused by a soft link close of ours, the reason the close gave,
+    /// 9, 10 or 11 (A-0207; interp A-0324); with no connection to the peer, 3.
     /// </summary>
     private void OnRejected(CUnidataRequestRejected j)
     {
-        Held? h = _outstanding.TryGetValue(j.Handle, out Held? found) ? found : null;
-        byte? reason = j.Reason switch
+        if (_pending.TryGetValue(j.Handle, out Pending? p))
         {
-            CReason.SoftLinkHigherPriority => RejectSoftLinkHigherPriority,
-            CReason.SoftLinkShareChannel => RejectSoftLinkShareChannel,
-            CReason.SoftLinkIdle => RejectSoftLinkIdle,
-            _ => null,
-        };
-        if (h is not null && h.Confirm && reason is byte r && _sapOwner.TryGetValue(h.Sap, out int conn))
-        {
-            Send(conn, new SisUnidataRequestRejected(r, h.DestSap, h.DestAddress, h.UPdu));
+            Answer(p, j.Reason switch
+            {
+                CReason.TtlExpired => RejectTtlExpired,
+                CReason.SoftLinkHigherPriority => RejectSoftLinkHigherPriority,
+                CReason.SoftLinkShareChannel => RejectSoftLinkShareChannel,
+                CReason.SoftLinkIdle => RejectSoftLinkIdle,
+                _ => RejectNodeNotResponding,
+            });
         }
 
         Settled(j.Handle);
@@ -708,10 +990,9 @@ internal sealed class SisSublayer : ISisSublayer
         _awaitingSoftLink.RemoveAll(a => a.Request.Dst == peer);
         foreach (Held h in failed)
         {
-            if (h.Confirm && _sapOwner.TryGetValue(h.Sap, out int conn))
+            if (_pending.TryGetValue(h.Request.Handle, out Pending? p))
             {
-                Send(conn, new SisUnidataRequestRejected(
-                    reason == LinkReason.NoAnswer ? RejectNodeNotResponding : RejectOther, h.DestSap, h.DestAddress, h.UPdu));
+                Answer(p, reason == LinkReason.NoAnswer ? RejectNodeNotResponding : RejectOther);
             }
         }
 
@@ -750,7 +1031,7 @@ internal sealed class SisSublayer : ISisSublayer
     }
 
     private void Reject(int conn, SisUnidataRequest r, byte reason) =>
-        Send(conn, new SisUnidataRequestRejected(reason, r.DestSap, r.DestAddress, r.UPdu));
+        Send(conn, new SisUnidataRequestRejected(reason, r.DestSap, r.DestAddress, Copy(r.UPdu)));
 
     /// <summary>
     /// A channel analysis finding for the operator (J-0051): S_MANAGEMENT_MSG_INDICATION, sent
@@ -796,16 +1077,41 @@ internal sealed class SisSublayer : ISisSublayer
             _awaitingSoftLink.RemoveAll(a => a.Sap == sap);
 
             // Requests already handed down stay outstanding on their soft link, but their client is
-            // gone, so a later rejection is reported to nobody, even a new client of the SAP (A-0260).
-            foreach (int handle in _outstanding.Where(kv => kv.Value.Sap == sap).Select(kv => kv.Key).ToList())
+            // gone, so a later answer is reported to nobody, even a new client of the SAP (A-0260).
+            foreach (Pending p in _pending.Values.Where(p => p.Held.Sap == sap).ToList())
             {
-                _outstanding[handle] = _outstanding[handle] with { Confirm = false };
+                Forget(p);
             }
         }
     }
 
-    /// <summary>An ARQ U_PDU held for a soft link, with what a rejection to its client needs (A-0109 to A-0111).</summary>
-    private sealed record Held(byte Sap, CUnidataRequest Request, byte DestSap, SisAddress DestAddress, ReadOnlyMemory<byte> UPdu, bool Confirm);
+    /// <summary>
+    /// A request held for a soft link or outstanding on one, with what an answer to its client needs
+    /// (A-0096 to A-0099, A-0109 to A-0111). <paramref name="Sap"/> is the sending client's SAP, null
+    /// for a client confirmation of ours.
+    /// </summary>
+    private sealed record Held(byte? Sap, CUnidataRequest Request, byte DestSap, SisAddress DestAddress, ReadOnlyMemory<byte> UPdu);
+
+    /// <summary>A U_PDU awaiting the answer to its delivery confirmation (A-0221, A-0226).</summary>
+    private sealed class Pending(Held held, bool client)
+    {
+        public Held Held { get; } = held;
+
+        /// <summary>Client delivery confirmation; otherwise node (A-0153, S-0081).</summary>
+        public bool Client { get; } = client;
+
+        /// <summary>Handed to the CAS: its wait is <c>sis.confirm_wait_ms</c>; before, its TTD (interp A-0232).</summary>
+        public bool HandedDown { get; set; }
+
+        /// <summary>The CAS has confirmed it (A-0227).</summary>
+        public bool CasConfirmed { get; set; }
+
+        /// <summary>The peer's DATA DELIVERY CONFIRM is in (A-0227).</summary>
+        public bool PeerConfirmed { get; set; }
+
+        /// <summary>Its entry in the deadline list.</summary>
+        public (long Deadline, long Seq, int Handle)? Entry { get; set; }
+    }
 
     private static TimerName IdleTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkIdle, peer);
 

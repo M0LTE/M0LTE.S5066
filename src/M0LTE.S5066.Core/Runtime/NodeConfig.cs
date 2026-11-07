@@ -178,7 +178,18 @@ public sealed record TimeConfig(int EpochYear, int EpochDay, int EpochSecond);
 /// sis.soft_link_max_ms: the longest a soft link is kept while U_PDUs for another node wait for a
 /// link, 1 or more (A-0014, A-0015; interp A-0322). Null: six answer waits (interp A-0321).
 /// </param>
-public sealed record SisConfig(int DefaultTtl, int? SoftLinkIdleMs = null, int? SoftLinkMinHoldMs = null, int? SoftLinkMaxMs = null)
+/// <param name="FragSize">
+/// sis.frag_size: U_PDU_response_frag_size, the most bytes of the U_PDU an S_UNIDATA_REQUEST_CONFIRM,
+/// S_UNIDATA_REQUEST_REJECTED, DATA DELIVERY CONFIRM or DATA DELIVERY FAIL copies, 0 or more
+/// (A-0100 to A-0102, A-0112 to A-0114; interp A-0341). Null or absent: the whole U_PDU (issue #30).
+/// </param>
+/// <param name="ConfirmWaitMs">
+/// sis.confirm_wait_ms: how long the SIS waits for the answer to a U_PDU that asked for node or client
+/// delivery confirmation, from when it is handed to the CAS, 1 or more (A-0221, A-0226; interp A-0232).
+/// Null: until the U_PDU's TTD (interp A-0342).
+/// </param>
+public sealed record SisConfig(int DefaultTtl, int? SoftLinkIdleMs = null, int? SoftLinkMinHoldMs = null, int? SoftLinkMaxMs = null,
+                               int? FragSize = null, int? ConfirmWaitMs = null)
 {
     /// <summary>The largest TTL the field may carry, 648000 units of 2 s, about 15 days (S-0116, S-0121).</summary>
     public const int MaxTtl = 648000;

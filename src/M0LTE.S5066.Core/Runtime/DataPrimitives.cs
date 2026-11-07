@@ -18,8 +18,12 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <param name="MinRetransmissions">Non-ARQ retransmission count, N giving N+1 transmissions (A-0081, A-0083); 0 for ARQ.</param>
 /// <param name="SPdu">The encoded S_PDU.</param>
 /// <param name="Handle">The request handle.</param>
+/// <param name="ClientConfirmation">
+/// True when the S_PDU is a DATA DELIVERY CONFIRM or FAIL: a client confirmation, which a clean close
+/// still lets start (B-0246; interp B-0318). Ours, like the handle.
+/// </param>
 internal sealed record CUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
-                                       int MinRetransmissions, ReadOnlyMemory<byte> SPdu, int Handle) : ToCas;
+                                       int MinRetransmissions, ReadOnlyMemory<byte> SPdu, int Handle, bool ClientConfirmation = false) : ToCas;
 
 /// <summary>C_UNIDATA_INDICATION, CAS to SIS: an S_PDU received from a peer (B-0013, B-0298).</summary>
 /// <param name="Src">Source node address.</param>
@@ -39,8 +43,9 @@ internal sealed record CUnidataIndication(uint Src, uint Dst, bool DstIsGroup, b
 /// <param name="MinRetransmissions">Non-ARQ retransmission count.</param>
 /// <param name="CPdu">The encoded C_PDU.</param>
 /// <param name="Handle">The request handle.</param>
+/// <param name="ClientConfirmation">True for a client confirmation, exempt from a clean close's hold (B-0246; interp B-0318).</param>
 internal sealed record DUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, int Priority, long Ttd, bool DeliverInOrder,
-                                       int MinRetransmissions, ReadOnlyMemory<byte> CPdu, int Handle) : ToDts;
+                                       int MinRetransmissions, ReadOnlyMemory<byte> CPdu, int Handle, bool ClientConfirmation = false) : ToDts;
 
 /// <summary>D_UNIDATA_INDICATION, DTS to CAS: a C_PDU received from a peer (C-0026).</summary>
 /// <param name="Src">Source node address.</param>
