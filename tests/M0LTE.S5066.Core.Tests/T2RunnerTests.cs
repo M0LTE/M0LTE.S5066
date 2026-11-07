@@ -213,8 +213,9 @@ public class DeterminismTests
     public void A_corpus_scenario_run_twice_gives_byte_identical_transcripts(string file)
     {
         string[] lines = File.ReadAllLines(Path.Combine(Corpus.Root, file));
-        byte[] first = Transcript(T2Runner.Run(file, lines, Corpus.T2Defaults));
-        byte[] second = Transcript(T2Runner.Run(file, lines, Corpus.T2Defaults));
+        CoreFactory? core = AwaitingSis.Applies(file) ? AwaitingSis.Core : null;
+        byte[] first = Transcript(T2Runner.Run(file, lines, Corpus.T2Defaults, core));
+        byte[] second = Transcript(T2Runner.Run(file, lines, Corpus.T2Defaults, core));
         first.Should().NotBeEmpty();
         second.Should().Equal(first);
     }
