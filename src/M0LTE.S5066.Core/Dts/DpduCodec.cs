@@ -265,51 +265,18 @@ public static class DpduCodec
     /// </summary>
     public static DecodeResult<Dpdu> DecodeFirst(ReadOnlySpan<byte> bytes, PeerEdition peer)
     {
-        static DecodeResult<Dpdu> Fail(PduErrorKind k) => DecodeResult<Dpdu>.Fail(k);
-
-        if (bytes.Length < 2)
+        DecodeResult<DpduHeaderInfo> hr = DecodeHeader(bytes, peer);
+        if (!hr.IsSuccess)
         {
-            return Fail(PduErrorKind.Truncated);
+            return DecodeResult<Dpdu>.Fail(hr.Error!.Value);
         }
 
-        if (bytes[0] != Sync0 || bytes[1] != Sync1)
-        {
-            return Fail(PduErrorKind.BadSync);
-        }
-
-        if (bytes.Length < 6)
-        {
-            return Fail(PduErrorKind.Truncated);
-        }
-
-        int type = bytes[2] >> 4;
-        int m = bytes[5] >> 5;
-        int h = bytes[5] & 31;
-        if (m == 0)
-        {
-            return Fail(PduErrorKind.BadAddressSize);
-        }
-
+        DpduHeaderInfo info = hr.Value!;
+        int type = info.Type;
+        int m = info.Header.AddressSize;
+        int end = hr.Consumed;
+        DpduHeader header = info.Header;
         bool undefined = peer == PeerEdition.Ed3 && type >= 9 && type <= 14;
-        bool okSize = undefined ? h >= UndefinedMinHeader : h >= HeaderSize[type].Min && h <= HeaderSize[type].Max;
-        if (!okSize)
-        {
-            return Fail(PduErrorKind.BadHeaderSize);
-        }
-
-        int end = 2 + h + m;
-        if (bytes.Length < end)
-        {
-            return Fail(PduErrorKind.Truncated);
-        }
-
-        if (Crc16S5066.Compute(bytes[2..(end - 2)]) != Crc16S5066.Read(bytes[(end - 2)..end]))
-        {
-            return Fail(PduErrorKind.HeaderCrc);
-        }
-
-        DpduAddress.Read(bytes.Slice(6, m), out uint dst, out uint src);
-        var header = new DpduHeader(((bytes[2] & 15) << 8) | bytes[3], bytes[4], m, dst, src);
         ReadOnlySpan<byte> ts = bytes[(6 + m)..(end - 2)];
         ReadOnlySpan<byte> rest = bytes[end..];
         byte[] tb = ts.ToArray(); // lambdas below cannot capture a span
@@ -385,6 +352,91 @@ public static class DpduCodec
             default:
                 return DecodeResult<Dpdu>.Ok(new Warning(header, ts[0] >> 4, ts[0] & 15), end);
         }
+    }
+
+    /// <summary>
+    /// Reads the source address from the address field of the D_PDU at the start of
+    /// <paramref name="bytes"/>, before any check, so a receiver can look up the sender's edition
+    /// before it decodes (core-architecture.md 4.3). False when the sync is missing, the
+    /// size-of-address field is zero, or the address field is not all there yet.
+    /// </summary>
+    public static bool TryPeekSource(ReadOnlySpan<byte> bytes, out uint src)
+    {
+        src = 0;
+        if (bytes.Length < 6 || bytes[0] != Sync0 || bytes[1] != Sync1)
+        {
+            return false;
+        }
+
+        int m = bytes[5] >> 5;
+        if (m == 0 || bytes.Length < 6 + m)
+        {
+            return false;
+        }
+
+        DpduAddress.Read(bytes.Slice(6, m), out _, out src);
+        return true;
+    }
+
+    /// <summary>
+    /// Decodes and checks the D_PDU header at the start of <paramref name="bytes"/>, from the sync to
+    /// the header CRC, with the same checks in the same order as <see cref="DecodeFirst"/> up to and
+    /// including the header CRC (corpus-format.md section 3.3). <see cref="DecodeResult{T}.Consumed"/>
+    /// is the header length including the sync. Nothing after the header CRC is read, so a receiver
+    /// can act on a valid header (EOT, addresses) before the rest of the D_PDU has arrived
+    /// [Ed4 C.7.5.1, p.C-110; C-0831, C-0832].
+    /// </summary>
+    public static DecodeResult<DpduHeaderInfo> DecodeHeader(ReadOnlySpan<byte> bytes, PeerEdition peer)
+    {
+        static DecodeResult<DpduHeaderInfo> Fail(PduErrorKind k) => DecodeResult<DpduHeaderInfo>.Fail(k);
+
+        if (bytes.Length < 2)
+        {
+            return Fail(PduErrorKind.Truncated);
+        }
+
+        if (bytes[0] != Sync0 || bytes[1] != Sync1)
+        {
+            return Fail(PduErrorKind.BadSync);
+        }
+
+        if (bytes.Length < 6)
+        {
+            return Fail(PduErrorKind.Truncated);
+        }
+
+        int type = bytes[2] >> 4;
+        int m = bytes[5] >> 5;
+        int h = bytes[5] & 31;
+        if (m == 0)
+        {
+            return Fail(PduErrorKind.BadAddressSize);
+        }
+
+        bool undefined = peer == PeerEdition.Ed3 && type >= 9 && type <= 14;
+        bool okSize = undefined ? h >= UndefinedMinHeader : h >= HeaderSize[type].Min && h <= HeaderSize[type].Max;
+        if (!okSize)
+        {
+            return Fail(PduErrorKind.BadHeaderSize);
+        }
+
+        int end = 2 + h + m;
+        if (bytes.Length < end)
+        {
+            return Fail(PduErrorKind.Truncated);
+        }
+
+        if (Crc16S5066.Compute(bytes[2..(end - 2)]) != Crc16S5066.Read(bytes[(end - 2)..end]))
+        {
+            return Fail(PduErrorKind.HeaderCrc);
+        }
+
+        DpduAddress.Read(bytes.Slice(6, m), out uint dst, out uint src);
+        var header = new DpduHeader(((bytes[2] & 15) << 8) | bytes[3], bytes[4], m, dst, src);
+
+        // GROUP ADDRESS exists only in types 7 and 8 (C-0122, C-0338 to C-0340).
+        bool group = !undefined && (type == 7 || type == 8) && (bytes[6 + m] & 4) != 0;
+        return DecodeResult<DpduHeaderInfo>.Ok(new DpduHeaderInfo(type, header, group), end);
     }
 
     private static DecodeResult<Dpdu> DecodeAckOnly(DpduHeader header, ReadOnlySpan<byte> ts, ReadOnlySpan<byte> rest, int end)

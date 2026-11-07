@@ -202,3 +202,13 @@ public sealed record UndefinedTypeDpdu(DpduHeader Header, int UndefinedType, Oct
     /// <inheritdoc/>
     public override int Type => UndefinedType;
 }
+
+/// <summary>
+/// A D_PDU header that passed every check up to and including its header CRC
+/// (<see cref="DpduCodec.DecodeHeader"/>): enough for the header-level effects of
+/// [Ed4 C.7.5.1, p.C-110] before the rest of the D_PDU is read.
+/// </summary>
+/// <param name="Type">The 4-bit D_PDU type (C-0086).</param>
+/// <param name="Header">The generic header.</param>
+/// <param name="GroupAddress">GROUP ADDRESS of a type 7 or 8 (C-0338 to C-0340); false for every other type.</param>
+public sealed record DpduHeaderInfo(int Type, DpduHeader Header, bool GroupAddress);
