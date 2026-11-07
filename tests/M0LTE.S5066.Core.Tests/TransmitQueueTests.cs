@@ -272,17 +272,28 @@ public class TransmitQueueTests
     [Fact]
     public void A_segment_that_would_pass_the_capacity_is_cut_to_end_at_it_towards_an_Ed4_peer()
     {
-        // C-1155 with C-1042: the budget is one 96-byte block, but the first 119-byte D_PDU stretches the
-        // transmission to two blocks (192 bytes). The first segment, not the C_PDU's last, is cut so its
-        // D_PDU ends at the boundary at 96 (19 + 77); the next would pass the capacity and is cut to end at it.
+        // C-1155 with C-1042: the budget is one 96-byte block, and the first 119-byte D_PDU would stretch the
+        // transmission to two blocks (192 bytes). It is not the C_PDU's last segment, so it is cut to end at
+        // the boundary at 96 (19 + 77); then it needs one block, so the transmission is one block, the budget,
+        // and nothing more is placed.
         var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100);
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         q.Tx.OpenLink(X);
         q.Tx.AddArq(Arq(X, 200));
-        List<Dpdu> pdus = q.Decode(q.Tx.Build());
-        pdus.Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(96);
+        q.Decode(first).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+            .Should().Equal((0, 77, true, false));
+
+        // Two blocks within the budget: the 119-byte D_PDU would pass the 192-byte capacity, so it is cut
+        // to end at it (96 + 19 + 77), and the last 46 bytes wait.
+        var q2 = new Rig(maxTransmissionMs: 720 + 2 * 4800, maxSegment: 100);
+        q2.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q2.Tx.OpenLink(X);
+        q2.Tx.AddArq(Arq(X, 200));
+        q2.Decode(q2.Tx.Build()).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
             .Should().Equal((0, 77, true, false), (1, 77, false, false));
-        List<Dpdu> rest = q.Decode(q.Tx.Build());   // a 65-byte DATA-ONLY, then two PADDINGs in the 31 bytes left (C-1154)
+        List<Dpdu> rest = q2.Decode(q2.Tx.Build());   // a 65-byte DATA-ONLY, then two PADDINGs in the 31 bytes left (C-1154)
         rest.Select(p => p.Type).Should().Equal(9, 14, 14);
         rest.OfType<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduEnd)).Should().Equal((2, 46, true));
     }

@@ -404,7 +404,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         (Speed speed, long capacity) = Shape();
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
-        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape.BytesPerBlock);
+        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape.BytesPerBlock, BlocksWithin(shape, Budget) * shape.BytesPerBlock);
         if (chosenControl.Count == 0 && chosen.Count == 0)
         {
             throw new InvalidOperationException("the planner chose nothing");
@@ -565,7 +565,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// ARQ data D_PDU to a peer whose acknowledgement is one ACK-ONLY of at most 18 bytes of Ack Data
     /// carries it instead, as DATA-ACK (C-0238, C-0249, C-1128, C-1152).
     /// </summary>
-    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, int bytesPerBlock)
+    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, int bytesPerBlock, long budgetCapacity)
     {
         var chosenControl = new List<ControlItem>();
         var chosen = new List<Piece>();
@@ -615,8 +615,16 @@ internal sealed class TransmitQueue : ITransmissionSource
                 ack.Merged = true;
             }
 
+            bool firstItem = chosenControl.Count == 0 && chosen.Count == 0;
             used += size - released;
             chosen.Add(new ArqPiece(link, frame, size, ack));
+            if (firstItem && capacity > budgetCapacity)
+            {
+                // The capacity went past the configured length only for this D_PDU (C-1042); cut short by
+                // alignment it may need fewer blocks, and the transmission is then just those (C-1155).
+                capacity = Math.Max(budgetCapacity, (used + bytesPerBlock - 1) / bytesPerBlock * bytesPerBlock);
+            }
+
             return true;
         }
 
