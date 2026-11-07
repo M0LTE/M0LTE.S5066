@@ -192,7 +192,7 @@ internal sealed class TimerTable
 }
 ```
 
-Restart is `Start` on a running timer: one `TimerStart` output, new deadline (corpus-format.md 4.4). There is no pause: the Annex K "hold while busy" reading of K-0087 is implemented as cancel on busy and start on idle, which is what a trace shows.
+Restart is `Start` on a running timer: one `TimerStart` output, new deadline (corpus-format.md 4.4). There is no pause: the Annex K "hold while busy" reading of K-0087 is implemented as cancel on busy and start on idle (with the value the LBT rules give for that idle, K-0120), which is what a trace shows.
 
 **Zero-duration rule.** Several protocol values can be zero: LBT rule 1 sets the LBT wait to zero (K-0067), the jitter draw can give slot 0 (K-0080), and slotted position 1 after another node's transmission gives a zero contention wait (K-0081). The format forbids `ms` = 0, so a sublayer that would start a timer with 0 ms starts nothing, emits nothing, and immediately takes the action its expiry would have taken, within the same handler. So SENSE to LBT_WAIT (0) to CONT_WAIT (0) to LINKING to `transmit` can all happen inside one input, with the `csma.jitter` draw made on the way. Both cores must follow this; a core that started a 1 ms timer instead would fail every two-node scenario. A zero wait asked for a timer that is already running is a bug (the core throws): the harness would still hold the old deadline, so the sublayer cancels the timer explicitly first and the `timer_cancel` shows in the trace (P3-0 implementation note).
 
@@ -619,6 +619,7 @@ Each is an implementation choice a later item will need. Where a matrix row exis
 | 14 | `terminate_receive` and `set_max_input_blocks` | Never emitted in phases 3 to 6 | plan 5.1 |
 | 15 | Merging an ACK into a DATA D_PDU | When a peer receives both an acknowledgement and new data in one transmission, the first data D_PDU to it becomes DATA-ACK and the ACK-ONLY is dropped; ACK-ONLY repeats in fill still refer to the same RX LWE | C-0658, C-0678 ("as appropriate"); recorded as C-1128 (P4-2), refined by C-1152 and C-1154 (P4-3) |
 | 16 | The address size m a sender uses | The smallest whole number of nibbles that holds both addresses, chosen per D_PDU; no setting (section 2.3) | C-0133 |
+| 17 | The LBT_WAIT_TIMER value when the channel is idle again after a hold in LBT_WAIT or CONT_WAIT | K.3.2.3 and K.3.2.4 say the DCD value; taken as written, a node that lost one round needs that much silence, which a sender with more data than its window never gives, and T3 lost live ARQ links in every seed (issue #64). The held timer takes the value the LBT rules give for that idle, rules 1 to 3 as on entry from SENSE; the DCD value is the one in force while the end of the busy period is unknown. A recorded departure from the letter of K-0077 and K-0089; the timer still starts only once the channel is idle (C-0844) | K-0077, K-0087, K-0089; recorded as K-0120 (issue #64) |
 
 ---
 

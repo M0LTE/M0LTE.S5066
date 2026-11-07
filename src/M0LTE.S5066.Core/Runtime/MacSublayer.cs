@@ -40,8 +40,12 @@ internal enum MacState
 /// <para>
 /// Hold while busy (K-0077, K-0087, K-0089): a busy indication in LBT_WAIT or CONT_WAIT cancels
 /// the running timer and leaves the node in LBT_WAIT; when the channel is idle again
-/// <c>csma.lbt_wait</c> starts afresh with <c>lbt_wait_dcd_ms</c>. A trace shows exactly a
-/// <c>timer_cancel</c> at the busy indication and a <c>timer_start</c> at the idle one.
+/// <c>csma.lbt_wait</c> starts afresh with the value the LBT rules give for that idle (K-0120):
+/// zero when the transmission just heard was addressed only to this node (rule 1), the VDCD
+/// value when its EOT end produced the idle (rule 3), the DCD value otherwise (rule 2). Taking
+/// the DCD value as written let a sender with more data than its window capture the channel
+/// (issue #64). A trace shows exactly a <c>timer_cancel</c> at the busy indication and a
+/// <c>timer_start</c> at the idle one, or none under rule 1.
 /// </para>
 /// <para>
 /// The one PRNG draw site, <c>csma.jitter</c> (prng.md 6): one <c>uniform(num_cont_slots)</c> per
@@ -297,9 +301,11 @@ internal sealed class MacSublayer : IMacSublayer
 
                 if (_lbtHeld)
                 {
-                    // Idle again after a hold: the restart value is LBT_WAIT_TIMER_VALUE_DCD (K-0077, K-0087).
+                    // Idle again after a hold (K-0077, K-0087): the value follows the LBT rules for this
+                    // idle, as on entry from SENSE (K-0120), so a peer whose transmission was addressed
+                    // only to us gets its zero wait even after losing a round.
                     _lbtHeld = false;
-                    if (_context.Timers.StartUnlessZero(LbtWait, _context.Config.Csma.LbtWaitDcdMs))
+                    if (_context.Timers.StartUnlessZero(LbtWait, LbtValueOnIdle()))
                     {
                         return false;
                     }
@@ -328,7 +334,7 @@ internal sealed class MacSublayer : IMacSublayer
                 }
 
                 // Busy: the contention round is lost. Back to LBT_WAIT, whose timer restarts with the
-                // DCD value once the channel is idle again (K-0089, K-0087).
+                // LBT rules' value once the channel is idle again (K-0089, K-0087, K-0120).
                 if (Busy)
                 {
                     _context.Timers.Cancel(ContWait);
@@ -355,7 +361,8 @@ internal sealed class MacSublayer : IMacSublayer
     }
 
     /// <summary>
-    /// The LBT_WAIT_TIMER value on entry from SENSE (K-0066), rules tried in the order 1, 2, 3
+    /// The LBT_WAIT_TIMER value on entry from SENSE (K-0066), and when the channel is idle again
+    /// after a hold in LBT_WAIT (K-0120), rules tried in the order 1, 2, 3
     /// (K-0072). Rule 1: zero when the last transmission was a received one meeting two-node
     /// condition (a) and its end produced the idle (K-0067, K-0068). Rule 2: a DCD-determined idle
     /// gets <c>lbt_wait_dcd_ms</c> (K-0070). Rule 3: a VDCD-determined one gets <c>lbt_wait_vdcd_ms</c> (K-0071, K-0073), and so
