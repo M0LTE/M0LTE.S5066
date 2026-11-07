@@ -339,7 +339,6 @@ public class SimulationTests(ITestOutputHelper output)
         return new JsonObject
         {
             ["local_address"] = address,
-            ["address_size"] = 7,   // the broadcast address needs all 28 bits (C-0118, C-0123); a smaller size throws, issue #35
             ["csma"] = csma,
             ["modem"] = new JsonObject
             {

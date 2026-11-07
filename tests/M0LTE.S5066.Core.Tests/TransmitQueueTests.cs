@@ -220,7 +220,6 @@ public class TransmitQueueTests
     {
         JsonObject defaults = Corpus.T2Defaults.DeepClone().AsObject();
         defaults["local_address"] = "0.0.1.2";
-        defaults["address_size"] = 4;
         NodeConfig c = ConfigReader.Read(defaults);
         c.Dts.Should().Be(new DtsConfig(1023, 127500));
         c.Drc.DefaultSpeed.Should().Be(new Speed(2, Interleaver.Long));

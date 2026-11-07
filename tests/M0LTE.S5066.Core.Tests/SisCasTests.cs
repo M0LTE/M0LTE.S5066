@@ -149,7 +149,7 @@ public class SisCasTests
     {
         NodeConfig c = ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, new JsonObject
         {
-            ["local_address"] = "0.0.1.2", ["address_size"] = 4, ["groups"] = new JsonArray("0.0.0.9", "15.255.255.255"),
+            ["local_address"] = "0.0.1.2", ["groups"] = new JsonArray("0.0.0.9", "15.255.255.255"),
             ["time"] = new JsonObject { ["epoch_year"] = 2028, ["epoch_day"] = 366, ["epoch_second"] = 86399 },
             ["sis"] = new JsonObject { ["default_ttl"] = 5 },
         }));
@@ -157,7 +157,7 @@ public class SisCasTests
         c.Time.Should().Be(new TimeConfig(2028, 366, 86399));
         c.Sis.Should().Be(new SisConfig(5));
 
-        NodeConfig d = ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, new JsonObject { ["local_address"] = "0.0.1.2", ["address_size"] = 4 }));
+        NodeConfig d = ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, new JsonObject { ["local_address"] = "0.0.1.2" }));
         d.Groups.Should().BeEmpty();
         d.Time.Should().Be(new TimeConfig(2026, 1, 0));
         d.Sis.Should().Be(new SisConfig(648000));
@@ -172,7 +172,7 @@ public class SisCasTests
     [InlineData("sis", "{\"default_ttl\": 648001}")]
     public void Bad_p3_1_settings_are_rejected(string key, string json)
     {
-        var o = new JsonObject { ["local_address"] = "0.0.1.2", ["address_size"] = 4, [key] = JsonNode.Parse(json) };
+        var o = new JsonObject { ["local_address"] = "0.0.1.2", [key] = JsonNode.Parse(json) };
         FluentActions.Invoking(() => ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, o)))
             .Should().Throw<ConfigException>().Which.Setting.Should().StartWith(key);
     }
