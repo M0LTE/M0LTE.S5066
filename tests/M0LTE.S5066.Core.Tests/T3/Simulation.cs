@@ -190,6 +190,25 @@ internal sealed class Simulation
         Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(request)));
     }
 
+    /// <summary>
+    /// Queues an ARQ S_UNIDATA_REQUEST from the node's client at <paramref name="t"/> with an explicit
+    /// delivery mode (ARQ, in order when <paramref name="inOrder"/>, node delivery confirmation when <paramref name="confirm"/>) and SIS
+    /// priority, TTL default. With confirmation asked, a rejection the SIS reports comes back to the
+    /// client (A-0105, A-0107) and to <see cref="Rejected"/>.
+    /// </summary>
+    public void SendArq(int node, long t, uint dst, byte dstSap, byte[] uPdu, byte priority, bool confirm, bool inOrder)
+    {
+        var mode = new ServiceType(1, Confirm: confirm ? (byte)1 : (byte)0, Order: inOrder ? (byte)0 : (byte)1);
+        var request = new SisUnidataRequest(priority, dstSap, new SisAddress(dst), mode, 0, uPdu);
+        Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(request)));
+    }
+
+    /// <summary>
+    /// Called for every S_UNIDATA_REQUEST_REJECTED a client gets: the node, the core time and the
+    /// primitive. A test may queue a resend from here, as a client would.
+    /// </summary>
+    public Action<int, long, SisUnidataRequestRejected>? Rejected { get; set; }
+
     /// <summary>Queues an S_UNIDATA_REQUEST from the node's client at <paramref name="t"/>, non-ARQ, TTL default.</summary>
     public void SendUnidata(int node, long t, uint dst, bool group, byte dstSap, int minRetx, byte[] uPdu)
     {
@@ -199,6 +218,12 @@ internal sealed class Simulation
 
     /// <summary>The node dies at <paramref name="t"/>: from then on its core gets no input, and it neither transmits nor receives.</summary>
     public void Kill(int node, long t) => _nodes[node].DeadFrom = t;
+
+    /// <summary>
+    /// Runs <paramref name="action"/> at <paramref name="t"/>, before any core input of that
+    /// millisecond, to look at the nodes' state. It must not change anything.
+    /// </summary>
+    public void Probe(long t, Action<long> action) => At(t, PhaseChannel, action);
 
     /// <summary>Runs until nothing is left to happen or the next event is after <paramref name="untilMs"/>.</summary>
     public void Run(long untilMs)
@@ -288,8 +313,9 @@ internal sealed class Simulation
                     case SisBindRejected or SisUnbindIndication:
                         _violations.Add($"node {n.Index}: client got {p.GetType().Name} at {t}");
                         break;
-                    case SisUnidataRequestRejected:
+                    case SisUnidataRequestRejected rej:
                         Rejections++;
+                        Rejected?.Invoke(n.Index, t, rej);
                         break;
                 }
 
