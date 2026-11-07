@@ -57,7 +57,8 @@ internal interface ITransmissionSource
 /// (C-0297, C-1041), each sent once with no TTD.
 /// </para>
 /// <para>
-/// Not here yet: ARQ (phase 4), block alignment, ACK-ONLY fill and PADDING (P4-3).
+/// ARQ requests for connected peers are held with their TTD (P4-1) and placed from P4-2.
+/// Not here yet: placing ARQ data (P4-2), block alignment, ACK-ONLY fill and PADDING (P4-3).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -80,6 +81,8 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly IdSpace _expeditedIds = new();
     private readonly List<ControlItem> _control = [];
     private readonly SortedDictionary<uint, int> _owedEow = new();
+    private readonly List<(long Seq, DUnidataRequest Request)> _arqHeld = [];
+    private readonly List<int> _sentExpedited = [];
     private long _nextSeq;
 
     public TransmitQueue(CoreContext context, IMacObserver mac)
@@ -133,13 +136,67 @@ internal sealed class TransmitQueue : ITransmissionSource
         ReconcileTimer();
     }
 
-    /// <summary>A non-ARQ D_EXPEDITED_UNIDATA_REQUEST: queued for type 8 D_PDUs (C-0576, C-0596, C-0616), sent once, no TTD.</summary>
+    /// <summary>
+    /// A non-ARQ D_EXPEDITED_UNIDATA_REQUEST: queued for type 8 D_PDUs (C-0576, C-0596, C-0616,
+    /// C-0656, C-0676, C-0696), sent once, no TTD. Its handle is confirmed when the transmission
+    /// carrying its last D_PDU ends (C-1100).
+    /// </summary>
     public void AddExpedited(DExpeditedUnidataRequest r)
     {
-        _entries.Add(new Entry(_nextSeq++, true, 0, r.Dst, r.DstIsGroup, r.CPdu, null, null, 1));
+        _entries.Add(new Entry(_nextSeq++, true, 0, r.Dst, r.DstIsGroup, r.CPdu, null, null, 1) { Handle = r.Handle });
         _mac.QueueState(true);
         ReconcileTimer();
     }
+
+    /// <summary>
+    /// An ARQ D_UNIDATA_REQUEST for a peer with a connection (C-0653 and the matching rows): held
+    /// with its TTD, so <c>dts.ttd</c> covers it and it is dropped and rejected when the TTD passes
+    /// (C-0857, C-1050). Placing ARQ data in a transmission is P4-2's, so it never counts as
+    /// placeable here (K-0096; core-architecture.md 4.1).
+    /// </summary>
+    public void AddArq(DUnidataRequest r)
+    {
+        if (r.Ttd <= _context.Now)
+        {
+            _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.TtlExpired));
+            return;
+        }
+
+        _arqHeld.Add((_nextSeq++, r));
+        ReconcileTimer();
+    }
+
+    /// <summary>
+    /// The connection with the peer ended: its held ARQ C_PDUs are rejected to the CAS, oldest first
+    /// (C-0652, C-0672, C-0692, C-0712 notes).
+    /// </summary>
+    public void RejectArq(uint peer)
+    {
+        List<(long Seq, DUnidataRequest Request)> gone = _arqHeld.Where(a => a.Request.Dst == peer).ToList();
+        if (gone.Count == 0)
+        {
+            return;
+        }
+
+        _arqHeld.RemoveAll(a => a.Request.Dst == peer);
+        foreach ((long _, DUnidataRequest r) in gone)
+        {
+            _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.NoConnection));
+        }
+
+        ReconcileTimer();
+    }
+
+    /// <summary>The handles of expedited requests whose last D_PDU went in the transmission now ending, in placement order (C-1100).</summary>
+    public List<int> TakeSentExpedited()
+    {
+        var sent = new List<int>(_sentExpedited);
+        _sentExpedited.Clear();
+        return sent;
+    }
+
+    /// <summary>The held ARQ requests, in arrival order (P4-2 sends them).</summary>
+    internal IReadOnlyList<DUnidataRequest> HeldArq => _arqHeld.Select(a => a.Request).ToList();
 
     /// <summary>
     /// <c>dts.ttd</c> expired: drop and reject what has reached its TTD (C-0857, C-0864, C-1050),
@@ -553,6 +610,14 @@ internal sealed class TransmitQueue : ITransmissionSource
             (e.Expedited ? _expeditedIds : _normalIds).Hold(e.Id, end);   // the ID is not reused before it (C-0327, C-1053)
         }
 
+        foreach (Entry e in owners)
+        {
+            if (e.Expedited && !e.HasUnplacedSegment && e.OwedRepeat() is null)
+            {
+                _sentExpedited.Add(e.Handle);   // confirmed at transmit_done (C-1100)
+            }
+        }
+
         _entries.RemoveAll(e => e.Placed && !e.HasUnplacedSegment && e.OwedRepeat() is null);
         return new Transmit(bytes, speed.Wn, speed.Interleaver, 7, true);
     }
@@ -613,12 +678,23 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     private void DropExpired()
     {
-        List<Entry> expired = _entries.Where(e => e.Ttd is long ttd && ttd <= _context.Now).ToList();
-        expired.Sort((a, b) => a.Ttd!.Value != b.Ttd!.Value ? a.Ttd.Value.CompareTo(b.Ttd.Value) : a.Seq.CompareTo(b.Seq));
-        foreach (Entry e in expired)
+        var expired = _entries.Where(e => e.Ttd is long ttd && ttd <= _context.Now)
+            .Select(e => (Ttd: e.Ttd!.Value, e.Seq, e.Request!, Entry: (Entry?)e))
+            .Concat(_arqHeld.Where(a => a.Request.Ttd <= _context.Now).Select(a => (a.Request.Ttd, a.Seq, a.Request, Entry: (Entry?)null)))
+            .ToList();
+        expired.Sort((a, b) => a.Ttd != b.Ttd ? a.Ttd.CompareTo(b.Ttd) : a.Seq.CompareTo(b.Seq));
+        foreach ((long _, long seq, DUnidataRequest request, Entry? e) in expired)
         {
-            _entries.Remove(e);
-            _context.Enqueue(new DUnidataRequestRejected(e.Request!.Handle, DReason.TtlExpired));
+            if (e is not null)
+            {
+                _entries.Remove(e);
+            }
+            else
+            {
+                _arqHeld.RemoveAll(a => a.Seq == seq);
+            }
+
+            _context.Enqueue(new DUnidataRequestRejected(request.Handle, DReason.TtlExpired));
         }
     }
 
@@ -632,6 +708,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     {
         long now = _context.Now;
         long? next = null;
+        foreach ((long _, DUnidataRequest r) in _arqHeld)
+        {
+            next = next is long n ? Math.Min(n, r.Ttd) : r.Ttd;
+        }
+
         foreach (Entry e in _entries)
         {
             if (e.Ttd is long ttd)
@@ -744,6 +825,9 @@ internal sealed class TransmitQueue : ITransmissionSource
         public ReadOnlyMemory<byte> CPdu { get; } = cpdu;
 
         public DUnidataRequest? Request { get; } = request;
+
+        /// <summary>The request handle of an expedited entry (C-1100).</summary>
+        public int Handle { get; init; }
 
         /// <summary>TimeToDie, absolute core ms; none for expedited requests.</summary>
         public long? Ttd { get; } = ttd;

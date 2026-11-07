@@ -10,7 +10,7 @@ namespace M0LTE.S5066.Core.Tests;
 /// reused C_PDU IDs, zero windows, and the per-peer state bookkeeping. End-to-end behaviour is in
 /// the dts-nonarq and sis corpus scenarios.
 /// </summary>
-public class UnconnectedPeersTests
+public class DtsPeersTests
 {
     private const uint Us = 0x0102;
     private const uint X = 0x0103;
@@ -187,12 +187,12 @@ public class UnconnectedPeersTests
             NodeConfig config = TestConfig.Basic(CsmaMode.Jitter);
             _context = new CoreContext(config, new FixtureModem(config.Modem));
             Tx = new TransmitQueue(_context, new NoObserver());
-            Peers = new UnconnectedPeers(_context, Tx);
+            Peers = new DtsPeers(_context, Tx);
         }
 
         public TransmitQueue Tx { get; }
 
-        public UnconnectedPeers Peers { get; }
+        public DtsPeers Peers { get; }
 
         public List<InternalPrimitive> Take()
         {

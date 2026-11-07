@@ -26,6 +26,7 @@ public static class ConfigReader
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
         "sis.default_ttl", "dts.max_segment_size", "dts.max_transmission_ms", "drc.default_speed",
+        "cas.max_links", "cas.link_request_timeout_ms", "cas.link_request_retries", "cas.first_data_timeout_ms",
     ];
 
     /// <summary>
@@ -108,7 +109,33 @@ public static class ConfigReader
             Sis = ReadSis(config),
             Dts = ReadDts(config),
             Drc = ReadDrc(config),
+            Cas = ReadCas(config),
         };
+    }
+
+    /// <summary>
+    /// cas.*: all four have no default (core-architecture.md 10 item 11); a null stays null and
+    /// throws where the CAS needs it. Limits: B-0193, B-0204, B-0216, B-0222, B-0407.
+    /// </summary>
+    private static CasConfig ReadCas(JsonObject config)
+    {
+        if (config["cas"] is null)
+        {
+            return CasConfig.Unset;
+        }
+
+        JsonObject cas = Object(config, "cas");
+        return new CasConfig(
+            AtLeast(cas, "max_links", 1),
+            AtLeast(cas, "link_request_timeout_ms", 1),
+            AtLeast(cas, "link_request_retries", 0),
+            AtLeast(cas, "first_data_timeout_ms", 1));
+
+        static int? AtLeast(JsonObject cas, string key, int min)
+        {
+            int? v = Int(cas, key, "cas.");
+            return v is null || v >= min ? v : throw new ConfigException("cas." + key, $"must be at least {min}");
+        }
     }
 
     /// <summary>groups: a list of dotted addresses (A-0120).</summary>

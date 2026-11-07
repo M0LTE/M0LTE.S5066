@@ -17,8 +17,16 @@ namespace M0LTE.S5066.Core.Runtime;
 /// only after the invalid-primitive limit (S-0077); shutdown (reason 6) is the host's.
 /// </para>
 /// <para>
-/// Not here yet: an accepted ARQ request is held for P4-1, which makes the soft link it needs
-/// (A-0008, A-0193); delivery confirmation and the TTD check on receipt are P6-1; flow control and
+/// Soft links (P4-1): an accepted ARQ U_PDU for a peer with no soft link is held, and the SIS asks
+/// the CAS for a physical link to that peer (A-0008, A-0010, A-0188, A-0192, A-0193). When the CAS
+/// reports the link made, as Caller or Called node, the soft link is established and the U_PDUs held
+/// for that peer go down in arrival order (A-0194, A-0200). A failed make rejects them (B-0029,
+/// A-0300), except for Maximum Physical Links In Use or the peer's reason 4, where the SIS holds off
+/// and asks again when a link closes or another call ends (B-0028, B-0303, B-0412). A broken link
+/// ends the soft link (A-0199). Non-ARQ data needs no soft link (A-0189).
+/// </para>
+/// <para>
+/// Not here yet: soft link timers and closing (P5-2); delivery confirmation and the TTD check on receipt are P6-1; flow control and
 /// management messages are P6-2. The node sends no unprompted keep-alive and never unbind
 /// reason 2 (S-0045), never unbind reasons 1 or 4 (A-0060), and never bind reason 4, having no
 /// exclusive broadcast session (A-0052).
@@ -43,6 +51,8 @@ internal sealed class SisSublayer : ISisSublayer
     private const byte RejectOverMtu = 4;
     private const byte RejectTxModeNotSpecified = 5;
     private const byte RejectBroadcastNotAllowed = 6;
+    private const byte RejectNodeNotResponding = 3;
+    private const byte RejectOther = 15;
 
     // Transmission Mode values (S-0080, S-0152).
     private const byte TxModeDefault = 0;
@@ -57,12 +67,28 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly CoreContext _context;
     private readonly SortedDictionary<int, Connection> _connections = [];
     private readonly SortedDictionary<byte, int> _sapOwner = [];
-    private readonly List<(byte Sap, CUnidataRequest Request)> _awaitingSoftLink = [];
+    private readonly List<Held> _awaitingSoftLink = [];
+    private readonly SortedDictionary<uint, SoftLink> _softLinks = new();
 
     public SisSublayer(CoreContext context) => _context = context;
 
     /// <summary>Accepted ARQ requests waiting for the soft link P4-1 will make, in arrival order.</summary>
     internal IReadOnlyList<CUnidataRequest> AwaitingSoftLink => _awaitingSoftLink.Select(a => a.Request).ToList();
+
+    private enum SoftLink
+    {
+        /// <summary>C_PHYSICAL_LINK_MAKE sent, no answer yet (A-0193).</summary>
+        Making,
+
+        /// <summary>Held off by Maximum Physical Links In Use or peer reason 4 (B-0028, B-0303).</summary>
+        HeldOff,
+
+        /// <summary>The physical link exists: the soft link is established (A-0194).</summary>
+        Established,
+    }
+
+    /// <summary>For tests: the soft link state of a peer, or null when there is none.</summary>
+    internal string? SoftLinkOf(uint peer) => _softLinks.TryGetValue(peer, out SoftLink l) ? l.ToString() : null;
 
     public void OnConfigChanged(NodeConfig oldConfig, NodeConfig newConfig)
     {
@@ -122,6 +148,22 @@ internal sealed class SisSublayer : ISisSublayer
                 break;
             case CUnidataIndication ind:
                 OnUnidataIndication(ind);
+                break;
+            case CPhysicalLinkMade m:
+                OnLinkMade(m.Peer);
+                break;
+            case CPhysicalLinkRejected j:
+                OnLinkRejected(j.Peer, j.Reason);
+                break;
+            case CPhysicalLinkBroken b:
+                // A-0199: the soft link ends. Anything the SIS still holds for the peer waits for a new one.
+                _softLinks.Remove(b.Peer);
+                if (_awaitingSoftLink.Any(a => a.Request.Dst == b.Peer))
+                {
+                    AskForLink(b.Peer);
+                }
+
+                RetryHeldOff(b.Peer);
                 break;
             default:
                 throw new InvalidOperationException($"the SIS does not handle {primitive.GetType().Name} yet");
@@ -292,9 +334,19 @@ internal sealed class SisSublayer : ISisSublayer
             arq ? 0 : mode.MinRetx,              // valid only for non-ARQ (A-0080, A-0081, S-0095)
             SpduCodec.Encode(spdu),              // A-0143 to A-0147
             _context.AllocateHandle());
-        if (arq)
+        if (arq && _softLinks.TryGetValue(request.Dst, out SoftLink state) && state == SoftLink.Established)
         {
-            _awaitingSoftLink.Add((srcSap, request));   // P4-1: soft link first (A-0008, A-0188)
+            _context.Enqueue(request);           // the soft link exists (A-0194, A-0200)
+        }
+        else if (arq)
+        {
+            // A soft link first (A-0008, A-0188): held, and a physical link asked for unless one is
+            // already being made or the SIS is holding off (A-0193, B-0028).
+            _awaitingSoftLink.Add(new Held(srcSap, request, r.DestSap, r.DestAddress, r.UPdu, mode.Confirm != ConfirmNone));
+            if (!_softLinks.ContainsKey(request.Dst))
+            {
+                AskForLink(request.Dst);
+            }
         }
         else
         {
@@ -329,6 +381,67 @@ internal sealed class SisSublayer : ISisSublayer
             d.UPdu));
     }
 
+    private void AskForLink(uint peer)
+    {
+        _softLinks[peer] = SoftLink.Making;
+        _context.Enqueue(new CPhysicalLinkMake(peer));
+    }
+
+    /// <summary>
+    /// C_PHYSICAL_LINK_MADE: the soft link is established on both sides with no SIS exchange
+    /// (A-0192, A-0194), and the U_PDUs held for the peer go to the CAS in arrival order (A-0200).
+    /// </summary>
+    private void OnLinkMade(uint peer)
+    {
+        _softLinks[peer] = SoftLink.Established;
+        List<Held> release = _awaitingSoftLink.Where(a => a.Request.Dst == peer).ToList();
+        _awaitingSoftLink.RemoveAll(a => a.Request.Dst == peer);
+        foreach (Held h in release)
+        {
+            _context.Enqueue(h.Request);
+        }
+    }
+
+    /// <summary>
+    /// C_PHYSICAL_LINK_REJECTED. Maximum Physical Links In Use, local or the peer's reason 4: hold
+    /// off, keeping the U_PDUs (B-0028, B-0303). Any other: reject every U_PDU held for the peer
+    /// (B-0029); those that asked for confirmation get S_UNIDATA_REQUEST_REJECTED, reason 3 when the
+    /// call had no answer and 15 otherwise, with the whole U_PDU (A-0105, A-0107, A-0109 to A-0111,
+    /// A-0300). A call that ended frees a slot, so held-off peers ask again (B-0412).
+    /// </summary>
+    private void OnLinkRejected(uint peer, LinkReason reason)
+    {
+        if (reason is LinkReason.MaxLinksInUse or LinkReason.PeerTooManyLinks)
+        {
+            _softLinks[peer] = SoftLink.HeldOff;
+            return;
+        }
+
+        _softLinks.Remove(peer);
+        List<Held> failed = _awaitingSoftLink.Where(a => a.Request.Dst == peer).ToList();
+        _awaitingSoftLink.RemoveAll(a => a.Request.Dst == peer);
+        foreach (Held h in failed)
+        {
+            if (h.Confirm && _sapOwner.TryGetValue(h.Sap, out int conn))
+            {
+                Send(conn, new SisUnidataRequestRejected(
+                    reason == LinkReason.NoAnswer ? RejectNodeNotResponding : RejectOther, h.DestSap, h.DestAddress, h.UPdu));
+            }
+        }
+
+        RetryHeldOff(peer);
+    }
+
+    /// <summary>B-0412: every held-off peer other than the one just closed asks again, in address order.</summary>
+    private void RetryHeldOff(uint closed)
+    {
+        List<uint> heldOff = _softLinks.Where(kv => kv.Value == SoftLink.HeldOff && kv.Key != closed).Select(kv => kv.Key).ToList();
+        foreach (uint peer in heldOff)
+        {
+            AskForLink(peer);
+        }
+    }
+
     private void Reject(int conn, SisUnidataRequest r, byte reason) =>
         Send(conn, new SisUnidataRequestRejected(reason, r.DestSap, r.DestAddress, r.UPdu));
 
@@ -349,6 +462,9 @@ internal sealed class SisSublayer : ISisSublayer
             _awaitingSoftLink.RemoveAll(a => a.Sap == sap);
         }
     }
+
+    /// <summary>An ARQ U_PDU held for a soft link, with what a rejection to its client needs (A-0109 to A-0111).</summary>
+    private sealed record Held(byte Sap, CUnidataRequest Request, byte DestSap, SisAddress DestAddress, ReadOnlyMemory<byte> UPdu, bool Confirm);
 
     private sealed class Connection
     {

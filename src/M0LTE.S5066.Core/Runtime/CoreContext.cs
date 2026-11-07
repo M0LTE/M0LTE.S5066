@@ -27,6 +27,9 @@ internal sealed class CoreContext
 
     public TimerTable Timers { get; }
 
+    /// <summary>The per-peer facts CAS-1 negotiation establishes: written by the CAS, read by the DTS (core-architecture.md 4.2).</summary>
+    public PeerTable Peers { get; } = new();
+
     public IModemPort Modem { get; }
 
     /// <summary>Set by the dispatcher: drains the FIFO on the MAC's request during AfterInput.</summary>

@@ -120,11 +120,10 @@ internal sealed class DtsReceiver
     }
 
     /// <summary>
-    /// The edition a sender's D_PDUs are decoded with: Ed3 only for a peer recorded Ed3, else Ed4
-    /// (core-architecture.md 10 item 8). The PeerTable that records editions arrives with CAS-1
-    /// linking (P4-1); until then every sender is decoded as Ed4.
+    /// The edition a sender's D_PDUs are decoded with: Ed3 only for a peer the CAS recorded Ed3,
+    /// else Ed4 (core-architecture.md 10 item 8; B-0408, C-0051).
     /// </summary>
-    private static PeerEdition EditionOf(uint src) => PeerEdition.Ed4;
+    private PeerEdition EditionOf(uint src) => _context.Peers.DecodeEditionOf(src);
 
     private void Scan(bool endOfBurst)
     {

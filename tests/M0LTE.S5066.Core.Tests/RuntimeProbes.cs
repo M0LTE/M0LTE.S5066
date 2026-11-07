@@ -103,5 +103,8 @@ internal static class TestConfig
     public static NodeConfig Basic(CsmaMode? mode = null) => new(
         0x00000102,
         new CsmaConfig(mode, 3000, 16, 30000, 3000, null),
-        new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, 96, 4800)]));
+        new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, 96, 4800)]))
+    {
+        Cas = new CasConfig(4, 60000, 2, 120000),
+    };
 }

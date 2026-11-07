@@ -33,6 +33,36 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
 
     /// <summary>drc.*: data rate settings.</summary>
     public DrcConfig Drc { get; init; } = new(new Speed(2, Interleaver.Long));
+
+    /// <summary>cas.*: CAS-1 linking settings, none with a default.</summary>
+    public CasConfig Cas { get; init; } = CasConfig.Unset;
+}
+
+/// <summary>
+/// cas.* settings for CAS-1 link establishment (P4-1). None has a default: the standard gives no
+/// values (core-architecture.md 10 item 11), so each is null until configured and throws
+/// <see cref="MissingSettingException"/> where the CAS needs it.
+/// </summary>
+/// <param name="MaxLinks">cas.max_links: the active physical link limit, 1 or more (B-0193, B-0209, B-0313, B-0402).</param>
+/// <param name="LinkRequestTimeoutMs">cas.link_request_timeout_ms: the Caller's wait for an answer, from the end of the transmission carrying the request (B-0203, B-0204, B-0400).</param>
+/// <param name="LinkRequestRetries">cas.link_request_retries: repeats of an unanswered request, so 1 + retries sends (B-0222, B-0407).</param>
+/// <param name="FirstDataTimeoutMs">cas.first_data_timeout_ms: the Called node's wait for the first DATA C_PDU (B-0215, B-0216).</param>
+public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? LinkRequestRetries, int? FirstDataTimeoutMs)
+{
+    /// <summary>Every setting null.</summary>
+    public static CasConfig Unset { get; } = new(null, null, null, null);
+
+    /// <summary>cas.max_links, or throws when unset.</summary>
+    public int RequireMaxLinks() => MaxLinks ?? throw new MissingSettingException("cas.max_links");
+
+    /// <summary>cas.link_request_timeout_ms, or throws when unset.</summary>
+    public int RequireLinkRequestTimeoutMs() => LinkRequestTimeoutMs ?? throw new MissingSettingException("cas.link_request_timeout_ms");
+
+    /// <summary>cas.link_request_retries, or throws when unset.</summary>
+    public int RequireLinkRequestRetries() => LinkRequestRetries ?? throw new MissingSettingException("cas.link_request_retries");
+
+    /// <summary>cas.first_data_timeout_ms, or throws when unset.</summary>
+    public int RequireFirstDataTimeoutMs() => FirstDataTimeoutMs ?? throw new MissingSettingException("cas.first_data_timeout_ms");
 }
 
 /// <summary>dts.* settings.</summary>
