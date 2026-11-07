@@ -4,14 +4,14 @@ Last updated: 2026-11-07.
 
 ## Now
 
-Phase 0 is complete. Phase 1 (codecs) and phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) are next.
+Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harness, CRC-16, CRC-32, SplitMix64) is done; P1b (D_PDU codec) is next. Phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) runs alongside.
 
 ## Phases
 
 | Phase | State |
 |---|---|
 | 0. Foundations: requirements matrix, corpus format, harness contract | done |
-| 1. Codecs | next |
+| 1. Codecs | in progress: P1a done (#10), P1b next |
 | 2. Modem work (M0LTE.Ms110d, ms110d-cpp) | design in progress (#8) |
 | 3. DTS non-ARQ | not started |
 | 4. DTS ARQ | not started |
@@ -37,3 +37,4 @@ None.
 
 - 2026-11-07: repos created (public). Plan v1.1 committed with decisions D1 to D8.
 - 2026-11-07: phase 0 complete; plan v1.2.
+- 2026-11-07: P1a done (issue #10): solution, M0LTE.S5066.Core, conformance submodule at corpus 0.1.0, corpus harness (CRC and PRNG cases pass; D_PDU and T2 cases skipped until P1b and phase 3), CI.

@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up .NET (from global.json)
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (warnings are errors)
+        run: dotnet build -c Release --no-restore
+
+      - name: Test (includes the conformance corpus harness)
+        run: dotnet test -c Release --no-build --verbosity normal
+
+      - name: Validate the pinned corpus
+        run: python3 conformance/tools/validate_corpus.py

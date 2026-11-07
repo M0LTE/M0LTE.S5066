@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
+  </ItemGroup>
+
+</Project>

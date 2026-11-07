@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.S5066.Core</PackageId>
+    <Title>M0LTE.S5066.Core</Title>
+    <Description>The sans-IO core of a STANAG 5066 Edition 4 implementation: deterministic protocol codecs and state machines with an injected clock and PRNG, and no threads, sockets or wall-clock reads.</Description>
+    <PackageTags>stanag-5066;stanag;hf;data-link;amateur-radio;ham-radio</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Core.Tests" />
+  </ItemGroup>
+
+</Project>
