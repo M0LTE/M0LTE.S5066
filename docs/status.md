@@ -38,7 +38,7 @@ Open from phase 3: the reception window commitment drops the last repeat of a U_
 
 ## Open questions for Tom
 
-None.
+- Standing permission to push release tags for M0LTE.Ms110d (v0.6.0 is merged at 5862646b and waiting). The safety classifier blocks tag pushes without it.
 
 ## Log
 
