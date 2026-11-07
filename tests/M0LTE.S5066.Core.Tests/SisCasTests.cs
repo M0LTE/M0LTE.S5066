@@ -96,6 +96,18 @@ public class SisCasTests
     }
 
     [Fact]
+    public void Received_data_cpdu_over_the_mtu_is_delivered()
+    {
+        var rig = new Rig();
+        rig.Connect(1, Bind(7, new ServiceType(2)));
+        byte[] big = Enumerable.Range(0, SisSublayer.Mtu + 952).Select(i => (byte)i).ToArray();
+        byte[] spdu = SpduCodec.Encode(new SpduData(0, 3, 7, false, null, big));
+        rig.Deliver(new DUnidataIndication(0x0103, 0x0102, false, false, CpduCodec.Encode(new CpduData(spdu))));
+        SisDecodeResult r = SisCodec.DecodeFrame(((SisBytesOut)rig.Outputs.Single()).Bytes.Span);
+        ((SisUnidataIndication)r.Primitive!).UPdu.ToArray().Should().Equal(big);   // the MTU limits only client requests (A-0046)
+    }
+
+    [Fact]
     public void Arq_reception_reports_transmission_mode_1()
     {
         var rig = new Rig();
