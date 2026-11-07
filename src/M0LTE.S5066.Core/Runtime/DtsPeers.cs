@@ -411,35 +411,36 @@ internal sealed class DtsPeers
     /// <summary>
     /// Tests 1 to 5 on a regular-data D_PDU from the peer (C-0793, C-0799, C-1180): the destination
     /// tests on a DATA-ONLY or DATA-ACK, the originating tests on an ACK-ONLY or DATA-ACK. Equation 5
-    /// covers the FSNs a bitmap acknowledges (encoding 0, from RX LWE + 1 + 256 x offset, C-0233,
-    /// C-0250); run length encoded acknowledgements are P4-3's, so only their RX LWE is tested here.
+    /// covers the FSNs the Ack Data acknowledges, in either encoding (C-0226), from RX LWE + 1 + 256 x
+    /// offset (C-0233, C-0250), as far as the acknowledgement part reads them (C-1153).
     /// </summary>
     private static bool InSync(ArqLink link, Dpdu pdu) => pdu switch
     {
         DataOnly d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe),
         DataAck d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe)
-            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link.Seq, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span)),
-        AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link.Seq, a.RxLwe, a.Encoding, a.Offset, a.AckData.Span)),
+            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span)),
+        AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link, a.RxLwe, a.Encoding, a.Offset, a.AckData.Span)),
         Ed3DataOnly d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe),
         Ed3DataAck d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe)
-            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link.Seq, d.RxLwe, AckData.BitmapEncoding, 0, d.SelectiveAcks.Span)),
-        Ed3AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link.Seq, a.RxLwe, AckData.BitmapEncoding, 0, a.SelectiveAcks.Span)),
+            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link, d.RxLwe, AckData.BitmapEncoding, 0, d.SelectiveAcks.Span)),
+        Ed3AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link, a.RxLwe, AckData.BitmapEncoding, 0, a.SelectiveAcks.Span)),
         _ => true,
     };
 
-    private static List<int> Acknowledged(SeqSpace seq, int rxLwe, int encoding, int offset, ReadOnlySpan<byte> bits)
+    /// <summary>
+    /// The FSNs an Ack Data field acknowledges explicitly, decoded as <see cref="TransmitQueue.OnAck"/>
+    /// decodes it: either encoding, bits reaching the maximum window ahead of RX LWE ignored (C-1153).
+    /// </summary>
+    private static List<int> Acknowledged(ArqLink link, int rxLwe, int encoding, int offset, ReadOnlySpan<byte> ackData)
     {
         var fsns = new List<int>();
-        if (encoding != 0)
+        List<bool> bits = AckData.Decode(encoding, ackData);
+        int first = (offset * ArqLink.OffsetUnit) + 1;
+        for (int i = 0; i < bits.Count && first + i < link.MaxWindowSize; i++)
         {
-            return fsns;
-        }
-
-        for (int i = 0; i < bits.Length * 8; i++)
-        {
-            if ((bits[i / 8] & (1 << (i % 8))) != 0)
+            if (bits[i])
             {
-                fsns.Add(seq.Add(rxLwe, (offset * 256) + 1 + i));
+                fsns.Add(link.Seq.Add(rxLwe, first + i));
             }
         }
 
