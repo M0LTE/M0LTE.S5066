@@ -10,6 +10,22 @@ internal sealed class T2FailureException(string reason, string where, string det
     public string Reason { get; } = reason;
 }
 
+/// <summary>The core under test, as the runner drives it: one input in, the outputs it caused out.</summary>
+/// <param name="Handle">Feeds one input.</param>
+/// <param name="DrainOutputs">Returns and clears the outputs produced since the last call.</param>
+internal sealed record CoreDriver(Action<CoreInput> Handle, Func<List<CoreOutput>> DrainOutputs)
+{
+    /// <summary>A real <see cref="Node"/>.</summary>
+    public static CoreDriver ForNode(NodeConfig config, ulong seed, IModemPort modem)
+    {
+        var node = new Node(config, seed, modem);
+        return new CoreDriver(node.Handle, node.DrainOutputs);
+    }
+}
+
+/// <summary>Builds a core under test from the merged configuration, the seed and the fixture modem.</summary>
+internal delegate CoreDriver CoreFactory(NodeConfig config, ulong seed, IModemPort modem);
+
 /// <summary>The outcome of one scenario: its id, unsupported reason if any, and the transcript of what the core did.</summary>
 /// <param name="Id">The scenario id from the header.</param>
 /// <param name="Unsupported">Why the scenario was not run, or null.</param>
@@ -30,7 +46,8 @@ internal static class T2Runner
     /// <param name="file">The file name, for failure reports.</param>
     /// <param name="lines">The JSON lines of the file.</param>
     /// <param name="defaults">The parsed defaults.json.</param>
-    public static T2Result Run(string file, IReadOnlyList<string> lines, JsonObject defaults)
+    /// <param name="core">Builds the core under test; null for a real <see cref="Node"/>.</param>
+    public static T2Result Run(string file, IReadOnlyList<string> lines, JsonObject defaults, CoreFactory? core = null)
     {
         var transcript = new List<string>();
         JsonObject header = JsonNode.Parse(lines[0])!.AsObject();
@@ -87,7 +104,7 @@ internal static class T2Runner
         }
 
         // Step 2: the node and its fake modem.
-        var node = new Node(nodeConfig, seed, new FixtureModem(nodeConfig.Modem));
+        CoreDriver node = (core ?? CoreDriver.ForNode)(nodeConfig, seed, new FixtureModem(nodeConfig.Modem));
 
         // Step 3: the harness's own timer table, from the outputs.
         var timers = new SortedDictionary<string, long>(StringComparer.Ordinal);
