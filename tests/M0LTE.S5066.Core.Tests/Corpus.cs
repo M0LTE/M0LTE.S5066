@@ -16,7 +16,7 @@ internal sealed record CorpusLine(string Id, string File, int LineNumber, JsonEl
 internal static class Corpus
 {
     /// <summary>The corpus MAJOR.MINOR this harness was written for. Before 1.0.0 a different MINOR is refused.</summary>
-    public const string SupportedVersionPrefix = "0.1.";
+    public const string SupportedVersionPrefix = "0.2.";
 
     public static string Root { get; } = Locate();
 
