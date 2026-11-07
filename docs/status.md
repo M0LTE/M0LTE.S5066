@@ -38,3 +38,4 @@ None.
 - 2026-11-07: repos created (public). Plan v1.1 committed with decisions D1 to D8.
 - 2026-11-07: phase 0 complete; plan v1.2.
 - 2026-11-07: P1a done (issue #10): solution, M0LTE.S5066.Core, conformance submodule at corpus 0.1.0, corpus harness (CRC and PRNG cases pass; D_PDU and T2 cases skipped until P1b and phase 3), CI.
+- 2026-11-07: P1c (issue #12): C_PDU (Annex B types 0 to 10, 7 to 10 decode only) and S_PDU (Annex A types 0 to 2) codecs in Core, 89 T1 cases from conformance PR #7; all pass.
