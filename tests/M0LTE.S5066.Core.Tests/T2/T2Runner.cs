@@ -43,6 +43,29 @@ internal static class T2Runner
             }
         }
 
+        // Unsupported is decided from the whole file before anything runs, so a scenario with an
+        // unknown input, output or key anywhere is unsupported, never a failure at an earlier line,
+        // whatever the core does (harness-contract.md 1).
+        for (int k = 1; k < lines.Count; k++)
+        {
+            JsonObject line = JsonNode.Parse(lines[k])!.AsObject();
+            try
+            {
+                if (line.ContainsKey("in"))
+                {
+                    TraceJson.InputClass(line);
+                }
+                else
+                {
+                    TraceJson.CheckOutput(line);
+                }
+            }
+            catch (UnsupportedTraceException ex)
+            {
+                return new T2Result(id, ex.Message, transcript);
+            }
+        }
+
         // Step 1: configuration.
         JsonObject config = ConfigMerge.Merge(defaults, header["config"]!.AsObject());
         if (ConfigReader.UnknownKey(config) is { } unknown)
@@ -82,15 +105,7 @@ internal static class T2Runner
                 throw new InvalidDataException($"{where}: an output line with no input before it");
             }
 
-            int cls;
-            try
-            {
-                cls = TraceJson.InputClass(step);
-            }
-            catch (UnsupportedTraceException ex)
-            {
-                return new T2Result(id, ex.Message, transcript);
-            }
+            int cls = TraceJson.InputClass(step);
 
             // Expected outputs: the out lines up to the next input.
             var expected = new List<(int Line, JsonObject Out)>();
@@ -101,15 +116,6 @@ internal static class T2Runner
                 if (o.ContainsKey("in"))
                 {
                     break;
-                }
-
-                try
-                {
-                    TraceJson.CheckOutput(o);
-                }
-                catch (UnsupportedTraceException ex)
-                {
-                    return new T2Result(id, ex.Message, transcript);
                 }
 
                 expected.Add((j + 1, o));
@@ -135,8 +141,9 @@ internal static class T2Runner
             }
             else
             {
-                input = TraceJson.ToInput(step);
-                if (input is TimerExpired)
+                // The expiry is checked against the harness's table before the name is parsed, so
+                // a name the core never started is a bad_expiry, not a parse error.
+                if (kind == "timer_expired")
                 {
                     string name = TraceJson.Str(step, "name");
                     if (!timers.TryGetValue(name, out long deadline) || deadline != t)
@@ -147,6 +154,8 @@ internal static class T2Runner
 
                     timers.Remove(name);
                 }
+
+                input = TraceJson.ToInput(step);
             }
 
             transcript.Add(TraceJson.Normalise(step).ToJsonString());

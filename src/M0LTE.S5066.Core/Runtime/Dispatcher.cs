@@ -80,34 +80,45 @@ internal sealed class Dispatcher
             {
                 NodeConfig old = _context.Config;
                 _context.Config = c.NewConfig ?? throw new ArgumentException("config input without a configuration", nameof(input));
-                _sis.OnConfigChanged(old, c.NewConfig);
-                _cas.OnConfigChanged(old, c.NewConfig);
-                _dts.OnConfigChanged(old, c.NewConfig);
-                _mac.OnConfigChanged(old, c.NewConfig);
+                Quiet("OnConfigChanged", () =>
+                {
+                    _sis.OnConfigChanged(old, c.NewConfig);
+                    _cas.OnConfigChanged(old, c.NewConfig);
+                    _dts.OnConfigChanged(old, c.NewConfig);
+                    _mac.OnConfigChanged(old, c.NewConfig);
+                });
                 break;
             }
 
             case TimerExpired e:
                 _context.Timers.Expire(e.Name, _context.Now);
-                Owner(e.Name).OnTimer(e.Name);
+                if (e.Name.Owner == Sublayer.Mac)
+                {
+                    Quiet("the MAC's OnTimer", () => _mac.OnTimer(e.Name));
+                }
+                else
+                {
+                    Owner(e.Name).OnTimer(e.Name);
+                }
+
                 break;
             case BurstStarted:
                 _dts.OnBurstStarted();
-                _mac.OnBurstStarted();
+                Quiet("the MAC's OnBurstStarted", _mac.OnBurstStarted);
                 break;
             case BytesReceived b:
                 _dts.OnBytesReceived(b.Bytes);
                 break;
             case BurstEnded b:
                 _dts.OnBurstEnded(b);
-                _mac.OnBurstEnded(b);
+                Quiet("the MAC's OnBurstEnded", () => _mac.OnBurstEnded(b));
                 break;
             case TransmitDone:
                 _dts.OnTransmitDone();
-                _mac.OnTransmitDone();
+                Quiet("the MAC's OnTransmitDone", _mac.OnTransmitDone);
                 break;
             case ChannelBusy c:
-                _mac.OnChannelBusy(c.Busy);
+                Quiet("the MAC's OnChannelBusy", () => _mac.OnChannelBusy(c.Busy));
                 break;
             case SisConnect c:
                 _sis.OnConnect(c.Conn);
@@ -130,6 +141,22 @@ internal sealed class Dispatcher
         Sublayer.Dts => _dts,
         _ => _mac,
     };
+
+    /// <summary>
+    /// Runs calls that the design says only record facts: configuration changes (7.3) and the
+    /// MAC's entry calls and OnTimer (3.5 rule 4). An output or primitive from one of them is a bug,
+    /// caught here so a later item cannot drift from the order the C++ port must reproduce.
+    /// </summary>
+    private void Quiet(string what, Action call)
+    {
+        int outputs = _context.OutputCount;
+        int pending = _context.PendingCount;
+        call();
+        if (_context.OutputCount != outputs || _context.PendingCount != pending)
+        {
+            throw new InvalidOperationException($"{what} emitted an output or enqueued a primitive; it may only record facts");
+        }
+    }
 
     private void DrainOnRequest()
     {

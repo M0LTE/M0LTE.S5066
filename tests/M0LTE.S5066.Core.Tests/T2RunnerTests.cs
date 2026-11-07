@@ -165,6 +165,20 @@ public class T2RunnerTests
     }
 
     [Fact]
+    public void An_unknown_kind_late_in_the_file_makes_the_scenario_unsupported_even_after_a_mismatch()
+    {
+        Run(Builder().BurstStarted(0).ExpectTimerStart("csma.lbt_wait", 3000).In(10, "station_hook"))
+            .Unsupported.Should().Contain("station_hook");
+    }
+
+    [Fact]
+    public void An_expiry_for_a_name_the_core_does_not_know_is_a_bad_expiry()
+    {
+        FluentActions.Invoking(() => Run(Builder().TimerExpired(100, "station.id_hook")))
+            .Should().Throw<T2FailureException>().Which.Reason.Should().Be("bad_expiry");
+    }
+
+    [Fact]
     public void Byte_fields_compare_as_bytes_whatever_the_hex_case()
     {
         JsonNode.DeepEquals(
@@ -267,14 +281,23 @@ public class DeterminismTests
             rig.Context.Timers.Start(TimerName.ForPeer(TimerKind.DtsAckWait, 0x0102), 9000);
             rig.Context.Emit(new SisBytesOut(1, new byte[] { 0x90, 0xEB, 0x00, (byte)rig.Context.AllocateHandle() }));
         };
+        bool contExpired = false;
         rig.Mac.Reactions["AfterInput"] = () =>
         {
             if (rig.Context.Now == 100 && !rig.Context.Timers.StartUnlessZero(cont, (long)prng.Uniform(16) * 3000))
             {
                 rig.Context.Emit(new Transmit(new byte[] { 1, 2, 3 }, 2, Interleaver.Long, 7, true));
             }
+
+            if (contExpired)
+            {
+                contExpired = false;
+                rig.Context.Emit(new Transmit(new byte[] { 4 }, 2, Interleaver.Long, 7, true));
+            }
         };
-        rig.Mac.Reactions["OnTimer:csma.cont_wait"] = () => rig.Context.Emit(new Transmit(new byte[] { 4 }, 2, Interleaver.Long, 7, true));
+
+        // The MAC's OnTimer only records the fact; AfterInput acts on it (core-architecture.md 3.5 rule 4).
+        rig.Mac.Reactions["OnTimer:csma.cont_wait"] = () => contExpired = true;
 
         var sb = new StringBuilder();
         rig.Dispatcher.Handle(new SisBytes(0, 1, new byte[] { 0 }));

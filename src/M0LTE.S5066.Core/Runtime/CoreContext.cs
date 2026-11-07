@@ -34,6 +34,10 @@ internal sealed class CoreContext
 
     internal bool HasPendingPrimitives => _fifo.Count > 0;
 
+    internal int PendingCount => _fifo.Count;
+
+    internal int OutputCount => _outputs.Count;
+
     /// <summary>Appends an output the moment it is produced (core-architecture.md 6 rule 6).</summary>
     public void Emit(CoreOutput output)
     {

@@ -217,6 +217,25 @@ public class DispatcherTests
     }
 
     [Fact]
+    public void Calls_that_only_record_facts_may_not_emit_or_enqueue()
+    {
+        var rig = new ProbeRig();
+        rig.Mac.Reactions["OnBurstStarted"] = () => rig.Context.Timers.Start(TimerName.Of(TimerKind.CsmaVdcdEnd), 10);
+        FluentActions.Invoking(() => rig.Dispatcher.Handle(new BurstStarted(0))).Should().Throw<InvalidOperationException>();
+
+        var rig2 = new ProbeRig();
+        rig2.Dts.Reactions["OnConfigChanged"] = () => rig2.Context.Enqueue(new ProbeToCas("x"));
+        FluentActions.Invoking(() => rig2.Dispatcher.Handle(new ConfigInput(0, TestConfig.Basic())))
+            .Should().Throw<InvalidOperationException>();
+
+        var rig3 = new ProbeRig();
+        TimerName lbt = TimerName.Of(TimerKind.CsmaLbtWait);
+        rig3.Context.Timers.Start(lbt, 5);
+        rig3.Mac.Reactions["OnTimer:csma.lbt_wait"] = () => rig3.Context.Emit(new TerminateReceive());
+        FluentActions.Invoking(() => rig3.Dispatcher.Handle(new TimerExpired(5, lbt))).Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void Time_may_not_go_backwards()
     {
         var rig = new ProbeRig();
