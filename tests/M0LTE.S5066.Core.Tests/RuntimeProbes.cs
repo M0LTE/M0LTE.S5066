@@ -27,11 +27,11 @@ internal sealed class Probe(string name, List<string> log) : ISisSublayer, ICasS
 
     public void OnDisconnect(int conn) => Call("OnDisconnect");
 
-    public void On(ToSis primitive) => Call("On", ((ProbeToSis)primitive).Tag);
+    public void On(ToSis primitive) => Call("On", primitive is ProbeToSis p ? p.Tag : primitive.GetType().Name);
 
-    public void On(ToCas primitive) => Call("On", ((ProbeToCas)primitive).Tag);
+    public void On(ToCas primitive) => Call("On", primitive is ProbeToCas p ? p.Tag : primitive.GetType().Name);
 
-    public void On(ToDts primitive) => Call("On", ((ProbeToDts)primitive).Tag);
+    public void On(ToDts primitive) => Call("On", primitive is ProbeToDts p ? p.Tag : primitive.GetType().Name);
 
     public void OnBurstStarted() => Call("OnBurstStarted");
 
