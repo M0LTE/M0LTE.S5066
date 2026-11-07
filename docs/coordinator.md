@@ -25,9 +25,11 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- Phase 3 has started. Its design is docs/core-architecture.md (merged as PR #19); the work items are in its section 9, with issues #18 (P3-0) and #20 to #26 (P3-1 to P3-7). P3-0 (runtime, T2 runner) is with an Opus implementer.
-- P2: modem 0.5.0 is M0LTE/M0LTE.Ms110d PR #20, under Opus review for binary compatibility. After it passes: merge, publish to NuGet (check that repo's publish.yml), then the SNR estimator (0.6.0).
-- Lesson: in the main checkout, run `git submodule update` before any `git add -A`. A coordinator commit once moved the submodule back to an old corpus and turned main CI red.
+- P3-0 is merged (#27). P3-1 (#20) and P3-2 (#21) are with Opus implementers, in parallel.
+- Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. The coordinator's prompt only names the item, issue and PRs.
+- Merging is one command: `/home/tf/src/s5066-research/scripts/merge-pair.sh <conformance_pr> <code_pr>` merges the conformance PR, repins the submodule, waits for CI, merges the code PR and cleans up.
+- Modem 0.5.0 is merged in M0LTE.Ms110d. Tagging v0.5.0 to publish is blocked by the classifier and is waiting on Tom (he runs the tag, or adds an allow rule). The SNR estimator (0.6.0) comes next in that repo, and is not started.
+- Lesson: in the main checkout, run `git submodule update` before any `git add -A`.
 - Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
 
 ## Next
