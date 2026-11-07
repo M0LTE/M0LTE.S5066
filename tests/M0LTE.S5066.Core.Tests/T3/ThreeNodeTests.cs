@@ -32,16 +32,15 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// K-0082, K-0089, K-0090).
 /// </para>
 /// <para>
-/// The simulation found four protocol issues, filed rather than fixed in P5-5. Their signatures are
-/// counted, not failed, and <see cref="Three_nodes_strict"/> (skipped) checks without the allowance:
-/// a half-open link made again keeps stale ARQ state at the end that held it, so windows disagree,
-/// new data is acknowledged as copies and segments of two C_PDUs are joined (#70); a confirmed
-/// in-order C_PDU held behind a gap is lost when the receiver's link ends (#71); in-order C_PDUs to
-/// one peer are delivered in priority order (#72), so order is checked within each priority; and a
-/// node held off by a peer's reason 4 with no other link never asks again (#73). Broadcast repeats
-/// dropped for want of reception window (#38) are counted too. A local sweep of 300 seeds of each
-/// variant passed (S5066_T3_SEEDS=300); S5066_T3_DUMP=seed-mode-inOrder writes one run's trace to
-/// the temporary directory.
+/// The simulation found four protocol issues in P5-5, since fixed and now checked strictly: a
+/// half-open link made again kept stale ARQ state at the end that held it (#70, interp B-0452); a
+/// confirmed in-order C_PDU held behind a gap was lost when the receiver's link ended (#71, interp
+/// C-1254); in-order C_PDUs to one peer were delivered in priority order (#72, interp C-1253); and a
+/// node held off by a peer's reason 4 with no other link never asked again (#73, interp B-0451).
+/// In-order delivery is checked across priorities. Broadcast repeats dropped for want of reception
+/// window (#38) are counted, not failed. A local sweep of 300 seeds of each variant passed
+/// (S5066_T3_SEEDS=300); S5066_T3_DUMP=seed-mode-inOrder writes one run's trace to the temporary
+/// directory.
 /// </para>
 /// </remarks>
 public class ThreeNodeTests(ITestOutputHelper output)
@@ -83,21 +82,6 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 File.AppendAllLines(file, [run.Summary.Split('\n')[0]]);
             }
         }
-        run.Failures.Should().BeEmpty(run.Summary);
-    }
-
-    /// <summary>
-    /// The same runs with no allowance for the known issues: a stale ARQ state after a half-open
-    /// link is made again (#70), confirmed in-order C_PDUs lost when the receiver's link ends (#71),
-    /// in-order C_PDUs overtaken by later ones of higher priority (#72), and a node held off by a
-    /// peer's reason 4 that never asks again (#73). Un-skip when they are fixed.
-    /// </summary>
-    [Theory(Skip = "issues #70, #71, #72 and #73")]
-    [MemberData(nameof(Cases))]
-    public void Three_nodes_strict(ulong seed, string mode, bool inOrder)
-    {
-        Run run = Execute(seed, mode, inOrder, Lossy, strict: true);
-        output.WriteLine(run.Summary);
         run.Failures.Should().BeEmpty(run.Summary);
     }
 
@@ -147,7 +131,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
     /// <summary>10% of blocks lost, 3% of bursts missed, 1% fades per block, a realistic host.</summary>
     internal static readonly ChannelModel Lossy = new(BlockErrorPpm: 100_000, BurstMissPpm: 30_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50, FadePpm: 10_000);
 
-    internal static Run Execute(ulong seed, string mode, bool inOrder, ChannelModel channel, bool strict = false)
+    internal static Run Execute(ulong seed, string mode, bool inOrder, ChannelModel channel)
     {
         var parts = new List<Parts>();
         CoreDriver Factory(NodeConfig config, ulong s, IModemPort modem)
@@ -382,49 +366,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
 
         failures.AddRange(sim.Violations);
 
-        // Known issues. Issue #70: one end of a link dropped it while the other held it, then made it
-        // again, and the end that held it kept its old ARQ state. Each such re-link is found from the
-        // link_state outputs: node a reports linked with b while b has been linked with a since before
-        // a last reported unlinked with b. The pair is stale from then until b leaves linked.
-        var relinks = new List<(int A, int B, long From, long To)>();
-        for (int i = 0; i < sim.LinkStates.Count; i++)
-        {
-            (int node, long t, uint peer, LinkStateName state) = sim.LinkStates[i];
-            int other = Enumerable.Range(0, 3).Single(n => sim.AddressOf(n) == peer);
-            if (state != LinkStateName.Linked)
-            {
-                continue;
-            }
-
-            var before = sim.LinkStates.Take(i).ToList();
-            var otherLast = before.LastOrDefault(l => l.Node == other && l.Peer == sim.AddressOf(node));
-            var otherLinked = before.LastOrDefault(l => l.Node == other && l.Peer == sim.AddressOf(node) && l.State == LinkStateName.Linked);
-            var ownUnlinked = before.LastOrDefault(l => l.Node == node && l.Peer == peer && l.State == LinkStateName.Unlinked);
-            if (otherLast.State is LinkStateName.Linked or LinkStateName.Closing or LinkStateName.Breaking
-                && otherLinked.State == LinkStateName.Linked && ownUnlinked.State == LinkStateName.Unlinked && ownUnlinked.T >= otherLinked.T)
-            {
-                var end = sim.LinkStates.Skip(i + 1).FirstOrDefault(l => l.Node == other && l.Peer == sim.AddressOf(node) && l.State == LinkStateName.Unlinked);
-                relinks.Add((node, other, t, end.State == default && end.T == 0 ? long.MaxValue : end.T));
-            }
-        }
-
-        int Peer(uint address) => Enumerable.Range(0, 3).Single(n => sim.AddressOf(n) == address);
-        // A pair is stale from the re-link until the end that held the old link leaves linked (plus a
-        // second for the host latency of what it passed up meanwhile), and stale at the end if it never did.
-        bool Stale(int a, int b, long t) => relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.From <= t && (r.To == long.MaxValue || t <= r.To + 1_000));
-        bool StaleAtEnd(int a, int b) => relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.To == long.MaxValue);
-        int knownStale = 0;
-        foreach ((int a, int b, long t, string text) in windowFaults)
-        {
-            if (!strict && relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.From <= t && t <= r.To))
-            {
-                knownStale++;
-            }
-            else
-            {
-                failures.Add(text);
-            }
-        }
+        failures.AddRange(windowFaults.Select(w => w.Text));
 
         // ARQ: each U_PDU at its destination exactly once. A U_PDU rejected and sent again may have
         // arrived the first time (its acknowledgement lost before the link ended), so it may arrive twice.
@@ -433,66 +375,26 @@ public class ThreeNodeTests(ITestOutputHelper output)
         {
             if (!byKey.TryGetValue(Convert.ToHexString(d.UPdu), out Msg? m) || sim.AddressOf(m.Src) != d.Src || (m.Dst >= 0 && m.Dst != d.Receiver) || m.Src == d.Receiver)
             {
-                int from = Enumerable.Range(0, 3).FirstOrDefault(n => sim.AddressOf(n) == d.Src);
-                if (!strict && d.UPdu[0] == ArqMark && Stale(from, d.Receiver, d.T))
-                {
-                    knownStale++;   // segments of two C_PDUs joined across a stale re-link (issue #70)
-                }
-                else
-                {
-                    failures.Add($"node {d.Receiver} got a U_PDU nobody sent it at {d.T}");
-                }
-
+                failures.Add($"node {d.Receiver} got a U_PDU nobody sent it at {d.T}");
                 continue;
             }
 
             if (m.Dst >= 0)
             {
                 delivered[m.Id] = delivered.GetValueOrDefault(m.Id) + 1;
-                if (delivered[m.Id] > 1 && m.Rejections.Count == 0 && !(!strict && Stale(m.Src, m.Dst, d.T)))
+                if (delivered[m.Id] > 1 && m.Rejections.Count == 0)
                 {
                     failures.Add($"ARQ U_PDU {m.Id} ({m.Src} to {m.Dst}) delivered twice, the second at {d.T}, never rejected");
                 }
             }
         }
 
-        int confirmedLost = 0;
-        int stuckHeldOff = 0;
-
-        // Issue #73: the node was refused with the peer's reason 4 and has not made a link to it since,
-        // so it holds off for ever when it has no other link to close.
-        bool StuckHeldOff(int node, uint peer) =>
-            parts[node].LinkEvents.LastOrDefault(e => e.Peer == peer) is { Made: false, PeerTooMany: true };
         foreach (Msg m in msgs.Where(m => m.Dst >= 0 && !delivered.ContainsKey(m.Id)))
         {
             string key = Convert.ToHexString(m.Payload);
             string silent = string.Join(",", parts[m.Src].Rejected.Where(r => r.UPdu == key).Select(r => $"{r.Reason}@{r.T}"));
-            var confirmedAt = parts[m.Src].Confirmed.Where(r => r.UPdu == key).Select(r => r.T).ToList();
-            string confirmed = string.Join(",", confirmedAt);
+            string confirmed = string.Join(",", parts[m.Src].Confirmed.Where(r => r.UPdu == key).Select(r => r.T));
             bool arrived = parts[m.Dst].Arrived.Any(r => r.UPdu == key);
-            if (!strict && confirmed.Length == 0 && StuckHeldOff(m.Src, sim.AddressOf(m.Dst))
-                && parts[m.Src].Sis.AwaitingSoftLink.Any(r => r.Dst == sim.AddressOf(m.Dst) && SpduCodec.Decode(r.SPdu.Span).Value is SpduData sd && Convert.ToHexString(sd.UPdu.Span) == key))
-            {
-                continue;   // still held in the SIS, issue #73 (counted with the node above)
-            }
-
-            if (!strict && StaleAtEnd(m.Src, m.Dst)
-                && parts[m.Src].Sis.Outstanding.Any(r => SpduCodec.Decode(r.SPdu.Span).Value is SpduData sd && Convert.ToHexString(sd.UPdu.Span) == key))
-            {
-                continue;   // still outstanding on a link left stale by issue #70 (counted with the re-link)
-            }
-
-            // Issue #71 needs the receiver's link with the sender to have ended after the confirmation;
-            // issue #70 needs the confirmation to fall while the pair was stale.
-            bool linkEndedAfter = confirmedAt.Count > 0 && sim.LinkStates.Any(l => l.Node == m.Dst && l.Peer == sim.AddressOf(m.Src) && l.State == LinkStateName.Unlinked && l.T >= confirmedAt[0]);
-            if (!strict && !arrived && ((inOrder && linkEndedAfter) || confirmedAt.Any(t => Stale(m.Src, m.Dst, t))))
-            {
-                // Confirmed, never passed up: held for in-order delivery when the link ended (issue
-                // #71), or acknowledged as a copy across a stale re-link (issue #70).
-                confirmedLost++;
-                continue;
-            }
-
             string ends = string.Join(",", parts[m.Dst].CasTimers.Where(x => x.Name.Peer == sim.AddressOf(m.Src)).Select(x => $"{x.Name.ToTraceString()}@{x.T}")
                 .Concat(parts[m.Dst].LostAt.Where(x => x.Peer == sim.AddressOf(m.Src)).Select(x => $"lost@{x.T}")));
             failures.Add($"ARQ U_PDU {m.Id} ({m.Src} to {m.Dst}, priority {m.Priority}, {m.Attempts} attempts, rejections [{string.Join(",", m.Rejections)}], core rejections [{silent}], confirmed [{confirmed}], arrived {arrived}, receiver CAS [{ends}]) never delivered");
@@ -511,13 +413,10 @@ public class ThreeNodeTests(ITestOutputHelper output)
                         .OfType<Msg>()
                         .Where(m => m.Attempts == 1)
                         .ToList();
-                    foreach (IGrouping<byte, Msg> g in order.GroupBy(m => strict ? (byte)0 : m.Priority))   // across priorities: issue #72
+                    List<int> ids = order.Select(m => m.Id).ToList();   // across priorities (C-0017, interp C-1253)
+                    if (!ids.SequenceEqual(ids.Order()))
                     {
-                        List<int> ids = g.Select(m => m.Id).ToList();
-                        if (!ids.SequenceEqual(ids.Order()))
-                        {
-                            failures.Add($"ARQ U_PDUs from node {s} to node {r} out of order: {string.Join(",", order.Select(m => $"{m.Id}p{m.Priority}"))}");
-                        }
+                        failures.Add($"ARQ U_PDUs from node {s} to node {r} out of order: {string.Join(",", order.Select(m => $"{m.Id}p{m.Priority}"))}");
                     }
                 }
             }
@@ -570,24 +469,18 @@ public class ThreeNodeTests(ITestOutputHelper output)
         {
             for (int b = 0; b < 3; b++)
             {
-                if (a != b && LastState(sim, a, sim.AddressOf(b)) is LinkStateName s and not LinkStateName.Unlinked && !(!strict && StaleAtEnd(a, b)))
+                if (a != b && LastState(sim, a, sim.AddressOf(b)) is LinkStateName s and not LinkStateName.Unlinked)
                 {
                     failures.Add($"node {a} ends {s} with node {b}");
                 }
             }
 
-            if (!strict && parts[a].Sis.Outstanding.Count == 0 && parts[a].Sis.AwaitingSoftLink.Count > 0
-                && parts[a].Sis.AwaitingSoftLink.All(r => StuckHeldOff(a, r.Dst)))
-            {
-                stuckHeldOff++;   // issue #73
-            }
-            else if ((parts[a].Sis.Outstanding.Count > 0 || parts[a].Sis.AwaitingSoftLink.Count > 0)
-                     && !(!strict && parts[a].Sis.Outstanding.Concat(parts[a].Sis.AwaitingSoftLink).All(r => StaleAtEnd(a, Peer(r.Dst)))))
+            if (parts[a].Sis.Outstanding.Count > 0 || parts[a].Sis.AwaitingSoftLink.Count > 0)
             {
                 failures.Add($"node {a} SIS ends with {parts[a].Sis.Outstanding.Count} outstanding and {parts[a].Sis.AwaitingSoftLink.Count} awaiting a soft link");
             }
 
-            if (parts[a].Dts.HeldArq.Count > 0 && !(!strict && parts[a].Dts.HeldArq.All(r => StaleAtEnd(a, Peer(r.Dst)))))
+            if (parts[a].Dts.HeldArq.Count > 0)
             {
                 failures.Add($"node {a} DTS ends holding {parts[a].Dts.HeldArq.Count} ARQ C_PDUs");
             }
@@ -608,11 +501,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
             ["resends"] = msgs.Sum(m => m.Attempts - 1),
             ["resets"] = sim.Bursts.Sum(x => x.Dpdus.Count(d => d.Pdu is ResetWinResync or Ed3ResetWinResync)),
             ["probes"] = probes,
-            ["confirmed but lost (#70, #71)"] = confirmedLost,
             ["broadcast repeats dropped (#38)"] = repeatsDropped,
-            ["nodes stuck held off (#73)"] = stuckHeldOff,
-            ["stale re-links (#70)"] = relinks.Count,
-            ["faults on stale links (#70)"] = knownStale,
             ["duplicates after a resend"] = delivered.Values.Sum(v => v - 1),
         };
         string summary = $"seed {seed} {mode} {(inOrder ? "in order" : "any order")}: {sim.Bursts.Count} bursts, {delivered.Count} of {msgs.Count(m => m.Dst >= 0)} ARQ, {broadcasts} broadcast deliveries, "
@@ -665,12 +554,6 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 ["link_request_timeout_ms"] = 30_000,
                 ["link_request_retries"] = 10,
                 ["break_retries"] = 3,
-                // Test departure: the first-data wait (B-0215, B-0406) is made longer than the run. With
-                // the derived value a Called node whose first C_PDU is held for in-order delivery, or
-                // which has only sent data, aborts a link in use and leaves it half-open, the main
-                // trigger of issues #70 and #71; that is shown in the issues, and this keeps the runs on
-                // the other paths. Remove when #70 is fixed.
-                ["first_data_timeout_ms"] = 10_000_000,
             },
             ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 60_000, ["soft_link_min_hold_ms"] = 30_000, ["soft_link_max_ms"] = 150_000 },
             ["dts"] = new JsonObject { ["max_segment_size"] = 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000, ["ack_wait_ms"] = 20_000 },

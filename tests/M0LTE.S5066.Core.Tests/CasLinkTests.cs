@@ -93,13 +93,31 @@ public class CasLinkTests
     [Fact]
     public void Peer_reason_4_holds_off_without_rejecting_to_the_client()
     {
-        // B-0303, A-0300.
+        // B-0303, A-0300; interp B-0451: the SIS asks again after the soft link maximum time.
         var rig = new Rig();
         rig.ArqRequest(X, confirm: 1);
         rig.Deliver(Link(X, new PhysicalLinkRejected(4)));
-        rig.Outputs.Should().Equal(new LinkState(X, LinkStateName.Unlinked));
+        var heldOff = TimerName.ForPeer(TimerKind.SisHeldOff, X);
+        rig.Outputs.Should().Equal(new LinkState(X, LinkStateName.Unlinked), new TimerStart(heldOff, rig.Context.Config.SoftLinkMaxMs()));
         rig.Sis.SoftLinkOf(X).Should().Be("HeldOff");
         rig.Sis.AwaitingSoftLink.Should().ContainSingle();
+
+        rig.Expire(heldOff);
+        rig.Outputs.Should().Equal(new LinkState(X, LinkStateName.Calling));
+        rig.Sis.SoftLinkOf(X).Should().Be("Making");
+    }
+
+    [Fact]
+    public void A_peer_reason_4_hold_ends_when_the_sis_asks_again_another_way()
+    {
+        // Interp B-0451, B-0412: another call failing makes the SIS ask again at once, and the timer stops.
+        var rig = new Rig();
+        rig.ArqRequest(X);
+        rig.Deliver(Link(X, new PhysicalLinkRejected(4)));
+        rig.ArqRequest(Y);
+        rig.Deliver(Link(Y, new PhysicalLinkRejected(0)));
+        rig.Outputs.Should().Equal(
+            new LinkState(Y, LinkStateName.Unlinked), new TimerCancel(TimerName.ForPeer(TimerKind.SisHeldOff, X)), new LinkState(X, LinkStateName.Calling));
     }
 
     [Fact]

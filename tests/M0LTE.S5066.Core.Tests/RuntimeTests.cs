@@ -18,6 +18,7 @@ public class TimerNameTests
             (TimerKind.CasCleanClose, "cas.clean_close", "Cas"), (TimerKind.SisConfirmWait, "sis.confirm_wait", "Sis"),
             (TimerKind.SisTtd, "sis.ttd", "Sis"), (TimerKind.SisSoftLinkIdle, "sis.soft_link_idle", "Sis"),
             (TimerKind.SisSoftLinkMinHold, "sis.soft_link_min_hold", "Sis"), (TimerKind.SisSoftLinkMax, "sis.soft_link_max", "Sis"),
+            (TimerKind.SisHeldOff, "sis.held_off", "Sis"),
         };
         expected.Should().HaveCount(Enum.GetValues<TimerKind>().Length);
         foreach (var (kind, name, owner) in expected)

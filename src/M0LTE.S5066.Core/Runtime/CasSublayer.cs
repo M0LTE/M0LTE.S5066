@@ -373,6 +373,7 @@ internal sealed class CasSublayer : ICasSublayer
     private void Made(uint peer, Link link, bool called)
     {
         link.Phase = Phase.Linked;
+        link.Called = called;
         _context.Emit(new LinkState(peer, LinkStateName.Linked));
         _context.Enqueue(new DConnectionMade(peer, link.Ed4, link.ShortFamily));
         _context.Enqueue(new CPhysicalLinkMade(peer, called));
@@ -467,12 +468,23 @@ internal sealed class CasSublayer : ICasSublayer
 
         if (link?.Phase is Phase.Linked or Phase.Closing)
         {
-            if (link.Handle is null)
+            if (link.Called && link.AwaitingFirstData)
             {
-                link.Handle = SendControl(peer, new PhysicalLinkAccepted(link.ShortFamily && link.Ed4, link.Ed4, false));
+                // B-0214, B-0314: the Caller may not have heard our accept; answer it again.
+                if (link.Handle is null)
+                {
+                    link.Handle = SendControl(peer, new PhysicalLinkAccepted(link.ShortFamily && link.Ed4, link.Ed4, false));
+                }
+
+                return;
             }
 
-            return;
+            // Interp B-0452: a request from the node we called, or from a Caller that has already
+            // used the link, cannot repeat one we answered: the peer no longer holds the link. Ours is
+            // broken locally (B-0324, nothing sent) and the request is handled as a new one, so both
+            // ends start the new link with fresh ARQ state (C-0782).
+            Broken(peer, LinkReason.HalfOpen, confirm: false);
+            link = null;
         }
 
         if (link?.Phase == Phase.Accepting)
@@ -942,6 +954,9 @@ internal sealed class CasSublayer : ICasSublayer
 
         /// <summary>Crossed calls: we were calling when the peer's request arrived, so we accepted it (B-0405).</summary>
         public bool Crossed { get; set; }
+
+        /// <summary>The link was made as the Called node, by sending PHYSICAL LINK ACCEPTED (B-0213); false when made as Caller (B-0219).</summary>
+        public bool Called { get; set; }
 
         /// <summary>Called node: no DATA C_PDU received yet (B-0215).</summary>
         public bool AwaitingFirstData { get; set; }

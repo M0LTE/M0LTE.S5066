@@ -424,6 +424,16 @@ internal sealed class DtsPeers
 
     private void Terminate(uint peerAddress, Peer peer, DReason reason)
     {
+        if (_tx.LinkOf(peerAddress) is ArqLink link)
+        {
+            // Interp C-1254: complete in-order C_PDUs held behind a gap go up, in FSN order, before
+            // the connection's state is dropped; they were acknowledged, so the sender confirmed them.
+            foreach (ReadOnlyMemory<byte> cpdu in link.TakeHeldInOrder())
+            {
+                _context.Enqueue(new DUnidataIndication(peerAddress, _context.Config.LocalAddress, false, true, cpdu));
+            }
+        }
+
         peer.Connected = false;
         peer.State = DtsPeerState.IdleUnconnected;
         EndExchange(peerAddress, peer);

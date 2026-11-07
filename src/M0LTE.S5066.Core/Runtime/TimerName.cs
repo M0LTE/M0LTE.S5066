@@ -61,6 +61,9 @@ public enum TimerKind
 
     /// <summary>sis.soft_link_max/&lt;peer&gt;.</summary>
     SisSoftLinkMax,
+
+    /// <summary>sis.held_off/&lt;peer&gt; (interp B-0451).</summary>
+    SisHeldOff,
 }
 
 /// <summary>The sublayer that owns a timer and receives its expiry.</summary>
@@ -138,7 +141,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
         int slash = s.IndexOf('/', StringComparison.Ordinal);
         string baseName = slash < 0 ? s : s[..slash];
         TimerKind? kind = null;
-        for (int k = 0; k <= (int)TimerKind.SisSoftLinkMax; k++)
+        for (int k = 0; k <= (int)TimerKind.SisHeldOff; k++)
         {
             if (string.Equals(BaseName((TimerKind)k), baseName, StringComparison.Ordinal))
             {
@@ -190,7 +193,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
             or TimerKind.DtsResetWait => Sublayer.Dts,
         TimerKind.CasLinkRequest or TimerKind.CasFirstData or TimerKind.CasBreak or TimerKind.CasCleanClose => Sublayer.Cas,
         TimerKind.SisConfirmWait or TimerKind.SisTtd or TimerKind.SisSoftLinkIdle or TimerKind.SisSoftLinkMinHold
-            or TimerKind.SisSoftLinkMax => Sublayer.Sis,
+            or TimerKind.SisSoftLinkMax or TimerKind.SisHeldOff => Sublayer.Sis,
         _ => throw new InvalidOperationException($"timer kind {(int)Kind} has no owner"),
     };
 
@@ -215,7 +218,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
     {
         TimerKind.DtsAckWait or TimerKind.DtsManagementWait or TimerKind.DtsResetWait or TimerKind.CasLinkRequest or TimerKind.CasFirstData
             or TimerKind.CasBreak or TimerKind.CasCleanClose or TimerKind.SisSoftLinkIdle
-            or TimerKind.SisSoftLinkMinHold or TimerKind.SisSoftLinkMax => TimerQualifier.Peer,
+            or TimerKind.SisSoftLinkMinHold or TimerKind.SisSoftLinkMax or TimerKind.SisHeldOff => TimerQualifier.Peer,
         _ => TimerQualifier.None,
     };
 
@@ -239,6 +242,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
         TimerKind.SisSoftLinkIdle => "sis.soft_link_idle",
         TimerKind.SisSoftLinkMinHold => "sis.soft_link_min_hold",
         TimerKind.SisSoftLinkMax => "sis.soft_link_max",
+        TimerKind.SisHeldOff => "sis.held_off",
         _ => throw new InvalidOperationException($"timer kind {(int)kind} has no name"),
     };
 

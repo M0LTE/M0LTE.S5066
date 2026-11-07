@@ -1010,18 +1010,45 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// The first transmissions of data, non-ARQ (type 7) entries and ARQ C_PDUs together: an ARQ
     /// C_PDU already partly sent first (C-0850, C-1127), then by priority, highest first, then age
-    /// (C-0851, C-0853, C-0854).
+    /// (C-0851, C-0853, C-0854). An ARQ C_PDU with DELIVER IN ORDER takes the highest priority of the
+    /// in-order C_PDUs to the same peer submitted after it and not yet fully placed, so in-order
+    /// C_PDUs to one peer, whatever their SAP, get FSNs in submission order and a later one of higher
+    /// priority never overtakes an earlier one (C-0017, C-0018, C-0851; interp C-1253).
     /// </summary>
     private List<object> DataCandidates()
     {
         var list = new List<(object Item, bool Partial, int Priority, long Seq)>();
         list.AddRange(Normal().Select(e => ((object)e, false, e.Priority, e.Seq)));
-        list.AddRange(_arq.Select(a => ((object)a, a.Partial && _links.TryGetValue(a.Peer, out ArqLink? l) && !l.Suspended, a.Priority, a.Seq)));
+        list.AddRange(_arq.Select(a => ((object)a, a.Partial && _links.TryGetValue(a.Peer, out ArqLink? l) && !l.Suspended, InOrderPriority(a), a.Seq)));
         list.Sort((x, y) =>
             x.Partial != y.Partial ? y.Partial.CompareTo(x.Partial)
             : x.Priority != y.Priority ? y.Priority.CompareTo(x.Priority)
             : x.Seq.CompareTo(y.Seq));
         return list.Select(x => x.Item).ToList();
+    }
+
+    /// <summary>
+    /// The priority an ARQ C_PDU is ordered by among first transmissions (interp C-1253): its own, or
+    /// for one with DELIVER IN ORDER the highest of its own and those of the in-order C_PDUs to the
+    /// same peer queued after it that still have a segment to place.
+    /// </summary>
+    private int InOrderPriority(ArqCPdu a)
+    {
+        int priority = a.Priority;
+        if (!a.Request.DeliverInOrder)
+        {
+            return priority;
+        }
+
+        foreach (ArqCPdu b in _arq)
+        {
+            if (b.Peer == a.Peer && b.Request.DeliverInOrder && b.Seq > a.Seq && b.HasUnplacedSegment && b.Priority > priority)
+            {
+                priority = b.Priority;
+            }
+        }
+
+        return priority;
     }
 
     /// <summary>The segment length a frame carries: none once its C_PDU has been dropped (C-0182, C-0183).</summary>

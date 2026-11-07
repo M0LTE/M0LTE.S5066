@@ -120,6 +120,12 @@ internal sealed class SisSublayer : ISisSublayer
     public void OnTimer(TimerName name)
     {
         uint peer = name.Peer ?? throw new InvalidOperationException($"SIS timer {name} has no peer");
+        if (name.Kind == TimerKind.SisHeldOff)
+        {
+            OnHeldOffExpired(peer);
+            return;
+        }
+
         SoftLink link = _softLinks.TryGetValue(peer, out SoftLink? l) && l.State == SoftLinkState.Established && !l.Closing
             ? l
             : throw new InvalidOperationException($"SIS timer {name} for a peer with no open soft link (now {_context.Now})");
@@ -457,6 +463,7 @@ internal sealed class SisSublayer : ISisSublayer
 
     private void AskForLink(uint peer)
     {
+        StopHeldOff(peer);
         _softLinks[peer] = new SoftLink(SoftLinkState.Making);
         _context.Enqueue(new CPhysicalLinkMake(peer));
     }
@@ -477,6 +484,7 @@ internal sealed class SisSublayer : ISisSublayer
     /// </summary>
     private void OnLinkMade(uint peer, bool called)
     {
+        StopHeldOff(peer);   // the peer called us while we held off (interp B-0451)
         if (!_softLinks.TryGetValue(peer, out SoftLink? link) || link.State != SoftLinkState.Established)
         {
             link = new SoftLink(SoftLinkState.Established) { Called = called, EstablishedAt = _context.Now };
@@ -683,6 +691,13 @@ internal sealed class SisSublayer : ISisSublayer
         if (reason is LinkReason.MaxLinksInUse or LinkReason.PeerTooManyLinks)
         {
             _softLinks[peer] = new SoftLink(SoftLinkState.HeldOff);
+            if (reason == LinkReason.PeerTooManyLinks)
+            {
+                // Interp B-0451: the peer's links are not visible here, so ask again after the
+                // longest a peer keeps a soft link while others wait (A-0014), as well as on B-0412.
+                _context.Timers.Start(HeldOffTimer(peer), _context.Config.SoftLinkMaxMs());
+            }
+
             CheckHeldOff();
             return;
         }
@@ -700,6 +715,27 @@ internal sealed class SisSublayer : ISisSublayer
         }
 
         RetryHeldOff(peer);
+    }
+
+    /// <summary>
+    /// <c>sis.held_off/&lt;peer&gt;</c> expired (interp B-0451): a peer still held off by its own reason 4
+    /// is asked again if U_PDUs still wait for it; with none left the hold is dropped.
+    /// </summary>
+    private void OnHeldOffExpired(uint peer)
+    {
+        if (!_softLinks.TryGetValue(peer, out SoftLink? link) || link.State != SoftLinkState.HeldOff)
+        {
+            throw new InvalidOperationException($"sis.held_off expired for a peer not held off (now {_context.Now})");
+        }
+
+        if (_awaitingSoftLink.Any(a => a.Request.Dst == peer))
+        {
+            AskForLink(peer);
+        }
+        else
+        {
+            _softLinks.Remove(peer);
+        }
     }
 
     /// <summary>B-0412: every held-off peer other than the one just closed asks again, in address order.</summary>
@@ -775,6 +811,17 @@ internal sealed class SisSublayer : ISisSublayer
     private static TimerName MinHoldTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkMinHold, peer);
 
     private static TimerName MaxTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkMax, peer);
+
+    /// <summary>Stops <c>sis.held_off/&lt;peer&gt;</c> if it runs: the SIS asks again, or the link is made, by another way.</summary>
+    private void StopHeldOff(uint peer)
+    {
+        if (_context.Timers.IsRunning(HeldOffTimer(peer)))
+        {
+            _context.Timers.Cancel(HeldOffTimer(peer));
+        }
+    }
+
+    private static TimerName HeldOffTimer(uint peer) => TimerName.ForPeer(TimerKind.SisHeldOff, peer);
 
     /// <summary>The SIS's record of a soft link with one peer, made, being made or held off.</summary>
     private sealed class SoftLink(SoftLinkState state)
