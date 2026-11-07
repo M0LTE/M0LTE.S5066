@@ -160,6 +160,10 @@ public class CorpusHarnessTests
                     ? CorpusResults.Unsupported($"unknown key '{dkey}'")
                     : CorpusResults.Skipped("D_PDU codec not implemented yet (phase 1b)");
 
+            case "cpdu":
+            case "spdu":
+                return CpduSpduCorpus.Run(line, kind);
+
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
         }
