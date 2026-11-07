@@ -391,7 +391,7 @@ Section 7.3.
 - Bind carries SAP ID and default service type: ARQ or non-ARQ, delivery confirmation, delivery order, and a minimum retransmission count for non-ARQ. Unidata carries priority 0-15 (15 highest), destination SAP and address, delivery mode and TTL (20 bits, 2 s units, maximum 648000; for TTL 0 see section 4.4) [Ed4 S.5.12, Fig S-15, p.S-15; A.2.2.6, pp.A-7 to A-9].
 - Bind accepted returns MTU = 2048 [Ed4 A.2.2.3, p.A-6].
 - SAP assignments follow Annex F: 0 subnet management, 1 COSS, 2 ACP 142, 3 HMTP, 4 HFPOP, 5 chat, 6 XMPP, 7 ACP 142 email, 8 reserved, 9 IP client, 12 CFTP, and 10, 11, 13, 14, 15 unallocated [Ed4 F Table F-1, p.F-1]. New applications take unallocated SAPs first [Ed4 F.2, p.F-2].
-- **Node information** that no core primitive provides (own address, current rate and SNR per peer) is offered through S_MANAGEMENT_MSG. Annex S makes its message type and body implementation-dependent [Ed4 S.5.11, p.S-15]. We publish our encoding in the project documentation.
+- **Node information** that no core primitive provides (own address, current rate and SNR per peer) is offered through S_MANAGEMENT_MSG. Annex S makes its message type and body implementation-dependent [Ed4 S.5.11, p.S-15]. We publish our encoding in the project documentation, `docs/management-messages.md` (MSG TYPE 1, the MAC-mode report, since P5-3).
 - There is no authentication on the SIS socket [NOT STATED in Ed4 S]. The host binds to localhost by default. Remote clients come in through an SSH tunnel, or by an explicit listen address.
 
 ### 10.2 Client library (C#)
