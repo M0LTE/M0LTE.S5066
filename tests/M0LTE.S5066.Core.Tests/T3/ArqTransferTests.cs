@@ -31,6 +31,12 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// test), and 100 seeds with the full window and 60 s transmissions passed with acknowledgements
 /// of up to 144 bytes (the long form).
 /// </para>
+/// <para>
+/// P5-1 swept 1000 seeds of each variant: all pass but seed 349 with the derived wait, whose call
+/// fails and leaves a half-open link (the node's U_PDUs go with the failed call, A-0300); that case is
+/// the regression <see cref="HalfOpenLinkTests"/>. The longest run of unanswered acknowledgement waits
+/// seen on a live link in those sweeps was 9, under the 16 that lose a connection (C-1250).
+/// </para>
 /// </remarks>
 public class ArqTransferTests(ITestOutputHelper output)
 {
@@ -165,7 +171,7 @@ public class ArqTransferTests(ITestOutputHelper output)
         }
     }
 
-    private static byte[] Payload(int node, int index, int length)
+    internal static byte[] Payload(int node, int index, int length)
     {
         var u = new byte[length];
         for (int i = 0; i < length; i++)
@@ -176,7 +182,7 @@ public class ArqTransferTests(ITestOutputHelper output)
         return u;
     }
 
-    private static JsonObject Node(string address, bool derivedAckWait, bool ed3) => new()
+    internal static JsonObject Node(string address, bool derivedAckWait, bool ed3) => new()
     {
         ["local_address"] = address,
         // With dts.ack_wait_ms set it must exceed the peer's LBT wait: one shorter than lbt_wait_dcd_ms

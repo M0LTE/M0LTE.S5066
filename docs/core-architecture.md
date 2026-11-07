@@ -124,7 +124,7 @@ Notes:
 - `Transmit` is an output, not a call on the modem port. The harness contract describes a fake modem whose `Transmit` "records a transmit output and returns the duration"; in this design the core does not consume that return value, because it has already planned the burst with `PlanBurst` (section 5) and one source of truth is better than two. Section 11 proposes wording that makes this explicit.
 - `TerminateReceive` and `SetMaxInputBlocks` exist in the type system from day one but nothing in phases 3 to 6 emits them. We receive an unlimited number of blocks (110D D.5.4.6 c, value 0) and we never cut a reception short, since Annex K forbids transmitting while the channel is busy anyway. Phase 7 or 8 may use them.
 - `TimerCancel` is emitted only for a timer the core believes is running (section 3.3). The format allows cancelling a stopped timer, but the trace is tighter and still deterministic if we do not.
-- `LinkState` names are registered when the CAS lands (P4-1, P5-1). P4-1 registered `unlinked`, `calling` and `linked`; `closing` and `breaking` are proposed for P5-1.
+- `LinkState` names are registered when the CAS lands (P4-1, P5-1). P4-1 registered `unlinked`, `calling` and `linked`; P5-1 registered `closing` (clean close awaited) and `breaking` (this node the Initiator of the break).
 - One `SisBytesOut` per encoded primitive. The core never concatenates two primitives into one output, so a trace reads one primitive per line and the C++ port has no buffering decisions to match.
 
 ### 2.3 Addresses
@@ -270,6 +270,8 @@ internal sealed record CUnidataIndication(uint Src, uint Dst, bool DstIsGroup, b
 In P3-0 only the routing bases exist (`ToSis`, `ToCas`, `ToDts`, by destination); each record above is added by the item that first sends it, with the reason enums it needs (P3-1, P4-1).
 
 `DstIsGroup` on the two request records was added by P3-1: a non-ARQ D_PDU to a group says so in its own header (C-0122), and the destination value alone cannot tell.
+
+P5-1 added `CPhysicalLinkBreak(Peer, SisBreakReason, Priority)` and `DConnectionLost(Peer)` from Tables B-1 and C-1, and two primitives of ours for clean close, which B.7.2.4 says needs DTS co-operation but gives no primitive for (B-0421): `DCloseRequest(Peer, ClosePolicy, BreakRequest, Handle)` from the CAS, and `DLinkCleanState(Peer, Clean)`, the DTS's answer and its later report.
 
 `Handle` is our addition: the standard's request primitives carry no identifier, and the confirm and reject primitives of Table C-1 implicitly refer to "the request". An integer handle, allocated from one counter in the dispatcher, makes the reference explicit and deterministic. It never appears on the wire.
 
@@ -484,10 +486,10 @@ Each is added to `defaults.json` and corpus-format.md section 6 by the PR that f
 | `dts.max_window` | 32768 | C-0772 (should be configurable), C-0773 | P4-2 |
 | `drc.default_speed` | `{"wn": 2, "interleaver": "long"}` | plan 6.2 (conservative start; phase 7 adapts) | P3-4 |
 | `cas.max_links` | `null` | B-0193, B-0209, B-0313 | P4-1 |
-| `cas.link_request_timeout_ms`, `cas.link_request_retries` | `null` | B-0203, B-0204, B-0222 | P4-1 |
-| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216 | P4-1 |
-| `cas.break_timeout_ms`, `cas.break_retries` | `null` | B-0283, B-0288 | P5-1 |
-| `cas.clean_close_timeout_ms` | `null` | B-0322 | P5-1 |
+| `cas.link_request_timeout_ms`, `cas.link_request_retries` | `null` | B-0203, B-0204, B-0222; the timeout derived when null, one answer wait (B-0420, P5-1) | P4-1 |
+| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216; derived when null, three answer waits (B-0420, P5-1) | P4-1 |
+| `cas.break_timeout_ms`, `cas.break_retries` | `null` | B-0283, B-0288, B-0424; the timeout derived when null, one answer wait (B-0420) | P5-1 |
+| `cas.clean_close_timeout_ms` | `null` | B-0322; derived when null, three answer waits (B-0420) | P5-1 |
 | `sis.default_ttl` | 648000 | A-0087, A-0088, A-0091 (TTL 0 = default maximum = the field maximum, 2 s units) | P3-1 |
 | `sis.frag_size` | `null` | A-0102, A-0114 (one value for confirms and rejects) | P6-1 |
 | `sis.confirm_wait_ms` | `null` | A-0221, A-0226, A-0232 | P6-1 |
@@ -574,7 +576,7 @@ Phase 3 done when: every scenario above passes, the T3 broadcast test passes, an
 
 | Item | Contents | Rows | T2 scenarios |
 |---|---|---|---|
-| **P5-1** link break and clean close | Initiator and Responder, break timer and retries, type 5 to unknown peers, clean close with type 6 and its reasons, clean close timeout, `D_CONNECTION_LOST`, rejecting unprocessed C_PDUs, `link_state` `closing`, `breaking` | B-0154 to B-0174, B-0235 to B-0254, B-0275 to B-0289, B-0302, B-0309 to B-0312, B-0316 to B-0324; C-0652, C-0672, C-0692, C-0712, C-0739, C-0866 | `cas/break-initiator`, `cas/break-responder`, `cas/break-timeout-declared`, `cas/clean-close-no-data`, `cas/clean-close-higher-priority`, `cas/break-from-unknown-answered`, `cas/connection-lost-rejects-cpdus` |
+| **P5-1** link break and clean close | Initiator and Responder, break timer and retries, type 5 to unknown peers, clean close with type 6 and its reasons, clean close timeout, `D_CONNECTION_LOST`, rejecting unprocessed C_PDUs, `link_state` `closing`, `breaking` | B-0154 to B-0174, B-0235 to B-0254, B-0275 to B-0289, B-0302, B-0309 to B-0312, B-0316 to B-0324; C-0652, C-0672, C-0692, C-0712, C-0739, C-0866 | `cas/break-initiator`, `cas/break-responder`, `cas/break-timeout-declared`, `cas/clean-close-no-data`, `cas/clean-close-higher-priority`, `cas/break-from-unknown-answered`, `cas/connection-lost-rejects-cpdus`. As delivered, also `cas/half-open-warning-1-broken` and `dts-arq/reset-never-acked-link-lost` (issue #49), and the T3 `HalfOpenLinkTests` (seed 349). Readings: unset CAS timers are derived from the answer wait (B-0420); the CAS asks the DTS for clean close with what may still start, and the DTS answers at once and reports clean state once, judged after each received burst, own transmission and `dts.ttd` (B-0421, B-0422); a received PHYSICAL LINK BREAK REQUEST closes the link from our end too (B-0423); `cas.break_retries` counts repeats (B-0424); CAS-1 C_PDUs met during a break (B-0425); two WARNINGs reason 1 break a half-open link, not while the first DATA C_PDU is awaited (B-0426); the DTS loses the connection at the sixteenth unanswered answer wait in a row, `dts.ack_wait` or `dts.reset_wait` (C-1250), sending D_CONNECTION_LOST before ending it (C-1251); an explicit `dts.ack_wait_ms` below `csma.lbt_wait_dcd_ms` is refused at load (C-1252). New interp rows B-0420 to B-0426, C-1250 to C-1252 |
 | **P5-2** SIS soft link sessions | idle timeout, min hold on the called side, max session when other peers wait, break reasons and the rejections they cause | A-0011 to A-0015, A-0195 to A-0207, A-0200 | `sis-session/idle-break`, `sis-session/min-hold-called`, `sis-session/max-session-other-peer`, `sis-session/reject-reason-matches-break` |
 | **P5-3** Annex J analysis | WARNINGs for EXTENSION and WTRP D_PDUs addressed to us, type 6 unknown subtype (WARNING plus EOW type 3), reporting to the operator via S_MANAGEMENT_MSG_INDICATION | J-0001, J-0004, J-0009 to J-0011, J-0014, J-0015, J-0018, J-0020, J-0029 to J-0054, J-0056, J-0057, J-0059, J-0068 to J-0070, C-0735, C-0392 | `mac/extension-warning-reason-4`, `mac/wtrp-to-group-no-warning`, `mac/type6-unknown-subtype` |
 | **P5-4** external busy input | `channel_busy` ORed into DCD, idle only when both clear (the only item that handles `channel_busy`; before it the MAC records the flag and ignores it) | K-0006, K-0048, K-0073, K-0100 | `csma/external-busy-holds-lbt` |
@@ -611,7 +613,7 @@ Each is an implementation choice a later item will need. Where a matrix row exis
 | 8 | Decoding types 9 to 14 from a peer whose edition is unknown | Decode as Ed4 (`peer_edition` ed4). Only a peer recorded Ed3 gets the Ed3 reading, where types 9 to 14 draw WARNING reason 0 | C-0051, C-0388 (new interp) |
 | 9 | What the MAC may learn from D_PDUs addressed to others | Only the EOT and the (src, dst, group) triple for the channel model and the two-node rule; no state machine runs for them | C-0868, K-0072 |
 | 10 | Request identity across the internal primitive interfaces | An integer handle allocated by the dispatcher; never on the wire | C-0039, B-0018 (notes) |
-| 11 | Timer values for CAS linking and breaking, confirmation waits, soft link times | Configurable with no default (`null` in `defaults.json`); scenarios supply them; T4 derives recommended values (plan A4) | B-0203, B-0283, A-0221, A-0226, A-0197 |
+| 11 | Timer values for CAS linking and breaking, confirmation waits, soft link times | Configurable with no default (`null` in `defaults.json`); scenarios supply them; T4 derives recommended values (plan A4). P5-1 (issue #49): the CAS timers, when null, are derived from the answer wait of C-1120 (B-0420) | B-0203, B-0283, A-0221, A-0226, A-0197 |
 | 12 | Where TTD wall-clock comes from in a core with no clock | `time.epoch_year`, `time.epoch_day` and `time.epoch_second` in configuration; the host sets them at start-up | A-0161, A-0162, A-0163, A-0166, A-0167 (new interp) |
 | 13 | Station-layer identification hook transmissions (D4, K-0007) | Not in phases 3 to 6. Phase 8 will need an input (hook requests a turn, with its duration) and an output (turn granted) so the hook obeys Annex K from inside the core. Both are corpus-format additions for that phase | K-0007 |
 | 14 | `terminate_receive` and `set_max_input_blocks` | Never emitted in phases 3 to 6 | plan 5.1 |
