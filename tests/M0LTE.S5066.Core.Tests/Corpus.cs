@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace M0LTE.S5066.Core.Tests;
 
@@ -16,7 +17,7 @@ internal sealed record CorpusLine(string Id, string File, int LineNumber, JsonEl
 internal static class Corpus
 {
     /// <summary>The corpus MAJOR.MINOR this harness was written for. Before 1.0.0 a different MINOR is refused.</summary>
-    public const string SupportedVersionPrefix = "0.2.";
+    public const string SupportedVersionPrefix = "0.3.";
 
     public static string Root { get; } = Locate();
 
@@ -31,6 +32,13 @@ internal static class Corpus
         ? Directory.GetFiles(Path.Combine(Root, "t2"), "*.jsonl", SearchOption.AllDirectories)
             .Order(StringComparer.Ordinal).ToArray()
         : Array.Empty<string>();
+
+    /// <summary>The scenario ids from the header line of each T2 file.</summary>
+    public static IReadOnlyList<string> T2Ids { get; } = T2Files
+        .Select(f => JsonNode.Parse(File.ReadLines(f).First())!["scenario"]!.GetValue<string>()).ToArray();
+
+    /// <summary>corpus/t2/defaults.json, the base configuration of every T2 scenario.</summary>
+    public static JsonObject T2Defaults => JsonNode.Parse(File.ReadAllText(Path.Combine(Root, "t2", "defaults.json")))!.AsObject();
 
     private static string Locate()
     {

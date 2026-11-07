@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using M0LTE.S5066.Core.Dts;
+using M0LTE.S5066.Core.Tests.T2;
 
 namespace M0LTE.S5066.Core.Tests;
 
@@ -51,7 +52,7 @@ public class CorpusHarnessTests
         Corpus.Version.Should().StartWith(Corpus.SupportedVersionPrefix);
         Corpus.T1.Should().NotBeEmpty();
         Corpus.Prng.Should().NotBeEmpty();
-        Corpus.T1.Select(c => c.Id).Concat(Corpus.Prng.Select(c => c.Id))
+        Corpus.T1.Select(c => c.Id).Concat(Corpus.Prng.Select(c => c.Id)).Concat(Corpus.T2Ids)
             .Should().OnlyHaveUniqueItems("case ids are unique across the corpus");
     }
 
@@ -65,8 +66,23 @@ public class CorpusHarnessTests
 
     [Theory]
     [MemberData(nameof(T2Cases))]
-    public void T2(string scenario) =>
-        CorpusResults.Run(scenario, "t2", () => CorpusResults.Skipped("T2 scenario runner not implemented yet (phase 3)"));
+    public void T2(string scenario)
+    {
+        if (scenario == "t2/none")
+        {
+            CorpusResults.Run(scenario, "t2", () => CorpusResults.Skipped("no T2 scenarios in the corpus"));
+            return;
+        }
+
+        string path = Path.Combine(Corpus.Root, scenario);
+        string[] lines = File.ReadAllLines(path);
+        string id = JsonNode.Parse(lines[0])!["scenario"]!.GetValue<string>();
+        CorpusResults.Run(id, "t2", () =>
+        {
+            T2Result result = T2Runner.Run(scenario, lines, Corpus.T2Defaults);
+            return result.Unsupported is null ? null : CorpusResults.Unsupported(result.Unsupported);
+        });
+    }
 
     private static string? RunPrng(CorpusLine line)
     {
