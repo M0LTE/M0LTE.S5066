@@ -359,6 +359,9 @@ public class CasLinkTests
             Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(priority, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
         }
 
+        /// <summary>The bound client on conn 1 sends a primitive.</summary>
+        public void Client(SisPrimitive primitive) => Run(new SisBytes(Context.Now, 1, SisCodec.Encode(primitive)));
+
         /// <summary>The DTS reports our pending link C_PDU to the peer sent (C-1100).</summary>
         public void Sent(uint peer)
         {

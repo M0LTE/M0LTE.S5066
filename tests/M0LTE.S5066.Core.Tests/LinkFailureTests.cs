@@ -149,6 +149,18 @@ public class LinkFailureTests
         sent.Should().Be("1,1,3", "the started C_PDU finishes, then the priority 6 one; the priority 4 one is held");
     }
 
+    [Fact]
+    public void A_close_that_stops_new_cpdus_still_lets_client_confirmations_start()
+    {
+        // B-0246; interp B-0318: a DATA DELIVERY CONFIRM or FAIL is exempt from the hold.
+        var r = new Rig();
+        r.Add(Request(2));
+        r.Add(Request(3) with { ClientConfirmation = true });
+        r.Peers.OnCloseRequest(new DCloseRequest(X, new ClosePolicy(true, 0)));
+        r.Take().Should().Equal(new DLinkCleanState(X, false));
+        r.SendDescribe().Should().Be("3", "the held C_PDU waits; the confirmation goes");
+    }
+
     private sealed class Rig
     {
         private readonly CoreContext _context;
