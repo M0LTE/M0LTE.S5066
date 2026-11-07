@@ -56,6 +56,9 @@ internal sealed class CasSublayer : ICasSublayer
     /// <summary>For tests: the link phase name of a peer, or null when there is no link and none being made.</summary>
     internal string? PhaseOf(uint peer) => _links.TryGetValue(peer, out Link? l) ? l.Phase.ToString() : null;
 
+    /// <summary>For tests: the handle of our link C_PDU to the peer still awaiting its sent confirm.</summary>
+    internal int? PendingHandleOf(uint peer) => _links.TryGetValue(peer, out Link? l) ? l.Handle : null;
+
     public void OnConfigChanged(NodeConfig oldConfig, NodeConfig newConfig)
     {
     }

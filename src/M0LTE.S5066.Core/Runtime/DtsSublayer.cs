@@ -104,6 +104,9 @@ internal sealed class DtsSublayer : IDtsSublayer
         }
     }
 
+    /// <summary>The ARQ C_PDUs held for connected peers, in arrival order (placed from P4-2).</summary>
+    internal IReadOnlyList<DUnidataRequest> HeldArq => _tx.HeldArq;
+
     /// <summary>The non-ARQ C_PDUs queued for normal delivery, in arrival order.</summary>
     internal IReadOnlyList<DUnidataRequest> PendingNonArq => _tx.PendingNonArq;
 
