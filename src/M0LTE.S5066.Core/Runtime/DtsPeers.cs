@@ -38,7 +38,7 @@ internal enum DtsPeerState
 /// C-20, C-22 and C-24 say: the data part is reassembled, delivered with D_UNIDATA_INDICATION and
 /// owes an acknowledgement (C-0658, C-0660, C-0678, C-0680, C-0698, C-0700, C-0718, C-0720; C-1129), and the
 /// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
-/// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
+/// moves to DATA(CONNECTED) on a DATA-ONLY or DATA-ACK that passes the synchronisation tests (C-1230); an ACK-ONLY there acknowledges nothing we
 /// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). A regular ARQ
 /// D_PDU of the other family (types 0 to 3 on a 16-bit link, 9 to 12 on an 8-bit link) is not used
 /// and draws WARNING reason 3, since the families are never mixed on a link (C-0763, C-0391, interp
@@ -51,6 +51,9 @@ internal enum DtsPeerState
 /// C-1211); a type 5 received acknowledges nothing, since we never send type 4 (C-0663, C-0683,
 /// C-0703, C-0723). EXPEDITED-DATA(CONNECTED) and MANAGEMENT(CONNECTED) are left when their exchange
 /// is over (C-0738, C-1212, C-1213), and other exits delete a partial type 4 C_PDU (C-0761, C-1214).
+/// A DATA-ONLY or DATA-ACK in a later received transmission than the last type 4 of a partly
+/// received expedited C_PDU means the peer has abandoned that C_PDU: it is deleted and the type 5
+/// owed for it dropped, as C-1214 does (C-1231).
 /// While either exchange is open the planner holds the D_PDU types the state may not send, and
 /// releases them, with any queued request, once the D_PDU that ends the exchange is placed (C-0737,
 /// C-0740 to C-0748, C-1215).
@@ -112,6 +115,9 @@ internal sealed class DtsPeers
     private readonly TransmitQueue _tx;
     private readonly NonArqReassembler _reassembler;
     private readonly SortedDictionary<uint, Peer> _peers = new();
+
+    /// <summary>Counts received transmissions (burst starts), so a D_PDU can be placed in one (C-1231).</summary>
+    private long _transmission;
 
     public DtsPeers(CoreContext context, TransmitQueue tx)
     {
@@ -240,6 +246,9 @@ internal sealed class DtsPeers
         }
     }
 
+    /// <summary>A burst has started at the modem: the D_PDUs that follow belong to a new transmission (C-1231).</summary>
+    public void OnBurstStarted() => _transmission++;
+
     /// <summary>Whether an ARQ connection with the peer exists (D_CONNECTION_MADE received and not terminated).</summary>
     public bool IsConnected(uint peer) => _peers.TryGetValue(peer, out Peer? p) && p.Connected;
 
@@ -305,27 +314,37 @@ internal sealed class DtsPeers
     private void OnArq(Peer peer, ArqLink link, Dpdu pdu)
     {
         DpduHeader h = pdu.Header;
+        if (pdu is DataOnly or DataAck or Ed3DataOnly or Ed3DataAck && peer.Expedited.Partial && peer.Type4Transmission < _transmission)
+        {
+            // C-1231: regular ARQ data in a later transmission than the last type 4 of a partly sent
+            // expedited C_PDU: the peer has abandoned it. Deleted, with the type 5 owed for it, as C-1214.
+            AbandonExpedited(h.Src, peer);
+            LeaveExpeditedIfDone(h.Src, peer);
+        }
+
         if (peer.Exchange is not null)
         {
             return;   // C-1175: discarded while we wait for the peer's RESET ACK
         }
 
-        if (peer.State == DtsPeerState.IdleConnected)
+        if (peer.State == DtsPeerState.IdleConnected && pdu is AckOnly or Ed3AckOnly)
         {
-            peer.State = DtsPeerState.DataConnected;   // C-0658, C-0659, C-0660
-            if (pdu is AckOnly or Ed3AckOnly)
-            {
-                Warn(h.Src, pdu.Type, 3);   // C-0659: nothing of ours to acknowledge yet
-                return;
-            }
+            peer.State = DtsPeerState.DataConnected;   // C-0659
+            Warn(h.Src, pdu.Type, 3);   // C-0659: nothing of ours to acknowledge yet
+            return;
         }
 
         if (!InSync(link, pdu))
         {
             // C-0791, C-0792, C-1170: out of synchronisation. Nothing in the D_PDU is used, its data is
-            // neither stored nor acknowledged (issue #49 (c)), and a FULL RESET starts.
+            // neither stored nor acknowledged (issue #49 (c)), no state changes (C-1230), and a FULL RESET starts.
             StartFullReset(h.Src, peer, link);
             return;
+        }
+
+        if (peer.State == DtsPeerState.IdleConnected)
+        {
+            peer.State = DtsPeerState.DataConnected;   // C-0658, C-0660
         }
 
         (DataFlags flags, int fsn, Octets segment)? data = pdu switch
@@ -753,6 +772,7 @@ internal sealed class DtsPeers
             peer.State = DtsPeerState.ExpeditedDataConnected;
         }
 
+        peer.Type4Transmission = _transmission;   // C-1231
         if (peer.Expedited.Receive(x.CPduId, x.TxFsn, x.CPduStart, x.CPduEnd, x.Segment.Span) is byte[] cpdu)
         {
             _context.Enqueue(new DExpeditedUnidataIndication(src, x.Header.Dst, false, true, cpdu));
@@ -854,6 +874,9 @@ internal sealed class DtsPeers
 
         /// <summary>The RESET FRAME ID NUMBER our next command takes, modulo 256 (C-0272, C-0273, C-1173).</summary>
         public int TxResetFrameId { get; set; }
+
+        /// <summary>The received transmission that carried the peer's last type 4 (C-1231).</summary>
+        public long Type4Transmission { get; set; }
 
         /// <summary>The receive side of the expedited ARQ service (C-0282, C-1210).</summary>
         public ExpeditedReceiver Expedited { get; } = new();
