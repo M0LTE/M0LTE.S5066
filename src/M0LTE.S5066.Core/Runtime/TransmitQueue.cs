@@ -118,6 +118,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly List<ArqCPdu> _arq = [];
     private readonly SortedDictionary<uint, ArqLink> _links = new();
     private readonly SortedSet<uint> _sentArqPeers = new();
+    private readonly SortedSet<uint> _sentPeers = new();
     private readonly List<int> _sentExpedited = [];
     private long _nextSeq;
 
@@ -384,6 +385,17 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         _sentArqPeers.Clear();
+    }
+
+    /// <summary>
+    /// The individual addresses the transmission now ending carried a D_PDU to, in ascending order,
+    /// and starts the next transmission's set afresh (C-1250).
+    /// </summary>
+    public List<uint> TakeSentPeers()
+    {
+        var sent = _sentPeers.ToList();
+        _sentPeers.Clear();
+        return sent;
     }
 
     /// <summary>
@@ -1370,6 +1382,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     private int TakeEow(uint dst, bool dstIsGroup)
     {
+        if (!dstIsGroup)
+        {
+            _sentPeers.Add(dst);   // every placed D_PDU's header takes its EOW here (C-1250)
+        }
+
         if (dstIsGroup || !_owedEow.Remove(dst, out int eow))
         {
             return 0;

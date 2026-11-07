@@ -197,6 +197,9 @@ internal sealed class Simulation
         Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(request)));
     }
 
+    /// <summary>The node dies at <paramref name="t"/>: from then on its core gets no input, and it neither transmits nor receives.</summary>
+    public void Kill(int node, long t) => _nodes[node].DeadFrom = t;
+
     /// <summary>Runs until nothing is left to happen or the next event is after <paramref name="untilMs"/>.</summary>
     public void Run(long untilMs)
     {
@@ -222,6 +225,11 @@ internal sealed class Simulation
     /// <summary>One input to one core, then its outputs, as harness-contract.md 2 step 4 does.</summary>
     private void Feed(SimNode n, CoreInput input)
     {
+        if (input.T >= n.DeadFrom)
+        {
+            return;
+        }
+
         // Harness time checks: no running timer of this node is due before this input, nor at its
         // time for a modem or SIS input (corpus-format.md 4.5). The event order guarantees it; a
         // breach is a bug in the simulation, so it throws.
@@ -292,6 +300,11 @@ internal sealed class Simulation
     /// <summary>A burst goes on air: the C-0844 and C-0889 check, half duplex, then each receiver.</summary>
     private void AirStart(SimNode sender, long emitT, long start, Transmit tx, int given)
     {
+        if (start >= sender.DeadFrom)
+        {
+            return;
+        }
+
         if (sender.OnAirUntil > start)
         {
             _violations.Add($"node {sender.Index}: transmit at {start} while still on air to {sender.OnAirUntil}");
@@ -354,7 +367,7 @@ internal sealed class Simulation
 
         foreach (SimNode r in _nodes)
         {
-            if (r == sender || r.OnAirUntil > start)
+            if (r == sender || r.OnAirUntil > start || start >= r.DeadFrom)
             {
                 continue;   // the sender itself, or a receiver that is transmitting (half duplex)
             }
@@ -670,6 +683,7 @@ internal sealed class Simulation
         public long OnAirUntil { get; set; }
         public RxState? Rx { get; set; }
         public List<(long End, int BurstId)> Heard { get; } = [];
+        public long DeadFrom { get; set; } = long.MaxValue;
     }
 
     private sealed class RxState(SimBurst burst, long startedInputT)

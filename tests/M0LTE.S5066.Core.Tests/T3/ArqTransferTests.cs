@@ -35,7 +35,8 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// P5-1 swept 1000 seeds of each variant: all pass but seed 349 with the derived wait, whose call
 /// fails and leaves a half-open link (the node's U_PDUs go with the failed call, A-0300); that case is
 /// the regression <see cref="HalfOpenLinkTests"/>. The longest run of unanswered acknowledgement waits
-/// seen on a live link in those sweeps was 9, under the 16 that lose a connection (C-1250).
+/// seen on a live link in those sweeps was 9. Issue #61 made link loss time-based, 16 answer waits of
+/// silence (C-1250); a sweep of 1000 seeds of each variant again passed but seed 349.
 /// </para>
 /// </remarks>
 public class ArqTransferTests(ITestOutputHelper output)

@@ -18,18 +18,20 @@ public class LinkFailureTests
         new(X, false, true, priority, 1_000_000_000, false, 0, CpduCodec.Encode(new CpduData(new byte[] { 0x20, 0x59, 0x00, (byte)handle })), handle);
 
     [Fact]
-    public void The_sixteenth_unanswered_ack_wait_loses_the_connection_and_rejects_what_is_unfinished()
+    public void A_peer_silent_for_sixteen_answer_waits_loses_the_connection_and_rejects_what_is_unfinished()
     {
-        // C-1250, C-1251, C-0866.
+        // C-1250, C-1251, C-0866. How many waits expired does not matter, only how long the peer has been silent.
         var r = new Rig();
         r.Add(Request(7));
         r.Send();
-        for (int k = 1; k < DtsPeers.MaxUnansweredWaits; k++)
+        for (int k = 1; k <= 40; k++)
         {
+            r.Now = k * ((DtsPeers.SilenceWaits * r.Wait) - 1) / 40;
             r.Peers.OnAckWaitExpired(X).Should().BeFalse($"wait {k}");
         }
 
         r.Take();
+        r.Now = DtsPeers.SilenceWaits * r.Wait;
         r.Peers.OnAckWaitExpired(X).Should().BeTrue();
         List<InternalPrimitive> p = r.Take();
         p[0].Should().Be(new DConnectionLost(X));
@@ -40,42 +42,69 @@ public class LinkFailureTests
     }
 
     [Fact]
-    public void An_answer_from_the_peer_starts_the_count_again()
+    public void An_answer_from_the_peer_starts_the_silence_again_from_the_next_wait()
     {
         // C-1250: an ACK-ONLY that passes the synchronisation tests is an answer, even one that acknowledges nothing.
         var r = new Rig();
         r.Add(Request(7));
         r.Send();
-        for (int k = 1; k < DtsPeers.MaxUnansweredWaits; k++)
-        {
-            r.Peers.OnAckWaitExpired(X);
-        }
-
+        r.Now = (DtsPeers.SilenceWaits - 1) * r.Wait;
+        r.Peers.OnAckWaitExpired(X).Should().BeFalse();
         r.Peers.OnDpdu(new AckOnly(new DpduHeader(0, 10, 3, Us, X), 0, 0, 0, Octets.Empty, null));
-        for (int k = 1; k < DtsPeers.MaxUnansweredWaits; k++)
-        {
-            r.Peers.OnAckWaitExpired(X).Should().BeFalse();
-        }
-
+        r.Now += 1000;
+        r.Add(Request(8));
+        r.Send();   // the silence is timed from the end of this transmission
+        long since = r.Now;
+        r.Now = since + (DtsPeers.SilenceWaits * r.Wait) - 1;
+        r.Peers.OnAckWaitExpired(X).Should().BeFalse();
         r.Peers.IsConnected(X).Should().BeTrue();
+        r.Now++;
+        r.Peers.OnAckWaitExpired(X).Should().BeTrue();
     }
 
     [Fact]
-    public void A_warning_is_not_an_answer_and_reset_waits_count_with_ack_waits()
+    public void A_warning_is_not_an_answer_and_a_reset_wait_expiry_checks_the_silence_too()
     {
-        // C-1250: WARNINGs go to the CAS (B-0426) and do not reset the count; dts.reset_wait expiries count too (C-1172).
+        // C-1250: WARNINGs go to the CAS (B-0426) and are not answers; dts.reset_wait expiries check too (C-1172).
         var r = new Rig();
         r.Add(Request(7));
         r.Send();
-        for (int k = 1; k < DtsPeers.MaxUnansweredWaits; k++)
-        {
-            r.Peers.OnAckWaitExpired(X);
-            r.Peers.OnDpdu(new Warning(new DpduHeader(0, 10, 3, Us, X), 9, 1));
-        }
-
+        r.Now = r.Wait;
+        r.Peers.OnDpdu(new Warning(new DpduHeader(0, 10, 3, Us, X), 9, 1));
+        r.Now = DtsPeers.SilenceWaits * r.Wait;
         r.Peers.OnResetWaitTimer(X);
         r.Peers.IsConnected(X).Should().BeFalse();
         r.Take().OfType<DConnectionLost>().Should().ContainSingle();
+    }
+
+    [Fact]
+    public void The_end_of_a_transmission_to_a_silent_peer_loses_the_connection_before_any_wait_starts()
+    {
+        // C-1250: checked when each of our transmissions to the peer ends, as well as at wait expiries.
+        var r = new Rig();
+        r.Add(Request(7));
+        r.Send();
+        r.Add(Request(8));
+        r.Now = DtsPeers.SilenceWaits * r.Wait;
+        r.Send(take: false);
+        List<InternalPrimitive> p = r.Take(out List<CoreOutput> outputs);
+        p.Should().Equal(new DConnectionLost(X), new DUnidataRequestRejected(7, DReason.ConnectionLost), new DUnidataRequestRejected(8, DReason.ConnectionLost));
+        outputs.OfType<TimerStart>().Where(t => t.Name.Kind == TimerKind.DtsAckWait).Should().BeEmpty("no dts.ack_wait starts for a lost connection");
+    }
+
+    [Fact]
+    public void A_long_quiet_spell_with_nothing_awaited_is_not_silence()
+    {
+        // C-1250: silence is timed only while an answer is awaited, so the first transmission after an idle spell does not lose the link.
+        var r = new Rig();
+        r.Now = 10 * DtsPeers.SilenceWaits * r.Wait;
+        r.Add(Request(7));
+        r.Send();
+        r.Peers.IsConnected(X).Should().BeTrue();
+        r.Now += (DtsPeers.SilenceWaits * r.Wait) - 1;
+        r.Peers.OnAckWaitExpired(X).Should().BeFalse();
+        r.Now++;
+        r.Peers.OnAckWaitExpired(X).Should().BeTrue();
     }
 
     [Fact]
@@ -135,6 +164,15 @@ public class LinkFailureTests
 
         public TransmitQueue Tx { get; }
 
+        /// <summary>The answer wait in force (C-1120, C-1250).</summary>
+        public long Wait => _context.Config.AnswerWaitMs();
+
+        public long Now
+        {
+            get => _context.Now;
+            set => _context.Now = value;
+        }
+
         public DtsPeers Peers { get; }
 
         /// <summary>An ARQ request for the connected peer, as the DTS takes it (C-0653).</summary>
@@ -144,7 +182,9 @@ public class LinkFailureTests
             Tx.AddArq(request);
         }
 
-        public List<InternalPrimitive> Take()
+        public List<InternalPrimitive> Take() => Take(out _);
+
+        public List<InternalPrimitive> Take(out List<CoreOutput> outputs)
         {
             var list = new List<InternalPrimitive>();
             while (_context.TryDequeue(out InternalPrimitive p))
@@ -152,12 +192,12 @@ public class LinkFailureTests
                 list.Add(p);
             }
 
-            _context.TakeOutputs();
+            outputs = _context.TakeOutputs().ToList();
             return list;
         }
 
         /// <summary>Builds one transmission and ends it, as the MAC and the DTS would (core-architecture.md 5.7).</summary>
-        public Transmit Send(bool oneDpdu = false)
+        public Transmit Send(bool oneDpdu = false, bool take = true)
         {
             if (oneDpdu)
             {
@@ -166,10 +206,16 @@ public class LinkFailureTests
             }
 
             Transmit t = Tx.Build();
+            Peers.CheckSilence(Tx.TakeSentPeers());
             Tx.OnTransmitDone();
             Peers.OnTransmitDone();
+            Peers.OnWaitsStarted();
             _context.Config = _context.Config with { Dts = _context.Config.Dts with { MaxWindow = DtsConfig.MaxWindowLimit } };
-            Take();
+            if (take)
+            {
+                Take();
+            }
+
             return t;
         }
 
