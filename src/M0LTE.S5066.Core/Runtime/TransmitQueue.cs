@@ -260,6 +260,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <item>A bitmap (encoding 0) marks each FSN it covers, from RX LWE + 1 + 256 x offset
     /// (C-0233, C-0250): a set bit acknowledges it (C-0202), a clear bit means it failed (C-0205,
     /// C-0907, C-0908). Run length encoding is P4-3's: only its RX LWE is used.</item>
+    /// <item>The D_PDU at RX LWE is one the peer has not received (C-0776), so it failed too (C-0908).</item>
     /// <item>Half duplex: every D_PDU awaiting an acknowledgement and sent after the last one this
     /// D_PDU acknowledges explicitly is taken to have failed (C-0910, C-1121).</item>
     /// </list>
@@ -288,6 +289,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         link.TxLwe = rxLwe;
         int lastExplicit = -1;   // position after RX LWE of the furthest FSN acknowledged by a set bit
         var nacked = new HashSet<int>();   // looked up only, never enumerated
+        nacked.Add(rxLwe);   // RX LWE is the oldest FSN the peer has not received (C-0776, C-0907)
         if (encoding == 0)
         {
             int first = (offset * 256) + 1;

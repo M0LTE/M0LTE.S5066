@@ -36,7 +36,7 @@ internal enum DtsPeerState
 /// ARQ (P4-2, 16-bit family): DATA-ONLY, ACK-ONLY and DATA-ACK (types 9, 10 and 11) from a peer
 /// whose connection uses the 16-bit family are processed in every CONNECTED state, as Tables C-18,
 /// C-20, C-22 and C-24 say: the data part is reassembled, delivered with D_UNIDATA_INDICATION and
-/// owes an acknowledgement (C-0658, C-0660, C-0678, C-0680, C-0698, C-0700, C-0718, C-0720), and the
+/// owes an acknowledgement (C-0658, C-0660, C-0678, C-0680, C-0698, C-0700, C-0718, C-0720; C-1129), and the
 /// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
 /// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
 /// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). Still discarded

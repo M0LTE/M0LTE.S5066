@@ -77,8 +77,9 @@ internal sealed class ArqLink
     /// whatever its data CRC, C-0204). Stores it if its FSN is in the receive window, moves the window
     /// edges, and returns the C_PDUs it completes that may now be delivered, in delivery order
     /// (C-0511 to C-0517, C-0178, C-0179). Every one owes an acknowledgement (C-0174, C-0242),
-    /// including a copy behind RX LWE (C-1126); an FSN further than the maximum window ahead of RX
-    /// LWE is neither accepted nor acknowledged (C-0779).
+    /// including a copy behind RX LWE (C-1126). An FSN not within the maximum window ahead of RX LWE
+    /// is not accepted and no acknowledgement covers it (C-0779): with a window of half the circle,
+    /// every such FSN lies behind RX LWE, and the acknowledgement it causes carries RX LWE only.
     /// </summary>
     public List<ReadOnlyMemory<byte>> Receive(int fsn, bool start, bool end, bool inOrder, bool drop, ReadOnlySpan<byte> segment)
     {
@@ -87,7 +88,7 @@ internal sealed class ArqLink
         int ahead = Seq.Distance(RxLwe, fsn);
         if (ahead >= MaxWindowSize)
         {
-            // Behind RX LWE (a copy of something received, C-0777): nothing is stored, but the
+            // Behind RX LWE (a copy of something received, C-0777, C-0779): nothing is stored, but the
             // acknowledgement carries RX LWE back to a sender that may have lost ours (C-1126).
             AckOwed = true;
             return deliver;
