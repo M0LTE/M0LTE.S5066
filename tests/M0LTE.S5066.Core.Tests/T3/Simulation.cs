@@ -17,13 +17,33 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// <param name="TurnaroundMs">Delay from the core's <c>transmit</c> output to the start of the burst on air (host to modem, receive to transmit switch).</param>
 /// <param name="EndOfBurstDelayMs">Extra delay on the end-of-burst reports, <c>transmit_done</c> and <c>burst_ended</c>, on top of the host latency.</param>
 /// <param name="FadePpm">Chance, after each block but the last, that one receiver loses the signal for the rest of the burst (<c>burst_ended</c> signal lost while the burst is still on air).</param>
+/// <param name="DuplicatePpm">Chance that a regular ARQ data D_PDU (DATA-ONLY or DATA-ACK) of a transmission is sent twice in it, the copy at a random later place among its data D_PDUs.</param>
+/// <param name="ReorderPpm">Chance that the regular ARQ data D_PDUs of a transmission are put in a random order (among the places data D_PDUs held; control D_PDUs stay where they are).</param>
+/// <param name="StaleCopyPpm">
+/// Chance that a transmission also carries, among its data, a DATA-ONLY copy of an earlier
+/// transmission's data D_PDU to the same peer: a late duplicate, so data arrives out of order across
+/// transmissions. Only D_PDUs the sender could still hold outstanding are copied (an FSN among its
+/// last maximum-window new FSNs), with the window flags cleared as on a retransmission that is
+/// neither TX LWE nor TX UWE, and never across a RESET/WIN-RESYNC between the two nodes.
+/// </param>
+/// <remarks>
+/// An HF channel neither duplicates nor reorders transmissions, so duplication and reordering are
+/// applied to D_PDUs, inside the sender's burst, as a peer free to send copies and to order its
+/// retransmissions may do. The EOT of every D_PDU is stamped again for its new place (C-0104,
+/// C-1043), so the C-0891 and C-0844 checks still hold. Acknowledgements are never sent late: an old
+/// RX LWE behind the sender's TX LWE fails Test 4 and rightly forces a FULL RESET (C-0800), which is
+/// what a peer that lost its state looks like (ArqResetTests), not a channel effect.
+/// </remarks>
 internal sealed record ChannelModel(
     int BlockErrorPpm = 0,
     int BurstMissPpm = 0,
     int HostLatencyMs = 0,
     int TurnaroundMs = 0,
     int EndOfBurstDelayMs = 0,
-    int FadePpm = 0);
+    int FadePpm = 0,
+    int DuplicatePpm = 0,
+    int ReorderPpm = 0,
+    int StaleCopyPpm = 0);
 
 /// <summary>One burst on air: who sent it, when, its plan and the D_PDUs it holds.</summary>
 internal sealed class SimBurst
@@ -137,6 +157,15 @@ internal sealed class Simulation
 
     /// <summary>Requests the client of a node had rejected.</summary>
     public int Rejections { get; private set; }
+
+    /// <summary>Data D_PDUs the channel sent twice in one transmission.</summary>
+    public int Duplicated { get; private set; }
+
+    /// <summary>Transmissions whose data D_PDUs the channel put in a new order (only those where the order changed).</summary>
+    public int Reordered { get; private set; }
+
+    /// <summary>Late DATA-ONLY copies of earlier transmissions' data the channel added.</summary>
+    public int StaleCopies { get; private set; }
 
     public uint AddressOf(int node) => _nodes[node].Config.LocalAddress;
 
@@ -268,6 +297,7 @@ internal sealed class Simulation
             _violations.Add($"node {sender.Index}: transmit at {start} while still on air to {sender.OnAirUntil}");
         }
 
+        tx = Mangle(sender, tx);
         BurstPlan plan = sender.Modem.PlanBurst(tx.Wn, tx.Interleaver, tx.Bytes.Length);
         var padded = new byte[plan.Blocks * plan.BytesPerBlock];
         tx.Bytes.Span.CopyTo(padded);   // the modem's zero fill (core-architecture.md 5.5)
@@ -429,6 +459,161 @@ internal sealed class Simulation
             Modem(r, new BurstEnded(now + _channel.EndOfBurstDelayMs + _channel.HostLatencyMs, BurstEndReason.SignalLost,
                 burst.Output.Wn, burst.Output.Interleaver, burst.Output.K, null, k + 1));
         }
+    }
+
+    /// <summary>
+    /// Duplication and reordering of a transmission's regular ARQ data D_PDUs (see <see cref="ChannelModel"/>),
+    /// then every EOT stamped again for the new layout. With none of the three enabled the
+    /// transmission is untouched and no random number is drawn.
+    /// </summary>
+    private Transmit Mangle(SimNode sender, Transmit tx)
+    {
+        if (_channel.DuplicatePpm == 0 && _channel.ReorderPpm == 0 && _channel.StaleCopyPpm == 0)
+        {
+            return tx;
+        }
+
+        var pdus = new List<Dpdu>();
+        ReadOnlySpan<byte> bytes = tx.Bytes.Span;
+        for (int offset = 0; offset < bytes.Length;)
+        {
+            DecodeResult<Dpdu> r = DpduCodec.DecodeFirst(bytes[offset..], PeerEdition.Any);
+            pdus.Add(r.Value!);
+            offset += r.Consumed;
+        }
+
+        var slots = Enumerable.Range(0, pdus.Count).Where(i => IsData(pdus[i])).ToList();
+        if (slots.Count == 0)
+        {
+            Remember(sender.Index, pdus);
+            return tx;
+        }
+
+        var data = slots.Select(i => pdus[i]).ToList();
+        if (data.Count > 1 && Draw(_channel.ReorderPpm))
+        {
+            List<Dpdu> before = [.. data];
+            for (int i = data.Count - 1; i > 0; i--)
+            {
+                int j = (int)_prng.Uniform((ulong)(i + 1));
+                (data[i], data[j]) = (data[j], data[i]);
+            }
+
+            Reordered += data.SequenceEqual(before) ? 0 : 1;
+        }
+
+        for (int i = data.Count - 1; i >= 0; i--)
+        {
+            if (Draw(_channel.DuplicatePpm))
+            {
+                data.Insert(i + 1 + (int)_prng.Uniform((ulong)(data.Count - i)), data[i]);
+                Duplicated++;
+            }
+        }
+
+        if (Draw(_channel.StaleCopyPpm) && StaleCandidate(sender.Index, data[0].Header.Dst) is { } stale)
+        {
+            data.Insert((int)_prng.Uniform((ulong)(data.Count + 1)), stale);
+            StaleCopies++;
+        }
+
+        // Rebuild: control D_PDUs where they were, the data in the data places, extras after the last.
+        var rebuilt = new List<Dpdu>();
+        int next = 0;
+        for (int i = 0; i < pdus.Count; i++)
+        {
+            if (!IsData(pdus[i]))
+            {
+                rebuilt.Add(pdus[i]);
+            }
+            else if (i == slots[^1])
+            {
+                rebuilt.AddRange(data.Skip(next));
+            }
+            else
+            {
+                rebuilt.Add(data[next++]);
+            }
+        }
+
+        // Stamp each EOT for the new layout (C-0104, C-1043): the time from the start of the D_PDU's block to the end of the burst.
+        int length = rebuilt.Sum(p => DpduCodec.Encode(p).Length);
+        BurstPlan plan = sender.Modem.PlanBurst(tx.Wn, tx.Interleaver, length);
+        var output = new List<byte>(length);
+        foreach (Dpdu p in rebuilt)
+        {
+            long airStart = plan.PreambleMs + (output.Count / plan.BytesPerBlock * (long)plan.BlockMs);
+            int eot = p.Header.Eot == 0 ? 0 : (int)((plan.DurationMs - airStart + 499) / 500);
+            output.AddRange(DpduCodec.Encode(p with { Header = p.Header with { Eot = eot } }));
+        }
+
+        Remember(sender.Index, pdus);   // after the stale pick, so a late copy is from an earlier transmission
+        return tx with { Bytes = output.ToArray() };
+    }
+
+    private static bool IsData(Dpdu p) => p is DataOnly or DataAck or Ed3DataOnly or Ed3DataAck;
+
+    // Per (sender, destination): data D_PDUs as DATA-ONLY copies with the window flags cleared, by first
+    // sending of their FSN, and the maximum window of the link (for which FSNs could still be outstanding).
+    private readonly Dictionary<(int Sender, uint Dst), List<(int Fsn, Dpdu Copy)>> _history = [];
+
+    private void Remember(int sender, List<Dpdu> pdus)
+    {
+        uint src = AddressOf(sender);
+        foreach (Dpdu p in pdus)
+        {
+            if (p is ResetWinResync or Ed3ResetWinResync)
+            {
+                // A reset starts both windows again: nothing from before it may be copied, either way.
+                _history.Remove((sender, p.Header.Dst));
+                int other = _nodes.FindIndex(n => n.Config.LocalAddress == p.Header.Dst);
+                if (other >= 0)
+                {
+                    _history.Remove((other, src));
+                }
+
+                continue;
+            }
+
+            (int fsn, Dpdu copy)? entry = p switch
+            {
+                DataOnly d => (d.TxFsn, d with { Flags = d.Flags with { TxWinUwe = false, TxWinLwe = false } }),
+                DataAck d when d.SegmentCrcOk => (d.TxFsn, new DataOnly(d.Header, d.Flags with { TxWinUwe = false, TxWinLwe = false }, d.TxFsn, d.Segment, true)),
+                Ed3DataOnly d => (d.TxFsn, d with { Flags = d.Flags with { TxWinUwe = false, TxWinLwe = false } }),
+                Ed3DataAck d when d.SegmentCrcOk => (d.TxFsn, new Ed3DataOnly(d.Header, d.Flags with { TxWinUwe = false, TxWinLwe = false }, d.TxFsn, d.Segment, true)),
+                _ => null,
+            };
+            if (entry is not var (f, c))
+            {
+                continue;
+            }
+
+            if (!_history.TryGetValue((sender, p.Header.Dst), out List<(int Fsn, Dpdu Copy)>? list))
+            {
+                list = [];
+                _history[(sender, p.Header.Dst)] = list;
+            }
+
+            if (!list.Any(e => e.Fsn == f))
+            {
+                list.Add((f, c));
+                int window = Math.Min(_nodes[sender].Config.Dts.MaxWindow, p.Type <= 3 ? 128 : 32768);
+                if (list.Count > window)
+                {
+                    list.RemoveAt(0);   // only the last maximum-window new FSNs can still be outstanding (C-0774)
+                }
+            }
+        }
+    }
+
+    private Dpdu? StaleCandidate(int sender, uint dst)
+    {
+        if (!_history.TryGetValue((sender, dst), out List<(int Fsn, Dpdu Copy)>? list) || list.Count == 0)
+        {
+            return null;
+        }
+
+        return list[(int)_prng.Uniform((ulong)list.Count)].Copy;
     }
 
     private bool Draw(int ppm) => ppm > 0 && (long)_prng.Uniform(1_000_000) < ppm;

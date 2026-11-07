@@ -10,17 +10,28 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// node does after a power failure (C.7.3.1, C-0789). The synchronisation tests must notice, a FULL
 /// RESET must bring both ends back to the initial window edges (C-0791, C-0792, C-0812, C-0822),
 /// and the transfer must carry on: no U_PDU is delivered twice or out of order, every U_PDU sent
-/// after the reset arrives, and the windows end in step.
+/// after the reset arrives, and the windows end in step. A variant (P4-7) duplicates and reorders data
+/// D_PDUs within transmissions as well; a sweep of 300 seeds of both passed.
 /// </summary>
 public class ArqResetTests(ITestOutputHelper output)
 {
     private const byte Sap = 5;
 
-    public static TheoryData<ulong> Seeds() => [1, 2, 3, 4, 5, 6];
+    public static TheoryData<ulong, bool> Cases()
+    {
+        var data = new TheoryData<ulong, bool>();
+        for (ulong seed = 1; seed <= 6; seed++)
+        {
+            data.Add(seed, false);
+            data.Add(seed, true);   // with data D_PDUs duplicated and reordered within transmissions (P4-7)
+        }
+
+        return data;
+    }
 
     [Theory]
-    [MemberData(nameof(Seeds))]
-    public void A_node_that_loses_its_arq_state_is_resynchronised_by_a_full_reset(ulong seed)
+    [MemberData(nameof(Cases))]
+    public void A_node_that_loses_its_arq_state_is_resynchronised_by_a_full_reset(ulong seed, bool mangle)
     {
         var parts = new List<DtsSublayer>();
         CoreDriver Factory(NodeConfig config, ulong s, IModemPort modem)
@@ -34,7 +45,10 @@ public class ArqResetTests(ITestOutputHelper output)
             return new CoreDriver(dispatcher.Handle, context.TakeOutputs);
         }
 
-        var channel = new ChannelModel(BlockErrorPpm: 50_000, BurstMissPpm: 20_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
+        // Late copies across transmissions are left out here: after the state loss node 1 cannot tell a
+        // late copy of an old FSN, flags cleared, from new data, as no test can (C-0796).
+        var channel = new ChannelModel(BlockErrorPpm: 50_000, BurstMissPpm: 20_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50,
+            DuplicatePpm: mangle ? 100_000 : 0, ReorderPpm: mangle ? 300_000 : 0);
         var sim = new Simulation(seed, channel, [Node("0.0.1.1"), Node("0.0.1.2")], Factory);
         uint a = sim.AddressOf(0);
         uint b = sim.AddressOf(1);
@@ -80,7 +94,7 @@ public class ArqResetTests(ITestOutputHelper output)
         sim.Violations.Should().BeEmpty();
 
         int resets = sim.Bursts.Sum(x => x.Dpdus.Count(d => d.Pdu is ResetWinResync { Flags.FullResetCmnd: true }));
-        output.WriteLine($"seed {seed}: {sim.Bursts.Count} bursts, {resets} FULL RESET CMDs");
+        output.WriteLine($"seed {seed} mangle {mangle}: {sim.Bursts.Count} bursts, {resets} FULL RESET CMDs, {sim.Duplicated} duplicated, {sim.Reordered} reordered");
         resets.Should().BePositive("the lost state is found by the synchronisation tests");
 
         // Delivered: an in-order subsequence of everything sent, with no repeats; every late U_PDU arrives.
