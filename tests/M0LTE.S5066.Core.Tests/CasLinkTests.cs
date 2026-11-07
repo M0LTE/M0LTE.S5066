@@ -300,10 +300,12 @@ public class CasLinkTests
     internal sealed class Rig
     {
         private readonly Dispatcher _dispatcher;
+        private readonly bool _showSisTimers;
         private bool _bound;
 
-        public Rig(Func<NodeConfig, NodeConfig>? configure = null)
+        public Rig(Func<NodeConfig, NodeConfig>? configure = null, bool showSisTimers = false)
         {
+            _showSisTimers = showSisTimers;
             NodeConfig config = TestConfig.Basic();
             Context = new CoreContext(configure is null ? config : configure(config), new NullModem());
             Sis = new SisSublayer(Context);
@@ -353,7 +355,7 @@ public class CasLinkTests
             Outputs.Clear();
             Context.Enqueue(primitive);
             _dispatcher.Handle(new ChannelBusy(Context.Now, false));
-            Outputs.AddRange(Context.TakeOutputs());
+            Take();
         }
 
         public void Expire(TimerName name, long? at = null)
@@ -362,11 +364,22 @@ public class CasLinkTests
             Run(new TimerExpired(t, name));
         }
 
+        /// <summary>
+        /// Collects the outputs. The SIS soft link timers, which every made link starts (A-0321), are
+        /// left out unless asked for, so CAS tests see only what they test; they still run.
+        /// </summary>
+        private void Take() =>
+            Outputs.AddRange(Context.TakeOutputs().Where(o => _showSisTimers || !IsSisTimer(o)));
+
+        private static bool IsSisTimer(CoreOutput o) =>
+            (o is TimerStart s ? s.Name.Kind : o is TimerCancel c ? c.Name.Kind : (TimerKind?)null)
+                is TimerKind.SisSoftLinkIdle or TimerKind.SisSoftLinkMinHold or TimerKind.SisSoftLinkMax;
+
         private void Run(CoreInput input)
         {
             Outputs.Clear();
             _dispatcher.Handle(input);
-            Outputs.AddRange(Context.TakeOutputs());
+            Take();
         }
     }
 

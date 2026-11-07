@@ -32,12 +32,16 @@ public class SoftLinkSessionTests
 
     private static DExpeditedUnidataIndication Link(uint src, CPdu c) => new(src, Us, false, false, CpduCodec.Encode(c));
 
-    private static CasLinkTests.Rig Rig(int? idle = null, int? minHold = null, int? max = null, int maxLinks = 4) =>
+    /// <summary>A soft link time a test does not exercise: long enough never to fall due in it.</summary>
+    private const int Long = 100_000_000;
+
+    /// <summary>The rig, with the soft link times a test leaves out set out of its way: no minimum hold, idle and maximum <see cref="Long"/>. Their timer outputs are shown.</summary>
+    private static CasLinkTests.Rig Rig(int idle = Long, int minHold = 0, int max = Long, int maxLinks = 4) =>
         new(c => c with
         {
             Sis = c.Sis with { SoftLinkIdleMs = idle, SoftLinkMinHoldMs = minHold, SoftLinkMaxMs = max },
             Cas = new CasConfig(maxLinks, 60000, 2, 120000, BreakRetries: 1),
-        });
+        }, showSisTimers: true);
 
     /// <summary>X calls us and the link is made: this node is the called node (A-0325).</summary>
     private static void CalledLink(CasLinkTests.Rig rig, uint peer = X)
@@ -60,7 +64,7 @@ public class SoftLinkSessionTests
         // A-0011, A-0320: the released U_PDU is outstanding, so no idle wait and no minimum hold (caller).
         var rig = Rig(idle: 5000, minHold: 60000);
         CallerLink(rig);
-        rig.Outputs.Should().NotContain(o => o is TimerStart && ((TimerStart)o).Name.Kind != TimerKind.DtsTtd);
+        rig.Outputs.Should().NotContain(o => o is TimerStart && ((TimerStart)o).Name.Kind != TimerKind.DtsTtd && ((TimerStart)o).Name.Kind != TimerKind.SisSoftLinkMax);
         CUnidataRequest sent = rig.Sis.Outstanding.Should().ContainSingle().Subject;
 
         // Confirmed: nothing outstanding, the idle wait starts.
@@ -86,8 +90,8 @@ public class SoftLinkSessionTests
         var rig = Rig(idle: 0);
         CalledLink(rig);
         rig.Outputs.Should().Equal(
-            new LinkState(X, LinkStateName.Linked), new TimerStart(First(X), 120000),
-            new TimerCancel(First(X)), new LinkState(X, LinkStateName.Breaking));
+            new LinkState(X, LinkStateName.Linked), new TimerStart(First(X), 120000), new TimerStart(Max(X), Long),
+            new TimerCancel(Max(X)), new TimerCancel(First(X)), new LinkState(X, LinkStateName.Breaking));
         rig.Sis.SoftLinkOf(X).Should().Be("Closing");
     }
 
@@ -118,7 +122,7 @@ public class SoftLinkSessionTests
         rig.ArqRequest(Y);
         rig.Sis.SoftLinkOf(Y).Should().Be("HeldOff");
         rig.Sis.SoftLinkOf(X).Should().Be("Closing");
-        rig.Outputs.Should().Equal(new TimerCancel(First(X)), new LinkState(X, LinkStateName.Breaking));
+        rig.Outputs.Should().Equal(new TimerCancel(Idle(X)), new TimerCancel(First(X)), new LinkState(X, LinkStateName.Breaking));
 
         // Once broken, Y is called (B-0412).
         rig.Sent(X);
@@ -260,7 +264,7 @@ public class SoftLinkSessionTests
     {
         // B-0450: the peer's No Data request holds nothing back (B-0249); our break stops new C_PDUs,
         // starts cas.clean_close because the link is not clean, and sends no request of our own.
-        var rig = Rig();
+        var rig = new CasLinkTests.Rig(c => c with { Cas = new CasConfig(4, 60000, 2, 120000, BreakRetries: 1) });
         CalledLink(rig);
         rig.Dts.Peers.OnDpdu(new DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(true, true, false, false, true, true), 0,
             new Octets(CpduCodec.Encode(new CpduData(new byte[] { 0x20, 0x59, 0x00, 0x41 }))), true));
@@ -289,11 +293,29 @@ public class SoftLinkSessionTests
     }
 
     [Fact]
-    public void Soft_link_settings_are_read_and_null_by_default()
+    public void Soft_link_settings_are_read_and_derived_when_null()
     {
+        // A-0321: unset, each is derived from the answer wait, here the derived 205500 ms (C-1120).
         JsonObject config = ConfigMerge.Merge(Corpus.T2Defaults, JsonNode.Parse("""{"local_address":"0.0.1.2"}""")!.AsObject());
-        ConfigReader.Read(config).Sis.Should().Be(new SisConfig(SisConfig.MaxTtl));
+        NodeConfig unset = ConfigReader.Read(config);
+        unset.Sis.Should().Be(new SisConfig(SisConfig.MaxTtl));
+        unset.SoftLinkIdleMs().Should().Be(3 * 205500);
+        unset.SoftLinkMinHoldMs().Should().Be(3 * 205500);
+        unset.SoftLinkMaxMs().Should().Be(6 * 205500);
+        ConfigReader.Read(ConfigMerge.Merge(config, JsonNode.Parse("""{"dts":{"ack_wait_ms":40000}}""")!.AsObject()))
+            .SoftLinkMaxMs().Should().Be(240000);
         config = ConfigMerge.Merge(config, JsonNode.Parse("""{"sis":{"soft_link_idle_ms":0,"soft_link_min_hold_ms":0,"soft_link_max_ms":1}}""")!.AsObject());
         ConfigReader.Read(config).Sis.Should().Be(new SisConfig(SisConfig.MaxTtl, 0, 0, 1));
+    }
+
+    [Fact]
+    public void Unset_soft_link_times_start_derived_timers_when_the_link_is_made()
+    {
+        // A-0321, A-0326: a called node starts the minimum hold, the maximum and the idle wait, in that order.
+        var rig = new CasLinkTests.Rig(c => c with { Cas = new CasConfig(4, 60000, 2, 120000, BreakRetries: 1) }, showSisTimers: true);
+        CalledLink(rig);
+        rig.Outputs.Should().Equal(
+            new LinkState(X, LinkStateName.Linked), new TimerStart(First(X), 120000),
+            new TimerStart(MinHold(X), 3 * 205500), new TimerStart(Max(X), 6 * 205500), new TimerStart(Idle(X), 3 * 205500));
     }
 }

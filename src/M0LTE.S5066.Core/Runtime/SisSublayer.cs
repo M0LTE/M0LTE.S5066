@@ -33,7 +33,7 @@ namespace M0LTE.S5066.Core.Runtime;
 /// node are held off for want of a link (A-0014, A-0015; interp A-0322); and one whose outstanding
 /// U_PDUs are all of lower priority than those held off for another node (A-0198; interp A-0323).
 /// A called node closes nothing on its own until <c>sis.soft_link_min_hold_ms</c> has passed since
-/// the link was made (A-0197). A null setting turns its rule off (interp A-0321). The rejections a
+/// the link was made (A-0197). A null setting is derived from the answer wait (interp A-0321). The rejections a
 /// close causes come back with its reason (A-0207, interp A-0324).
 /// </para>
 /// <para>
@@ -475,16 +475,13 @@ internal sealed class SisSublayer : ISisSublayer
         {
             link = new SoftLink(SoftLinkState.Established) { Called = called, EstablishedAt = _context.Now };
             _softLinks[peer] = link;
-            SisConfig config = _context.Config.Sis;
-            if (called && config.SoftLinkMinHoldMs is int hold and > 0)
+            NodeConfig config = _context.Config;
+            if (called && config.SoftLinkMinHoldMs() is long hold and > 0)
             {
                 _context.Timers.Start(MinHoldTimer(peer), hold);
             }
 
-            if (config.SoftLinkMaxMs is int max)
-            {
-                _context.Timers.Start(MaxTimer(peer), max);
-            }
+            _context.Timers.Start(MaxTimer(peer), config.SoftLinkMaxMs());
         }
 
         List<Held> release = _awaitingSoftLink.Where(a => a.Request.Dst == peer).ToList();
@@ -549,12 +546,12 @@ internal sealed class SisSublayer : ISisSublayer
 
     /// <summary>
     /// A-0011, interp A-0320: an open soft link with no ARQ request outstanding runs
-    /// <c>sis.soft_link_idle/&lt;peer&gt;</c>; one with any outstanding does not. Nothing when the
+    /// <c>sis.soft_link_idle/&lt;peer&gt;</c>; one with any outstanding does not. The time is derived when the
     /// setting is null (interp A-0321).
     /// </summary>
     private void UpdateIdle(uint peer)
     {
-        if (_context.Config.Sis.SoftLinkIdleMs is null || !_softLinks.TryGetValue(peer, out SoftLink? link)
+        if (!_softLinks.TryGetValue(peer, out SoftLink? link)
             || link.State != SoftLinkState.Established || link.Closing)
         {
             return;
@@ -574,7 +571,7 @@ internal sealed class SisSublayer : ISisSublayer
     /// <summary>Starts or restarts the idle wait; a zero wait (A-0013) expires at once (core-architecture.md 3, zero-duration rule).</summary>
     private void StartIdle(uint peer, SoftLink link)
     {
-        int ms = _context.Config.Sis.SoftLinkIdleMs ?? throw new InvalidOperationException("no idle time");
+        long ms = _context.Config.SoftLinkIdleMs();
         if (ms == 0)
         {
             _context.Timers.Cancel(IdleTimer(peer));

@@ -64,6 +64,15 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
 
     /// <summary>cas.clean_close_timeout_ms, or when unset three answer waits (B-0322; interp B-0420).</summary>
     public long CleanCloseTimeoutMs() => Cas.CleanCloseTimeoutMs ?? (3 * AnswerWaitMs());
+
+    /// <summary>sis.soft_link_idle_ms, or when unset three answer waits (A-0011; interp A-0321).</summary>
+    public long SoftLinkIdleMs() => Sis.SoftLinkIdleMs ?? (3 * AnswerWaitMs());
+
+    /// <summary>sis.soft_link_min_hold_ms, or when unset three answer waits, the called node's wait for the first DATA C_PDU (A-0197; interp A-0321).</summary>
+    public long SoftLinkMinHoldMs() => Sis.SoftLinkMinHoldMs ?? (3 * AnswerWaitMs());
+
+    /// <summary>sis.soft_link_max_ms, or when unset six answer waits, twice the minimum hold (A-0014, A-0015; interp A-0321).</summary>
+    public long SoftLinkMaxMs() => Sis.SoftLinkMaxMs ?? (6 * AnswerWaitMs());
 }
 
 /// <summary>
@@ -159,15 +168,15 @@ public sealed record TimeConfig(int EpochYear, int EpochDay, int EpochSecond);
 /// </param>
 /// <param name="SoftLinkIdleMs">
 /// sis.soft_link_idle_ms: how long a soft link carries no data before the SIS closes it, 0 or more
-/// (A-0011, A-0013; interp A-0320). Null: the SIS never closes an idle soft link (interp A-0321).
+/// (A-0011, A-0013; interp A-0320). Null: three answer waits (interp A-0321).
 /// </param>
 /// <param name="SoftLinkMinHoldMs">
 /// sis.soft_link_min_hold_ms: the least time a called node keeps a soft link before closing it on
-/// its own, 0 or more (A-0197). Null: no minimum (interp A-0321).
+/// its own, 0 or more (A-0197). Null: three answer waits (interp A-0321).
 /// </param>
 /// <param name="SoftLinkMaxMs">
 /// sis.soft_link_max_ms: the longest a soft link is kept while U_PDUs for another node wait for a
-/// link, 1 or more (A-0014, A-0015; interp A-0322). Null: no maximum (interp A-0321).
+/// link, 1 or more (A-0014, A-0015; interp A-0322). Null: six answer waits (interp A-0321).
 /// </param>
 public sealed record SisConfig(int DefaultTtl, int? SoftLinkIdleMs = null, int? SoftLinkMinHoldMs = null, int? SoftLinkMaxMs = null)
 {

@@ -856,8 +856,9 @@ internal sealed class CasSublayer : ICasSublayer
         _context.Timers.Cancel(CleanCloseTimer(peer));
         _context.Timers.Cancel(BreakTimer(peer));
         _links.Remove(peer);
-        if (link.SisReason is SisBreakReason sisReason)
+        if (link.SisReason is SisBreakReason sisReason && reason is not (LinkReason.ConnectionLost or LinkReason.HalfOpen))
         {
+            // A link lost during the close keeps its own reason (interp A-0324).
             _softLinkClosed[peer] = sisReason;   // A-0207: for the rejections D_CONNECTION_TERMINATED causes
         }
 
