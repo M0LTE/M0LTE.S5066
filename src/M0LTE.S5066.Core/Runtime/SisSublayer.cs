@@ -57,12 +57,12 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly CoreContext _context;
     private readonly SortedDictionary<int, Connection> _connections = [];
     private readonly SortedDictionary<byte, int> _sapOwner = [];
-    private readonly List<CUnidataRequest> _awaitingSoftLink = [];
+    private readonly List<(byte Sap, CUnidataRequest Request)> _awaitingSoftLink = [];
 
     public SisSublayer(CoreContext context) => _context = context;
 
     /// <summary>Accepted ARQ requests waiting for the soft link P4-1 will make, in arrival order.</summary>
-    internal IReadOnlyList<CUnidataRequest> AwaitingSoftLink => _awaitingSoftLink;
+    internal IReadOnlyList<CUnidataRequest> AwaitingSoftLink => _awaitingSoftLink.Select(a => a.Request).ToList();
 
     public void OnConfigChanged(NodeConfig oldConfig, NodeConfig newConfig)
     {
@@ -289,7 +289,7 @@ internal sealed class SisSublayer : ISisSublayer
             _context.AllocateHandle());
         if (arq)
         {
-            _awaitingSoftLink.Add(request);      // P4-1: soft link first (A-0008, A-0188)
+            _awaitingSoftLink.Add((srcSap, request));   // P4-1: soft link first (A-0008, A-0188)
         }
         else
         {
@@ -330,11 +330,18 @@ internal sealed class SisSublayer : ISisSublayer
     private void Send(int conn, SisPrimitive primitive) =>
         _context.Emit(new SisBytesOut(conn, SisCodec.Encode(primitive)));   // one output per primitive (core-architecture.md 2.2)
 
+    /// <summary>
+    /// Ends a binding, by unbind, disconnect or the invalid-primitive limit. U_PDUs from its SAP
+    /// still held in the SIS are discarded with no confirmation; C_PDUs already handed down run to
+    /// completion or TTL expiry (A-0260, NOT STATED). The held ones are the ARQ requests waiting
+    /// for a soft link; non-ARQ requests went to the CAS when they arrived.
+    /// </summary>
     private void Release(Connection c)
     {
         if (c.Release(out byte sap))
         {
             _sapOwner.Remove(sap);
+            _awaitingSoftLink.RemoveAll(a => a.Sap == sap);
         }
     }
 
