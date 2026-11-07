@@ -28,8 +28,17 @@ internal sealed class DtsSublayer : IDtsSublayer
     {
     }
 
-    public void OnTimer(TimerName name) =>
-        throw new InvalidOperationException($"DTS timer {name} expired, but the DTS starts no timers yet (now {_context.Now})");
+    public void OnTimer(TimerName name)
+    {
+        switch (name.Kind)
+        {
+            case TimerKind.DtsTtd:
+                _tx.OnTtdTimer();   // C-0857, C-0864, C-1050
+                break;
+            default:
+                throw new InvalidOperationException($"DTS timer {name} expired, but the DTS does not start it (now {_context.Now})");
+        }
+    }
 
     public void OnBurstStarted() => _receiver.OnBurstStarted();
 

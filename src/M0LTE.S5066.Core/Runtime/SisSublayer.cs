@@ -115,6 +115,11 @@ internal sealed class SisSublayer : ISisSublayer
     {
         switch (primitive)
         {
+            case CUnidataRequestRejected:
+                // Only a request that asked for confirmation is answered with S_UNIDATA_REQUEST_REJECTED
+                // (A-0105); non-ARQ requests cannot ask for one here, and the confirmation records
+                // that would match the handle arrive with P6-1 (A-0223, A-0232). So nothing to do yet.
+                break;
             case CUnidataIndication ind:
                 OnUnidataIndication(ind);
                 break;

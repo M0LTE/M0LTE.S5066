@@ -10,6 +10,16 @@ internal enum DReason
 {
     /// <summary>An ARQ request with no connection to the peer (C-0573, C-0593, C-0613, C-0633; C-0731).</summary>
     NoConnection,
+
+    /// <summary>The C_PDU's TTL expired before it was sent (C-0859, C-1050).</summary>
+    TtlExpired,
+}
+
+/// <summary>Why the CAS refused a C_UNIDATA_REQUEST (Table B-1, B-0018). The values are ours.</summary>
+internal enum CReason
+{
+    /// <summary>The DTS dropped the C_PDU because its TTL expired (C-0859, C-1050); the SIS reason 1, TTL Expired (A-0107).</summary>
+    TtlExpired,
 }
 
 /// <summary>D_EXPEDITED_UNIDATA_REQUEST, CAS to DTS: one C_PDU for a peer with expedited delivery (C-0025, C-0029).</summary>
@@ -29,3 +39,8 @@ internal sealed record DUnidataRequestRejected(int Handle, DReason Reason) : ToC
 /// <param name="Handle">The request handle.</param>
 /// <param name="Reason">Why.</param>
 internal sealed record DExpeditedUnidataRequestRejected(int Handle, DReason Reason) : ToCas;
+
+/// <summary>C_UNIDATA_REQUEST_REJECTED, CAS to SIS: the request named by the handle was not delivered (Table B-1, B-0018).</summary>
+/// <param name="Handle">The request handle.</param>
+/// <param name="Reason">Why.</param>
+internal sealed record CUnidataRequestRejected(int Handle, CReason Reason) : ToSis;

@@ -35,6 +35,11 @@ internal sealed class CasSublayer : ICasSublayer
             case DUnidataIndication d:
                 OnUnidataIndication(d);
                 break;
+            case DUnidataRequestRejected { Reason: DReason.TtlExpired } j:
+                // A C_PDU the DTS dropped for TTL (C-0859, C-1050): the request fails upward with
+                // the same reason (B-0018), handle unchanged.
+                _context.Enqueue(new CUnidataRequestRejected(j.Handle, CReason.TtlExpired));
+                break;
             default:
                 throw new InvalidOperationException($"the CAS does not handle {primitive.GetType().Name} yet");
         }

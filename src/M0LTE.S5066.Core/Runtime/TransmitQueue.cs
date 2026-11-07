@@ -10,7 +10,9 @@ internal interface ITransmissionSource
 {
     /// <summary>
     /// Rejects every queued C_PDU whose TTD is at or before now, by enqueueing primitives
-    /// (C-0857, C-0864). The MAC then drains the FIFO and re-reads the queue state.
+    /// (C-0857, C-0864), and drops the copies a transmission starting now could no longer send
+    /// within the reception window already announced (C-0353, C-1052). The MAC then drains the
+    /// FIFO and re-reads the queue state.
     /// </summary>
     void ExpireDue();
 
@@ -23,24 +25,36 @@ internal interface ITransmissionSource
 
 /// <summary>
 /// The DTS transmit queue and the transmission planner of core-architecture.md 5, for what phase 3
-/// can send: single-segment non-ARQ C_PDUs, type 7 for normal delivery and type 8 for expedited
-/// delivery, through the unconnected request tables C-9, C-11, C-13 and C-15 (C-0570, C-0575,
-/// C-0576, C-0590, C-0595, C-0596, C-0610, C-0615, C-0616, C-0630, C-0635, C-0636).
+/// can send: non-ARQ C_PDUs, type 7 for normal delivery and type 8 for expedited delivery, through
+/// the unconnected request tables C-9, C-11, C-13 and C-15 (C-0570, C-0575, C-0576, C-0590,
+/// C-0595, C-0596, C-0610, C-0615, C-0616, C-0630, C-0635, C-0636).
 /// </summary>
 /// <remarks>
 /// <para>
-/// A C_PDU is held whole until a transmission places it; it is segmented then, so its C_PDU ID
-/// is allocated at placement, in placement order (C-0326; core-architecture.md 5.2). The type 7
-/// and type 8 counters are separate spaces (C-0328, C-0359) and both start at 0 (C-1040, NOT
-/// STATED).
+/// A C_PDU is held whole until a transmission first places it. It is segmented then, with the
+/// <c>dts.max_segment_size</c> in force (C-0522 to C-0529, C-0549), into full segments and a
+/// shorter last one, and its C_PDU ID is allocated then, in placement order (C-0326;
+/// core-architecture.md 5.2). The type 7 and type 8 counters are separate spaces (C-0328, C-0359)
+/// and both start at 0 (C-1040). Segments that do not fit wait for a later transmission; every
+/// repeat is a copy of the segments cut at first placement, with only EOT and the reception window
+/// stamped again (C-0352).
 /// </para>
 /// <para>
-/// Not here yet: segmentation into more than one D_PDU and non-ARQ repeats (P3-5), TTL expiry
-/// (P3-5, in <see cref="ExpireDue"/>), MANAGEMENT and WARNING D_PDUs (P3-6), ARQ (phase 4), block
-/// alignment, ACK-ONLY fill and PADDING (P4-3). Interim until P3-5 (issue #24): a request that needs
-/// segmentation or repeats is accepted and queued, and every build while it is queued throws
-/// <see cref="NotSupportedException"/> (<see cref="RequireSupported"/>), as the MAC refused LINKING
-/// before this item. P3-5 removes that check and fills <see cref="ExpireDue"/>.
+/// A normal C_PDU with Minimum Number of Retransmissions N is sent N+1 times (A-0081, A-0083):
+/// each of its D_PDUs stays queued until it has gone that often (C-0848), in one transmission when
+/// the copies fit and across several otherwise (C-0884). Expedited requests carry no count and go
+/// once. Repeats follow every first copy of a transmission, one round at a time (C-0885, C-1054).
+/// </para>
+/// <para>
+/// TTL: one timer, <c>dts.ttd</c>, runs to the earliest TTD in the queue (core-architecture.md 3.2
+/// collapsing rule), or to the instant a C_PDU ID still in use is freed if a C_PDU waits for it
+/// (C-0327, C-1053), whichever is sooner. At its expiry, and on entry to LINKING, every C_PDU
+/// whose TTD is at or before now is dropped and rejected to the CAS (C-0857, C-0859, C-0864,
+/// C-1050). Expedited requests carry no TTD and never expire.
+/// </para>
+/// <para>
+/// Not here yet: MANAGEMENT and WARNING D_PDUs (P3-6), ARQ (phase 4), block alignment, ACK-ONLY
+/// fill and PADDING (P4-3).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -51,12 +65,17 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>Half seconds, the unit of EOT and the reception window (C-0104, C-0350).</summary>
     private const int HalfSecondMs = 500;
 
+    /// <summary>The largest value of the 16-bit reception window field (C-0355).</summary>
+    private const int MaxWindow = 65535;
+
+    private static readonly TimerName TtdTimer = TimerName.Of(TimerKind.DtsTtd);
+
     private readonly CoreContext _context;
     private readonly IMacObserver _mac;
     private readonly List<Entry> _entries = [];
+    private readonly IdSpace _normalIds = new();
+    private readonly IdSpace _expeditedIds = new();
     private long _nextSeq;
-    private int _nextNormalId;
-    private int _nextExpeditedId;
 
     public TransmitQueue(CoreContext context, IMacObserver mac)
     {
@@ -68,91 +87,271 @@ internal sealed class TransmitQueue : ITransmissionSource
     internal IReadOnlyList<DUnidataRequest> PendingNonArq =>
         _entries.Where(e => !e.Expedited).Select(e => e.Request!).ToList();
 
-    /// <summary>The number of queued C_PDUs, both deliveries.</summary>
+    /// <summary>The number of queued C_PDUs with D_PDUs still owed, both deliveries.</summary>
     internal int Count => _entries.Count;
 
     /// <summary>
     /// A non-ARQ D_UNIDATA_REQUEST: queued for type 7 D_PDUs (C-0575, C-0595). In the
     /// EXPEDITED-DATA(UNCONNECTED) state the tables queue it until the expedited data to that peer
     /// has gone (C-0615, C-0737); the planner does this by never placing it while an expedited
-    /// C_PDU to the same destination is still unplaced.
+    /// C_PDU to the same destination is still unplaced (C-1044). A request whose TTD has already
+    /// passed is rejected at once, never queued (core-architecture.md 3.2, zero-duration rule).
     /// </summary>
     public void Add(DUnidataRequest r)
     {
-        _entries.Add(new Entry(_nextSeq++, false, r.Priority, r.Dst, r.DstIsGroup, r.CPdu, r));
+        if (r.Ttd <= _context.Now)
+        {
+            _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.TtlExpired));
+            return;
+        }
+
+        _entries.Add(new Entry(_nextSeq++, false, r.Priority, r.Dst, r.DstIsGroup, r.CPdu, r, r.Ttd, r.MinRetransmissions + 1));
         _mac.QueueState(true);
+        ReconcileTimer();
     }
 
-    /// <summary>A non-ARQ D_EXPEDITED_UNIDATA_REQUEST: queued for type 8 D_PDUs (C-0576, C-0596, C-0616).</summary>
+    /// <summary>A non-ARQ D_EXPEDITED_UNIDATA_REQUEST: queued for type 8 D_PDUs (C-0576, C-0596, C-0616), sent once, no TTD.</summary>
     public void AddExpedited(DExpeditedUnidataRequest r)
     {
-        _entries.Add(new Entry(_nextSeq++, true, 0, r.Dst, r.DstIsGroup, r.CPdu, null));
+        _entries.Add(new Entry(_nextSeq++, true, 0, r.Dst, r.DstIsGroup, r.CPdu, null, null, 1));
         _mac.QueueState(true);
+        ReconcileTimer();
     }
 
-    /// <summary>TTL expiry arrives with P3-5 (C-0857, C-0864); nothing is rejected yet.</summary>
+    /// <summary>
+    /// <c>dts.ttd</c> expired: drop and reject what has reached its TTD (C-0857, C-0864, C-1050),
+    /// tell the MAC whether anything can still be placed (K-0078, K-0091), and re-arm.
+    /// </summary>
+    public void OnTtdTimer()
+    {
+        DropExpired();
+        _mac.QueueState(Placeable());
+        ReconcileTimer();
+    }
+
+    /// <inheritdoc/>
     public void ExpireDue()
     {
+        DropExpired();
+        if (Placeable())
+        {
+            Shape();   // drops copies that can no longer be sent in time (C-0353, C-1052)
+        }
+
+        _mac.QueueState(Placeable());
+        ReconcileTimer();
     }
 
     /// <summary>
     /// The build algorithm of core-architecture.md 5.3 for the classes phase 3 fills, then layout
-    /// and stamping (5.6). The waveform is <c>drc.default_speed</c> (C-0894, plan 6.2).
+    /// (with the P3-5 round order, C-1054) and stamping (5.6). The waveform is <c>drc.default_speed</c>
+    /// (C-0894, plan 6.2).
     /// </summary>
     public Transmit Build()
     {
-        if (_entries.Count == 0)
+        DropExpired();
+        if (!Placeable())
         {
-            throw new InvalidOperationException("the planner was asked to build with nothing queued");
+            throw new InvalidOperationException("the planner was asked to build with nothing it can place");
         }
 
-        NodeConfig config = _context.Config;
-        Speed speed = config.Drc.DefaultSpeed;
+        (Speed speed, long capacity) = Shape();
+        List<Piece> chosen = Select(capacity);
+        if (chosen.Count == 0)
+        {
+            throw new InvalidOperationException("the planner chose nothing");
+        }
+
+        Transmit t = Emit(chosen, speed);
+        _mac.QueueState(Placeable());
+        ReconcileTimer();
+        return t;
+    }
+
+    /// <summary>
+    /// The waveform and byte capacity of a transmission starting now, after dropping the copies of
+    /// every C_PDU that such a transmission could not finish sending within the reception window
+    /// last announced for it (C-0353, C-1052). Dropping can change which item goes first, and so
+    /// the capacity, so it repeats until nothing more is dropped.
+    /// </summary>
+    private (Speed Speed, long Capacity) Shape()
+    {
+        Speed speed = _context.Config.Drc.DefaultSpeed;
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+        while (true)
+        {
+            int first = FirstItemSize();
+            long capacity = Capacity(shape, first);
+            long longest = shape.PreambleMs + ((capacity / shape.BytesPerBlock) * shape.BlockMs) + shape.FlushMs;
+            List<Entry> late = _entries.Where(e => e.CommitEnd is long end && _context.Now + longest > end).ToList();
+            if (late.Count == 0)
+            {
+                return (speed, capacity);
+            }
+
+            // Dropped without a rejection: the TTL has not expired, and non-ARQ has no confirmation (C-1052).
+            foreach (Entry e in late)
+            {
+                _entries.Remove(e);
+            }
+
+            if (!Placeable())
+            {
+                return (speed, 0);
+            }
+        }
+    }
+
+    /// <summary>The size of the first D_PDU the selection would take (core-architecture.md 5.3), for the budget rule.</summary>
+    private int FirstItemSize()
+    {
+        foreach (Entry e in Expedited())
+        {
+            if (e.HasUnplacedSegment && (e.Placed || _expeditedIds.IsFree(_context.Now)))
+            {
+                return SizeOf(e.NextSegmentLength(MaxSegment), true);
+            }
+        }
+
+        bool idFree = _normalIds.IsFree(_context.Now);
+        foreach (Entry e in Normal())
+        {
+            if (e.HasUnplacedSegment && !HeldBehindExpedited(e) && (e.Placed || idFree))
+            {
+                return SizeOf(e.NextSegmentLength(MaxSegment), false);
+            }
+        }
+
+        foreach (Entry e in Normal())
+        {
+            if (e.OwedRepeat() is int seg)
+            {
+                return SizeOf(e.Segments![seg].Length, false);
+            }
+        }
+
+        throw new InvalidOperationException("nothing can be placed");
+    }
+
+    /// <summary>True when a transmission now could place at least one D_PDU (K-0096; core-architecture.md 4.1).</summary>
+    private bool Placeable()
+    {
+        long now = _context.Now;
         foreach (Entry e in _entries)
         {
-            RequireSupported(e);
-            e.Size = SizeOf(e.CPdu.Length, e.Expedited);   // with the address size in force now (core-architecture.md 7.3)
+            if (e.OwedRepeat() is not null)
+            {
+                return true;
+            }
+
+            if (!e.HasUnplacedSegment)
+            {
+                continue;
+            }
+
+            if (e.Placed || (e.Expedited ? _expeditedIds : _normalIds).IsFree(now))
+            {
+                if (e.Expedited || !HeldBehindExpedited(e))
+                {
+                    return true;
+                }
+            }
         }
 
-        // Class order (core-architecture.md 5.3; C-1041): expedited first (C-0288), oldest first;
-        // then normal data by priority, highest first, then age (C-0851, C-0853, C-0854: across all
-        // peers). Management, Warning and NonArqRepeat are empty in this item.
-        List<Entry> expedited = _entries.Where(e => e.Expedited).ToList();
-        expedited.Sort((a, b) => a.Seq.CompareTo(b.Seq));
-        List<Entry> normal = _entries.Where(e => !e.Expedited).ToList();
-        normal.Sort((a, b) => a.Priority != b.Priority ? b.Priority.CompareTo(a.Priority) : a.Seq.CompareTo(b.Seq));
+        return false;
+    }
 
-        long capacity = Capacity(shape, expedited.Count > 0 ? expedited[0] : normal[0]);
-        var chosen = new List<Entry>();
+    /// <summary>
+    /// Chooses the D_PDUs of one transmission (core-architecture.md 5.3, C-1041): expedited first
+    /// transmissions (C-0288), oldest first, a misfit skipped; then normal first transmissions by
+    /// priority and age (C-0851, C-0853, C-0854), a misfit stopping the class (C-0880); then the
+    /// repeats still owed (C-0848, C-0884), by priority and age, round by round, a misfit stopping
+    /// the class. A C_PDU is segmented and given its ID when its first segment is taken.
+    /// </summary>
+    private List<Piece> Select(long capacity)
+    {
+        var chosen = new List<Piece>();
         long used = 0;
-        foreach (Entry e in expedited)
+        int maxSegment = MaxSegment;
+
+        bool Fits(int size) => used + size <= capacity;
+
+        foreach (Entry e in Expedited())
         {
-            // A misfit is skipped and the next one tried (core-architecture.md 5.3).
-            if (used + e.Size <= capacity)
+            while (e.HasUnplacedSegment)
             {
-                chosen.Add(e);
-                used += e.Size;
+                if (!e.Placed && !_expeditedIds.IsFree(_context.Now))
+                {
+                    break;
+                }
+
+                int size = SizeOf(e.NextSegmentLength(maxSegment), true);
+                if (!Fits(size))
+                {
+                    break;   // skipped, the next expedited C_PDU is tried (core-architecture.md 5.3)
+                }
+
+                chosen.Add(TakeFirstCopy(e, maxSegment, _expeditedIds, size));
+                used += size;
             }
         }
 
-        foreach (Entry e in normal)
+        bool stop = false;
+        foreach (Entry e in Normal())
         {
-            if (expedited.Any(x => !chosen.Contains(x) && x.Dst == e.Dst && x.DstIsGroup == e.DstIsGroup))
+            if (HeldBehindExpedited(e))
             {
-                continue;   // held behind expedited data to the same destination (C-0615, C-0737)
+                continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044)
             }
 
-            if (used + e.Size > capacity)
+            while (e.HasUnplacedSegment)
             {
-                break;      // never let lower priority data overtake (C-0851); the rest waits (C-0880)
+                int size = SizeOf(e.NextSegmentLength(maxSegment), false);
+                if ((!e.Placed && !_normalIds.IsFree(_context.Now)) || !Fits(size))
+                {
+                    stop = true;   // never let lower priority data overtake (C-0851); the rest waits (C-0880)
+                    break;
+                }
+
+                chosen.Add(TakeFirstCopy(e, maxSegment, _normalIds, size));
+                used += size;
             }
 
-            chosen.Add(e);
-            used += e.Size;
+            if (stop)
+            {
+                break;
+            }
         }
 
-        return Emit(chosen, speed);
+        foreach (Entry e in Normal())
+        {
+            while (e.OwedRepeat() is int seg)
+            {
+                int size = SizeOf(e.Segments![seg].Length, false);
+                if (!Fits(size))
+                {
+                    return chosen;
+                }
+
+                e.Sent[seg]++;
+                chosen.Add(new Piece(e, seg, e.Sent[seg], size));
+                used += size;
+            }
+        }
+
+        return chosen;
+    }
+
+    private Piece TakeFirstCopy(Entry e, int maxSegment, IdSpace ids, int size)
+    {
+        if (!e.Placed)
+        {
+            e.Place(ids.Allocate(), maxSegment);
+        }
+
+        int seg = e.FirstUnsent;
+        e.Sent[seg] = 1;
+        return new Piece(e, seg, 1, size);
     }
 
     /// <summary>
@@ -163,23 +362,26 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// A D_PDU that needs more than 127.5 s on the configured waveform cannot be sent at all, which
     /// is a configuration the core cannot use.
     /// </summary>
-    private long Capacity(BurstPlan shape, Entry first)
+    private long Capacity(BurstPlan shape, int first)
     {
-        long budget = Math.Min(DtsConfig.MaxTransmissionLimitMs, _context.Config.Dts.MaxTransmissionMs);
-        long blocks = BlocksWithin(shape, budget);
-        if (first.Size <= blocks * shape.BytesPerBlock)
+        long blocks = BlocksWithin(shape, Budget);
+        if (first <= blocks * shape.BytesPerBlock)
         {
             return blocks * shape.BytesPerBlock;
         }
 
-        long needed = (first.Size + shape.BytesPerBlock - 1) / shape.BytesPerBlock;
+        long needed = (first + shape.BytesPerBlock - 1) / shape.BytesPerBlock;
         if (shape.PreambleMs + (needed * shape.BlockMs) + shape.FlushMs > DtsConfig.MaxTransmissionLimitMs)
         {
-            throw new ConfigException("drc.default_speed", $"a {first.Size}-byte D_PDU needs more than 127.5 s on this waveform");
+            throw new ConfigException("drc.default_speed", $"a {first}-byte D_PDU needs more than 127.5 s on this waveform");
         }
 
         return needed * shape.BytesPerBlock;
     }
+
+    private long Budget => Math.Min(DtsConfig.MaxTransmissionLimitMs, _context.Config.Dts.MaxTransmissionMs);
+
+    private int MaxSegment => _context.Config.Dts.MaxSegmentSize;
 
     private static long BlocksWithin(BurstPlan shape, long budgetMs)
     {
@@ -188,28 +390,40 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
-    /// Allocates C_PDU IDs in placement order, lays the D_PDUs out back to back with no pre-fill
-    /// (D-0003), stamps EOT and the reception window, encodes, and removes what was placed.
+    /// Lays the chosen D_PDUs out (first copies in the order chosen, then each round of repeats in
+    /// the order chosen, C-1054) back to back with no pre-fill (D-0003), stamps EOT and the
+    /// reception window, encodes, records each C_PDU's window commitment, and removes what owes
+    /// nothing more.
     /// </summary>
-    private Transmit Emit(List<Entry> chosen, Speed speed)
+    private Transmit Emit(List<Piece> chosen, Speed speed)
     {
         NodeConfig config = _context.Config;
-        long total = chosen.Sum(e => (long)e.Size);
+        long now = _context.Now;
+        var ordered = chosen.Select((p, i) => (p, i)).ToList();
+        ordered.Sort((a, b) => a.p.Copy != b.p.Copy ? a.p.Copy.CompareTo(b.p.Copy) : a.i.CompareTo(b.i));
+
+        long total = chosen.Sum(p => (long)p.Size);
         BurstPlan plan = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, (int)total);
+        BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+
+        // The extra time each C_PDU's window must cover for copies left for later transmissions (C-1051).
+        // Entries in the order they were first chosen; no dictionary is enumerated (core-architecture.md 6 rule 3).
+        var owners = new List<Entry>();
+        foreach (Piece p in chosen)
+        {
+            if (!owners.Contains(p.Owner))
+            {
+                owners.Add(p.Owner);
+                p.Owner.ExtraMs = LaterTransmissions(p.Owner, shape) * LaterTransmissionMs();
+                p.Owner.NewCommitEnd = null;
+            }
+        }
 
         var bytes = new byte[total];
         long offset = 0;
-        foreach (Entry e in chosen)
+        foreach ((Piece p, int _) in ordered)
         {
-            int id = e.Expedited ? _nextExpeditedId : _nextNormalId;
-            if (e.Expedited)
-            {
-                _nextExpeditedId = (_nextExpeditedId + 1) % CPduIdModulus;
-            }
-            else
-            {
-                _nextNormalId = (_nextNormalId + 1) % CPduIdModulus;
-            }
+            Entry e = p.Owner;
 
             // Air start of the D_PDU: the start of the block holding its first byte (C-1043).
             // EOT counts from there to the planned end of the burst, which includes the flush
@@ -220,54 +434,149 @@ internal sealed class TransmitQueue : ITransmissionSource
             long airStart = plan.PreambleMs + (block * plan.BlockMs);
             int eot = (int)((plan.DurationMs - airStart + HalfSecondMs - 1) / HalfSecondMs);
 
-            // Every copy of this C_PDU is in this transmission, so its reception window runs to
-            // the end of it, measured from the D_PDU's start like EOT (C-0350, C-0352).
-            int window = eot;
+            // The reception window runs from the D_PDU's start to the end of the last transmission
+            // expected to carry part of the C_PDU (C-0350, C-0352, C-1051).
+            int window = (int)Math.Min(MaxWindow, (plan.DurationMs - airStart + e.ExtraMs + HalfSecondMs - 1) / HalfSecondMs);
+            long end = now + airStart + ((long)window * HalfSecondMs);
+            e.NewCommitEnd = e.NewCommitEnd is long c ? Math.Min(c, end) : end;
 
+            (int segOffset, int segLength) = e.Segments![p.Segment];
             var header = new DpduHeader(0, eot, config.AddressSize, e.Dst, config.LocalAddress);   // EOW 0, EMPTY (C-0398)
             var fields = new NonArqFields(
-                id,
+                e.Id,
                 false,               // DELIVER IN ORDER is never set (C-0333)
                 e.DstIsGroup,        // C-0338 to C-0340
                 e.CPdu.Length,       // C-0343
-                0,                   // one segment: offset 0 (C-0346, C-0347)
+                segOffset,           // C-0346, C-0347, C-0528, C-0529
                 window);
+            var segment = new Octets(e.CPdu.Span.Slice(segOffset, segLength));
             Dpdu pdu = e.Expedited
-                ? new ExpeditedNonArqData(header, fields, new Octets(e.CPdu.Span), true)
-                : new NonArqData(header, fields, new Octets(e.CPdu.Span), true);
+                ? new ExpeditedNonArqData(header, fields, segment, true)
+                : new NonArqData(header, fields, segment, true);
             byte[] encoded = DpduCodec.Encode(pdu);
-            if (encoded.Length != e.Size)
+            if (encoded.Length != p.Size)
             {
                 throw new InvalidOperationException("a D_PDU's size changed between planning and encoding");
             }
 
             encoded.CopyTo(bytes, offset);
             offset += encoded.Length;
-            _entries.Remove(e);
         }
 
-        _mac.QueueState(_entries.Count > 0);
+        foreach (Entry e in owners)
+        {
+            long end = e.NewCommitEnd!.Value;
+            e.CommitEnd = end;   // no later copy may go out after this (C-0353, C-1052)
+            (e.Expedited ? _expeditedIds : _normalIds).Hold(e.Id, end);   // the ID is not reused before it (C-0327, C-1053)
+        }
+
+        _entries.RemoveAll(e => e.Placed && !e.HasUnplacedSegment && e.OwedRepeat() is null);
         return new Transmit(bytes, speed.Wn, speed.Interleaver, 7, true);
     }
 
     /// <summary>
-    /// One segment carries the whole C_PDU only if it is no larger than the maximum segment size
-    /// in force when it is segmented (C-0523, C-0549, C-0555). Larger C_PDUs need segmentation,
-    /// and a non-zero retransmission count needs repeats (A-0081, C-0848); both arrive in P3-5.
-    /// Checked for every queued entry at the start of each build, so such a request is accepted and
-    /// queued, and the node cannot transmit until it is gone. Interim stopgap, removed by P3-5 (issue #24).
+    /// How many more transmissions the copies this C_PDU still owes after this one need (C-1051):
+    /// first copies of unsent segments, then repeats round by round, packed in that order into
+    /// transmissions of the configured length; a copy larger than that length goes on its own.
     /// </summary>
-    private void RequireSupported(Entry e)
+    private int LaterTransmissions(Entry e, BurstPlan shape)
     {
-        if (e.CPdu.Length > _context.Config.Dts.MaxSegmentSize)
+        long room = BlocksWithin(shape, Budget) * shape.BytesPerBlock;
+        int count = 0;
+        long used = 0;
+        foreach (int size in e.OwedSizes().Select(len => SizeOf(len, e.Expedited)))
         {
-            throw new NotSupportedException("segmenting a C_PDU into several D_PDUs arrives in P3-5");
+            if (count == 0 || used + size > room)
+            {
+                count++;
+                used = 0;
+            }
+
+            used += size;
         }
 
-        if (e.Request is { MinRetransmissions: > 0 })
+        return count;
+    }
+
+    /// <summary>
+    /// The time allowed per later transmission in a reception window (C-1051; core-architecture.md
+    /// 10 item 5): the configured transmission length, the LBT wait after an own transmission
+    /// (K-0074; the common value in ed3 mode, K-0107) and the longest contention wait.
+    /// </summary>
+    private long LaterTransmissionMs()
+    {
+        CsmaConfig csma = _context.Config.Csma;
+        long lbt = csma.RequireMode() == CsmaMode.Ed3 ? csma.LbtWaitDcdMs : csma.LbtWaitVdcdMs;
+        return Budget + lbt + ((long)csma.NumContSlots * csma.ContSlotWidthMs);
+    }
+
+    /// <summary>
+    /// Drops every queued C_PDU whose TTD is at or before now, in (TTD, arrival) order, and
+    /// rejects each to the CAS with reason TTL expired (C-0857, C-0859, C-0864, C-1050).
+    /// </summary>
+    private void DropExpired()
+    {
+        List<Entry> expired = _entries.Where(e => e.Ttd is long ttd && ttd <= _context.Now).ToList();
+        expired.Sort((a, b) => a.Ttd!.Value != b.Ttd!.Value ? a.Ttd.Value.CompareTo(b.Ttd.Value) : a.Seq.CompareTo(b.Seq));
+        foreach (Entry e in expired)
         {
-            throw new NotSupportedException("non-ARQ repeats arrive in P3-5");
+            _entries.Remove(e);
+            _context.Enqueue(new DUnidataRequestRejected(e.Request!.Handle, DReason.TtlExpired));
         }
+    }
+
+    /// <summary>
+    /// Keeps <c>dts.ttd</c> at the earliest of: the TTDs in the queue, and for each ID space with
+    /// an unplaced C_PDU waiting, the instant its next ID is freed (C-0327, C-1053). Started or
+    /// restarted only when that instant changes, cancelled when there is none
+    /// (core-architecture.md 3.2).
+    /// </summary>
+    private void ReconcileTimer()
+    {
+        long now = _context.Now;
+        long? next = null;
+        foreach (Entry e in _entries)
+        {
+            if (e.Ttd is long ttd)
+            {
+                next = next is long n ? Math.Min(n, ttd) : ttd;
+            }
+
+            IdSpace ids = e.Expedited ? _expeditedIds : _normalIds;
+            if (!e.Placed && !ids.IsFree(now))
+            {
+                long freed = ids.NextFreedAt;
+                next = next is long n ? Math.Min(n, freed) : freed;
+            }
+        }
+
+        if (next is not long deadline)
+        {
+            _context.Timers.Cancel(TtdTimer);
+            return;
+        }
+
+        if (_context.Timers.Deadline(TtdTimer) != deadline)
+        {
+            _context.Timers.Start(TtdTimer, deadline - now);
+        }
+    }
+
+    private bool HeldBehindExpedited(Entry normal) =>
+        _entries.Any(x => x.Expedited && x.HasUnplacedSegment && x.Dst == normal.Dst && x.DstIsGroup == normal.DstIsGroup);
+
+    private List<Entry> Expedited()
+    {
+        List<Entry> list = _entries.Where(e => e.Expedited).ToList();
+        list.Sort((a, b) => a.Seq.CompareTo(b.Seq));
+        return list;
+    }
+
+    private List<Entry> Normal()
+    {
+        List<Entry> list = _entries.Where(e => !e.Expedited).ToList();
+        list.Sort((a, b) => a.Priority != b.Priority ? b.Priority.CompareTo(a.Priority) : a.Seq.CompareTo(b.Seq));
+        return list;
     }
 
     /// <summary>The encoded size of a type 7 or 8 D_PDU with a segment of this length; EOT and window values do not change it.</summary>
@@ -281,7 +590,39 @@ internal sealed class TransmitQueue : ITransmissionSource
         return DpduCodec.Encode(pdu).Length;
     }
 
-    private sealed class Entry(long seq, bool expedited, int priority, uint dst, bool dstIsGroup, ReadOnlyMemory<byte> cpdu, DUnidataRequest? request)
+    /// <summary>One D_PDU chosen for a transmission: a copy (1 = first) of one segment of a C_PDU.</summary>
+    private sealed record Piece(Entry Owner, int Segment, int Copy, int Size);
+
+    /// <summary>
+    /// One C_PDU ID space (C-0326, C-0328): the next ID, allocated in ascending order modulo 4096
+    /// from 0 (C-1040), and for each ID the end of the last reception window announced for the
+    /// C_PDU that had it, before which it is not reused (C-0327, C-1053).
+    /// </summary>
+    private sealed class IdSpace
+    {
+        private readonly long[] _heldUntil = Enumerable.Repeat(long.MinValue, CPduIdModulus).ToArray();
+        private int _next;
+
+        /// <summary>The instant the next ID is free.</summary>
+        public long NextFreedAt => _heldUntil[_next];
+
+        public bool IsFree(long now) => _heldUntil[_next] <= now;
+
+        public int Allocate()
+        {
+            int id = _next;
+            _heldUntil[id] = long.MaxValue;   // in use until its window is known, at the end of the build
+            _next = (_next + 1) % CPduIdModulus;
+            return id;
+        }
+
+        /// <summary>Holds the ID to the latest window end announced for its C_PDU.</summary>
+        public void Hold(int id, long until) =>
+            _heldUntil[id] = _heldUntil[id] == long.MaxValue ? until : Math.Max(_heldUntil[id], until);
+    }
+
+    private sealed class Entry(long seq, bool expedited, int priority, uint dst, bool dstIsGroup, ReadOnlyMemory<byte> cpdu,
+                               DUnidataRequest? request, long? ttd, int copies)
     {
         public long Seq { get; } = seq;
 
@@ -297,7 +638,97 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         public DUnidataRequest? Request { get; } = request;
 
-        /// <summary>The encoded D_PDU size, set at the start of each build.</summary>
-        public int Size { get; set; }
+        /// <summary>TimeToDie, absolute core ms; none for expedited requests.</summary>
+        public long? Ttd { get; } = ttd;
+
+        /// <summary>How many times each D_PDU is sent: the retransmission count plus one (A-0083).</summary>
+        public int Copies { get; } = copies;
+
+        /// <summary>The segments (offset, length), cut at first placement; null until then.</summary>
+        public List<(int Offset, int Length)>? Segments { get; private set; }
+
+        /// <summary>Copies of each segment placed so far.</summary>
+        public int[] Sent { get; private set; } = [];
+
+        public int Id { get; private set; }
+
+        /// <summary>The end of the reception window last announced; later copies must end before it (C-1052).</summary>
+        public long? CommitEnd { get; set; }
+
+        /// <summary>Build scratch: the window time owed to later transmissions (C-1051).</summary>
+        public long ExtraMs { get; set; }
+
+        /// <summary>Build scratch: the earliest window end stamped on this C_PDU in the transmission being built.</summary>
+        public long? NewCommitEnd { get; set; }
+
+        public bool Placed => Segments is not null;
+
+        /// <summary>The first segment never sent; segments are first sent in order.</summary>
+        public int FirstUnsent => Array.IndexOf(Sent, 0);
+
+        public bool HasUnplacedSegment => !Placed || FirstUnsent >= 0;
+
+        /// <summary>The length of the next first-copy segment, cutting with this size if not yet cut.</summary>
+        public int NextSegmentLength(int maxSegment) =>
+            Placed ? Segments![FirstUnsent].Length : Math.Min(maxSegment, CPdu.Length);
+
+        /// <summary>Cuts the C_PDU into segments (C-0525 to C-0529) and takes its ID (C-0326).</summary>
+        public void Place(int id, int maxSegment)
+        {
+            Id = id;
+            var segments = new List<(int, int)>();
+            for (int offset = 0; offset < CPdu.Length; offset += maxSegment)
+            {
+                segments.Add((offset, Math.Min(maxSegment, CPdu.Length - offset)));
+            }
+
+            Segments = segments;
+            Sent = new int[segments.Count];
+        }
+
+        /// <summary>The next repeat owed, lowest copy first, then segment order; null when none.</summary>
+        public int? OwedRepeat()
+        {
+            if (!Placed)
+            {
+                return null;
+            }
+
+            int best = -1;
+            for (int j = 0; j < Sent.Length; j++)
+            {
+                if (Sent[j] > 0 && Sent[j] < Copies && (best < 0 || Sent[j] < Sent[best]))
+                {
+                    best = j;
+                }
+            }
+
+            return best < 0 ? null : best;
+        }
+
+        /// <summary>The segment lengths of every copy still owed, in the order later builds would place them (C-1051).</summary>
+        public IEnumerable<int> OwedSizes()
+        {
+            if (!Placed)
+            {
+                yield break;
+            }
+
+            foreach (int j in Enumerable.Range(0, Sent.Length).Where(j => Sent[j] == 0))
+            {
+                yield return Segments![j].Length;
+            }
+
+            for (int round = 2; round <= Copies; round++)
+            {
+                for (int j = 0; j < Sent.Length; j++)
+                {
+                    if (Math.Max(Sent[j], 1) < round)
+                    {
+                        yield return Segments![j].Length;
+                    }
+                }
+            }
+        }
     }
 }
