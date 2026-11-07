@@ -6,6 +6,8 @@ Last updated: 2026-11-07.
 
 Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harness, CRC-16, CRC-32, SplitMix64) is done; P1b (D_PDU codec) is next. Phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) runs alongside.
 
+P1d (SIS S_primitive codec, issue #13): in review, see the PR from p1/sprim-codec. Code is in `src/M0LTE.S5066.Core/Sis/`; vectors are the `sprim-*` T1 files, with new corpus kinds `sis_frame` and `sis_stream`.
+
 ## Phases
 
 | Phase | State |
