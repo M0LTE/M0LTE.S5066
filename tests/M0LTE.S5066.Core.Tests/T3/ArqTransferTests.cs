@@ -11,7 +11,9 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// window blocking, DATA-ACK merging, bitmap acknowledgements, the half duplex failed rule and
 /// <c>dts.ack_wait</c> retransmission all take part. Every U_PDU must arrive exactly once and in
 /// order, every C_PDU must be confirmed, and at the end the two ends' windows must agree: each
-/// sender's TX LWE and TX UWE + 1 equal the receiver's RX LWE, with nothing outstanding.
+/// sender's TX LWE and TX UWE + 1 equal the receiver's RX LWE, with nothing outstanding. The Ed3
+/// variant (P4-5) has the Caller record its peer Ed3 first, so it calls with Ed4 clear and the link
+/// uses the 8-bit family (B-0122, B-0232), with segments small enough that the FSNs wrap modulo 256.
 /// </summary>
 /// <remarks>
 /// A review sweep of 300 seeds at 30% block loss, 10% missed bursts and fades passed wherever the
@@ -23,13 +25,14 @@ public class ArqTransferTests(ITestOutputHelper output)
 {
     private const byte Sap = 5;
 
-    public static TheoryData<ulong, bool> Cases()
+    public static TheoryData<ulong, bool, bool> Cases()
     {
-        var data = new TheoryData<ulong, bool>();
+        var data = new TheoryData<ulong, bool, bool>();
         for (ulong seed = 1; seed <= 8; seed++)
         {
-            data.Add(seed, false);   // dts.ack_wait_ms set
-            data.Add(seed, true);    // dts.ack_wait_ms unset: the derived wait (C-1120)
+            data.Add(seed, false, false);   // dts.ack_wait_ms set
+            data.Add(seed, true, false);    // dts.ack_wait_ms unset: the derived wait (C-1120)
+            data.Add(seed, false, true);    // the 8-bit family (P4-5)
         }
 
         return data;
@@ -37,12 +40,17 @@ public class ArqTransferTests(ITestOutputHelper output)
 
     [Theory]
     [MemberData(nameof(Cases))]
-    public void A_transfer_under_loss_completes_in_order_with_the_windows_in_step(ulong seed, bool derivedAckWait)
+    public void A_transfer_under_loss_completes_in_order_with_the_windows_in_step(ulong seed, bool derivedAckWait, bool ed3)
     {
         var parts = new List<DtsSublayer>();
         CoreDriver Factory(NodeConfig config, ulong s, IModemPort modem)
         {
             var context = new CoreContext(config, modem);
+            if (ed3 && parts.Count == 0)
+            {
+                context.Peers.SetEdition(0x0102, KnownEdition.Ed3);   // node 0 calls node 1 (0.0.1.2) with Ed4 clear
+            }
+
             var mac = new MacSublayer(context, new SplitMix64(s));
             var dts = new DtsSublayer(context, mac);
             mac.Transmitter = dts.Transmitter;
@@ -52,7 +60,7 @@ public class ArqTransferTests(ITestOutputHelper output)
         }
 
         var channel = new ChannelModel(BlockErrorPpm: 150_000, BurstMissPpm: 50_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
-        var sim = new Simulation(seed, channel, [Node("0.0.1.1", derivedAckWait), Node("0.0.1.2", derivedAckWait)], Factory);
+        var sim = new Simulation(seed, channel, [Node("0.0.1.1", derivedAckWait, ed3), Node("0.0.1.2", derivedAckWait, ed3)], Factory);
         uint a = sim.AddressOf(0);
         uint b = sim.AddressOf(1);
         sim.BindArq(0, 0, Sap);
@@ -84,8 +92,12 @@ public class ArqTransferTests(ITestOutputHelper output)
         {
             foreach (SimDpdu d in burst.Dpdus)
             {
-                int? fsn = d.Pdu switch { DataOnly x => x.TxFsn, DataAck x => x.TxFsn, _ => null };
-                dataAcks += d.Pdu is DataAck ? 1 : 0;
+                int? fsn = d.Pdu switch { DataOnly x => x.TxFsn, DataAck x => x.TxFsn, Ed3DataOnly x => x.TxFsn, Ed3DataAck x => x.TxFsn, _ => null };
+                dataAcks += d.Pdu is DataAck or Ed3DataAck ? 1 : 0;
+                if (d.Pdu is DataOnly or DataAck or AckOnly or Ed3DataOnly or Ed3DataAck or Ed3AckOnly)
+                {
+                    (d.Pdu.Type <= 3).Should().Be(ed3, "one family on the link (C-0763)");
+                }
                 if (fsn is int f && !seen.Add((burst.Sender, f)))
                 {
                     retransmitted++;
@@ -94,7 +106,7 @@ public class ArqTransferTests(ITestOutputHelper output)
         }
 
         int expiries = sim.Log.Count(l => l.Contains("timer_expired dts.ack_wait", StringComparison.Ordinal));
-        output.WriteLine($"seed {seed} derived {derivedAckWait}: {sim.Bursts.Count} bursts, {sim.Collisions} collisions, {retransmitted} retransmissions, {dataAcks} DATA-ACKs, {expiries} ack_wait expiries");
+        output.WriteLine($"seed {seed} derived {derivedAckWait} ed3 {ed3}: {sim.Bursts.Count} bursts, {sim.Collisions} collisions, {retransmitted} retransmissions, {dataAcks} DATA-ACKs, {expiries} ack_wait expiries");
         retransmitted.Should().BePositive("the loss makes the nodes retransmit");
 
         for (int receiver = 0; receiver < 2; receiver++)
@@ -118,6 +130,7 @@ public class ArqTransferTests(ITestOutputHelper output)
             ArqLink theirs = rx.LinkOf(sim.AddressOf(n))!;
             mine.Should().NotBeNull();
             theirs.Should().NotBeNull();
+            mine.ShortFamily.Should().Be(ed3);
             mine.Outstanding.Should().BeEmpty();
             mine.TxLwe.Should().Be(theirs.RxLwe, "TX LWE meets the peer's RX LWE");
             mine.Seq.Add(mine.TxUwe, 1).Should().Be(theirs.RxLwe, "every FSN sent has been received");
@@ -136,7 +149,7 @@ public class ArqTransferTests(ITestOutputHelper output)
         return u;
     }
 
-    private static JsonObject Node(string address, bool derivedAckWait) => new()
+    private static JsonObject Node(string address, bool derivedAckWait, bool ed3) => new()
     {
         ["local_address"] = address,
         // With dts.ack_wait_ms set it must exceed the peer's LBT wait: one shorter than lbt_wait_dcd_ms
@@ -164,6 +177,6 @@ public class ArqTransferTests(ITestOutputHelper output)
         },
         ["dts"] = derivedAckWait
             ? new JsonObject { ["max_segment_size"] = 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000 }
-            : new JsonObject { ["max_segment_size"] = 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000, ["ack_wait_ms"] = 20_000 },
+            : new JsonObject { ["max_segment_size"] = ed3 ? 8 : 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000, ["ack_wait_ms"] = 20_000 },
     };
 }

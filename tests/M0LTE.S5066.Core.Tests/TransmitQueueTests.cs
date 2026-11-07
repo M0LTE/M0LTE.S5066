@@ -299,6 +299,40 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void An_ed4_peer_on_a_short_link_gets_padding_and_aligned_segments()
+    {
+        // Interp C-1191: on a Short link (8-bit family, C-0168) to a peer recorded Ed4, segments are cut to
+        // the block boundaries (C-1155) and spare space takes PADDING (C-1154), as on a 16-bit link. A type 0
+        // is 18 bytes plus its segment, so two blocks hold 78 + 78; the last 44 bytes then go as a 62-byte
+        // type 0 and the 34 bytes left take three 11-byte PADDINGs.
+        var q = new Rig(maxTransmissionMs: 720 + 2 * 4800, maxSegment: 100);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X, shortFamily: true);
+        q.Tx.AddArq(Arq(X, 200));
+        q.Decode(q.Tx.Build()).Cast<Ed3DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+            .Should().Equal((0, 78, true, false), (1, 78, false, false));
+        List<Dpdu> rest = q.Decode(q.Tx.Build());
+        rest.Select(p => p.Type).Should().Equal(0, 14, 14, 14);
+        rest.OfType<Ed3DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduEnd)).Should().Equal((2, 44, true));
+    }
+
+    [Fact]
+    public void An_8_bit_acknowledgement_always_merges_into_an_ed3_data_ack()
+    {
+        // C-0236, C-0238, interp C-1190: a 16-byte bitmap (FSN 127 held) still merges into a type 2.
+        var q = new Rig();
+        ArqLink link = q.Tx.OpenLink(X, shortFamily: true);
+        link.Receive(127, true, true, false, false, [1]);
+        q.Tx.AckOwed();
+        q.Tx.AddArq(Arq(X, 4));
+        List<Dpdu> pdus = q.Decode(q.Tx.Build());
+        Ed3DataAck d = pdus[0].Should().BeOfType<Ed3DataAck>().Which;
+        (d.TxFsn, d.RxLwe, d.SelectiveAcks.Length).Should().Be((0, 0, 16));
+        pdus.Skip(1).Should().NotBeEmpty().And.AllBeOfType<Ed3AckOnly>();   // the fill repeats it as type 1 copies (C-1154)
+        pdus.Skip(1).Cast<Ed3AckOnly>().Should().OnlyContain(a => a.RxLwe == 0 && a.SelectiveAcks.Length == 16);
+    }
+
+    [Fact]
     public void Towards_a_peer_not_known_ed4_segments_keep_the_maximum_size()
     {
         // C-0554, C-0870, C-1155: the same C_PDU to a peer of unknown edition.

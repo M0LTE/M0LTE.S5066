@@ -76,8 +76,9 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
 /// (K-0094, K-0095). Never applied so as to block a single D_PDU (C-0551, C-0878).
 /// </param>
 /// <param name="MaxWindow">
-/// dts.max_window: the maximum allowable transmit window size, 1 to 32768 D_PDUs for the 16-bit
-/// family (C-0772, C-0773, C-0774). Read whenever a new D_PDU is placed (C-0775).
+/// dts.max_window: the maximum allowable transmit window size, 1 to 32768 D_PDUs (C-0772, C-0773,
+/// C-0774). On a link with the 8-bit family the family's maximum window, 128, caps it (C-0771,
+/// interp C-1193). Read whenever a new D_PDU is placed (C-0775).
 /// </param>
 /// <param name="AckWaitMs">
 /// dts.ack_wait_ms: how long after the end of a transmission carrying ARQ data to a peer the DTS

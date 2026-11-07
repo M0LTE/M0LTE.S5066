@@ -260,7 +260,7 @@ internal sealed class DtsPeers
     }
 
     /// <summary>
-    /// A DATA-ONLY, ACK-ONLY or DATA-ACK from a peer with a 16-bit ARQ machine (a DATA-ACK whose data
+    /// A DATA-ONLY, ACK-ONLY or DATA-ACK of the link's family (types 9 to 11, or 0 to 2 on an 8-bit link, C-0730) (a DATA-ACK whose data
     /// CRC failed brings its acknowledgement part only, which is neither stored nor acknowledged, C-1133). The data part first:
     /// each C_PDU it lets be delivered goes to the CAS with D_UNIDATA_INDICATION (C-0514, C-0517);
     /// then the acknowledgement part, which may confirm C_PDUs to the CAS (C-0680).
