@@ -26,6 +26,7 @@ public sealed class Node
         _context = new CoreContext(config, modem);
         var mac = new MacSublayer(_context, new SplitMix64(prngSeed));
         var dts = new DtsSublayer(_context, mac);
+        mac.Transmitter = dts.Transmitter;
         _dispatcher = new Dispatcher(_context, new SisSublayer(_context), new CasSublayer(_context), dts, mac);
     }
 

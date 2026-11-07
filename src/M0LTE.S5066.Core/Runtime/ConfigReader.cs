@@ -25,7 +25,7 @@ public static class ConfigReader
         "csma.mode", "csma.cont_slot_width_ms", "csma.num_cont_slots", "csma.lbt_wait_dcd_ms",
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
-        "sis.default_ttl",
+        "sis.default_ttl", "dts.max_segment_size", "dts.max_transmission_ms", "drc.default_speed",
     ];
 
     /// <summary>
@@ -112,6 +112,8 @@ public static class ConfigReader
             Groups = ReadGroups(config),
             Time = ReadTime(config),
             Sis = ReadSis(config),
+            Dts = ReadDts(config),
+            Drc = ReadDrc(config),
         };
     }
 
@@ -169,6 +171,39 @@ public static class ConfigReader
         }
 
         return new SisConfig(ttl);
+    }
+
+    /// <summary>dts.*: segment size 1 to 1023 (C-0503, C-0523), transmission length 1 to 127500 ms (K-0094).</summary>
+    private static DtsConfig ReadDts(JsonObject config)
+    {
+        JsonObject dts = Object(config, "dts");
+        int segment = Required(dts, "max_segment_size", "dts.", 1);
+        if (segment > DtsConfig.MaxSegmentSizeLimit)
+        {
+            throw new ConfigException("dts.max_segment_size", $"must be at most {DtsConfig.MaxSegmentSizeLimit}");
+        }
+
+        int transmission = Required(dts, "max_transmission_ms", "dts.", 1);
+        if (transmission > DtsConfig.MaxTransmissionLimitMs)
+        {
+            throw new ConfigException("dts.max_transmission_ms", $"must be at most {DtsConfig.MaxTransmissionLimitMs}");
+        }
+
+        return new DtsConfig(segment, transmission);
+    }
+
+    /// <summary>drc.default_speed: an object with <c>wn</c> and <c>interleaver</c>.</summary>
+    private static DrcConfig ReadDrc(JsonObject config)
+    {
+        JsonObject drc = Object(config, "drc");
+        if (drc["default_speed"] is not JsonObject speed)
+        {
+            throw new ConfigException("drc.default_speed", "must be an object with wn and interleaver");
+        }
+
+        int wn = Required(speed, "wn", "drc.default_speed.", 0);
+        string il = String(speed, "interleaver", "drc.default_speed.") ?? throw new MissingSettingException("drc.default_speed.interleaver");
+        return new DrcConfig(new Speed(wn, InterleaverNames.Parse(il)));
     }
 
     private static string? FirstUnknown(JsonObject obj, string prefix)

@@ -25,7 +25,44 @@ public sealed record NodeConfig(uint LocalAddress, int AddressSize, CsmaConfig C
 
     /// <summary>sis.*: SIS settings.</summary>
     public SisConfig Sis { get; init; } = new(SisConfig.MaxTtl);
+
+    /// <summary>dts.*: DTS settings.</summary>
+    public DtsConfig Dts { get; init; } = new(DtsConfig.MaxSegmentSizeLimit, DtsConfig.MaxTransmissionLimitMs);
+
+    /// <summary>drc.*: data rate settings.</summary>
+    public DrcConfig Drc { get; init; } = new(new Speed(2, Interleaver.Long));
 }
+
+/// <summary>dts.* settings.</summary>
+/// <param name="MaxSegmentSize">
+/// dts.max_segment_size: the largest C_PDU segment a new D_PDU carries, 1 to 1023 bytes
+/// (C-0503, C-0523, C-0555). Read when a C_PDU is segmented, so a change applies to C_PDUs
+/// segmented after it (C-0549, C-0550; core-architecture.md 7.3).
+/// </param>
+/// <param name="MaxTransmissionMs">
+/// dts.max_transmission_ms: the configured maximum transmission length, 1 to 127500 ms
+/// (K-0094, K-0095). Never applied so as to block a single D_PDU (C-0551, C-0878).
+/// </param>
+public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs)
+{
+    /// <summary>The largest segment size the standard allows (C-0503, C-0523).</summary>
+    public const int MaxSegmentSizeLimit = 1023;
+
+    /// <summary>The longest single-channel transmission, the 255 half seconds of EOT (C-0106, K-0094).</summary>
+    public const int MaxTransmissionLimitMs = 127500;
+}
+
+/// <summary>A waveform and interleaver pair, the transmission parameters the planner chooses (C-0894).</summary>
+/// <param name="Wn">Waveform number.</param>
+/// <param name="Interleaver">Interleaver.</param>
+public sealed record Speed(int Wn, Interleaver Interleaver);
+
+/// <summary>drc.* settings.</summary>
+/// <param name="DefaultSpeed">
+/// drc.default_speed: the waveform and interleaver every transmission uses until rate selection
+/// arrives in phase 7 (plan 6.2; core-architecture.md 5.3).
+/// </param>
+public sealed record DrcConfig(Speed DefaultSpeed);
 
 /// <summary>
 /// time.* settings: the UTC year, day-of-year and seconds-of-day that correspond to core time 0.

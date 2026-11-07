@@ -5,9 +5,11 @@ using M0LTE.S5066.Core.Tests.T2;
 namespace M0LTE.S5066.Core.Tests;
 
 /// <summary>
-/// Annex K behaviour a phase 3 trace cannot reach yet: LINKING and own transmissions need the
-/// planner (P3-4), and an emptied queue needs TTL expiry (P3-5). The real MAC with probe SIS, CAS
-/// and DTS; data is queued by calling the observer as the DTS would.
+/// Annex K behaviour checked against the real MAC with probe SIS, CAS and DTS and a stand-in
+/// transmission source: data is queued by calling the observer as the DTS would, and an emptied
+/// queue (TTL expiry, P3-5) is set directly. LINKING, the zero-wait chains and own transmissions
+/// are covered end to end by the corpus scenarios of P3-4 (csma/jitter-slot-0-chain,
+/// csma/slotted-position-1-zero-wait, csma/slotted-own-last-tx, csma/ed3-own-transmission).
 /// </summary>
 public class MacTests
 {
@@ -24,56 +26,13 @@ public class MacTests
     }
 
     [Fact]
-    public void Jitter_slot_0_chains_from_lbt_expiry_to_linking_in_one_input()
-    {
-        // K-0080 with a draw of 0, K-0090: the zero contention wait starts no timer
-        // (core-architecture.md 3.3). Seed 0 draws 15, 4, 15, 12, 11, 10, 1, ... so pick a seed
-        // whose first uniform(16) is 0.
-        ulong seed = SeedWithFirstDraw(16, 0);
-        var rig = new MacRig(CsmaMode.Jitter, seed: seed);
-        rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
-        rig.Handle(new TimerExpired(30000, Lbt)).Should().BeEmpty();
-        rig.Mac.State.Should().Be(MacState.Linking);
-        rig.Linked.Should().Be(1);
-        rig.Mac.PrngDraws.Should().Be(1);
-    }
-
-    [Fact]
-    public void Slotted_position_1_after_another_nodes_transmission_waits_zero_slots()
-    {
-        // K-0081: (1 - 1) * width = 0, straight to LINKING; slotted never draws.
-        var rig = new MacRig(CsmaMode.Slotted, position: 1);
-        rig.Handle(new BurstStarted(0));
-        rig.Queue(1000).Should().BeEmpty();
-        rig.Handle(new BurstEnded(5000, BurstEndReason.Eom, 2, Interleaver.Long, 7, null, 1)).Should().Equal(new TimerStart(Lbt, 30000));
-        rig.Handle(new TimerExpired(35000, Lbt)).Should().BeEmpty();
-        rig.Mac.State.Should().Be(MacState.Linking);
-        rig.Mac.PrngDraws.Should().Be(0);
-    }
-
-    [Fact]
-    public void Slotted_after_own_transmission_waits_position_slots_and_vdcd_lbt()
-    {
-        // K-0074: our own end is VDCD-determined, so lbt_wait_vdcd_ms. K-0082, K-0086: the last
-        // transmission was ours, so position * width rather than (position - 1) * width.
-        var rig = new MacRig(CsmaMode.Slotted, position: 1);
-        rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
-        rig.Handle(new TimerExpired(30000, Lbt)).Should().BeEmpty();
-        rig.Linked.Should().Be(1);
-        rig.Handle(new TransmitDone(40000)).Should().Equal(new TimerStart(Lbt, 3000));
-        rig.Handle(new TimerExpired(43000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
-        rig.Handle(new TimerExpired(46000, Cont)).Should().BeEmpty();
-        rig.Linked.Should().Be(2);
-    }
-
-    [Fact]
     public void A_burst_heard_after_own_transmission_makes_the_last_transmission_someone_elses()
     {
         // K-0086: any busy period since our own transmission ended.
         var rig = new MacRig(CsmaMode.Slotted, position: 2);
         rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
         rig.Handle(new TimerExpired(30000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
-        rig.Handle(new TimerExpired(33000, Cont)).Should().BeEmpty();
+        rig.Handle(new TimerExpired(33000, Cont)).Should().Equal(FakeTransmitter.Tx);
         rig.Handle(new TransmitDone(40000)).Should().Equal(new TimerStart(Lbt, 3000));
         rig.Handle(new BurstStarted(41000)).Should().Equal(new TimerCancel(Lbt));
         rig.Handle(new BurstEnded(42000, BurstEndReason.Eom, 2, Interleaver.Long, 7, null, 1)).Should().Equal(new TimerStart(Lbt, 30000));
@@ -86,7 +45,7 @@ public class MacTests
         // K-0107: one common LBT value, lbt_wait_dcd_ms; jitter contention, no own-last rule (K-0085).
         var rig = new MacRig(CsmaMode.Ed3, seed: SeedWithFirstDraw(16, 0));
         rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
-        rig.Handle(new TimerExpired(30000, Lbt)).Should().BeEmpty();
+        rig.Handle(new TimerExpired(30000, Lbt)).Should().Equal(FakeTransmitter.Tx);
         rig.Handle(new TransmitDone(40000)).Should().Equal(new TimerStart(Lbt, 30000));
     }
 
@@ -101,7 +60,7 @@ public class MacTests
         var prng = new SplitMix64(SeedWithFirstDraw(16, 0));
         prng.Uniform(16);
         long draw = (long)prng.Uniform(16);
-        CoreOutput[] expected = draw == 0 ? Array.Empty<CoreOutput>() : [new TimerStart(Cont, draw * 3000)];
+        CoreOutput[] expected = draw == 0 ? [FakeTransmitter.Tx] : [new TimerStart(Cont, draw * 3000)];
         rig.Handle(new TimerExpired(43000, Lbt)).Should().Equal(expected);
     }
 
@@ -194,12 +153,16 @@ public class MacTests
     }
 
     [Fact]
-    public void Linking_without_the_planner_is_not_supported_yet()
+    public void A_queue_emptied_by_expiry_on_entry_to_linking_goes_back_to_sense()
     {
-        var rig = new MacRig(CsmaMode.Slotted, position: 1, linkingHook: false);
-        rig.Queue(0);
-        Action act = () => rig.Handle(new TimerExpired(30000, Lbt));
-        act.Should().Throw<NotSupportedException>();
+        // core-architecture.md 3.5 rule 4, K-0091: ExpireDue runs before the build, and an empty
+        // queue then means SENSE with no transmission.
+        var rig = new MacRig(CsmaMode.Slotted, position: 1);
+        rig.Transmitter.EmptyOnExpire = true;
+        rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
+        rig.Handle(new TimerExpired(30000, Lbt)).Should().BeEmpty();
+        rig.Mac.State.Should().Be(MacState.Sense);
+        rig.Transmitter.Builds.Should().Be(0);
     }
 
     [Fact]
@@ -225,7 +188,7 @@ public class MacTests
     {
         private readonly Dispatcher _dispatcher;
 
-        public MacRig(CsmaMode? mode, ulong seed = 0, int? position = null, int lbtDcdMs = 30000, bool linkingHook = true)
+        public MacRig(CsmaMode? mode, ulong seed = 0, int? position = null, int lbtDcdMs = 30000)
         {
             var log = new List<string>();
             NodeConfig config = TestConfig.Basic(mode) with
@@ -234,10 +197,8 @@ public class MacTests
             };
             Context = new CoreContext(config, new NullModem());
             Mac = new MacSublayer(Context, new SplitMix64(seed));
-            if (linkingHook)
-            {
-                Mac.LinkingEntered = () => Linked++;
-            }
+            Transmitter = new FakeTransmitter(Mac);
+            Mac.Transmitter = Transmitter;
 
             _dispatcher = new Dispatcher(Context, new Probe("sis", log), new Probe("cas", log), new Probe("dts", log), Mac);
         }
@@ -246,7 +207,7 @@ public class MacTests
 
         public MacSublayer Mac { get; }
 
-        public int Linked { get; private set; }
+        public FakeTransmitter Transmitter { get; }
 
         /// <summary>Reports data queued (K-0096) and hands the node an input at t, as a SIS request would.</summary>
         public List<CoreOutput> Queue(long t)
@@ -259,6 +220,30 @@ public class MacTests
         {
             _dispatcher.Handle(input);
             return Context.TakeOutputs();
+        }
+    }
+
+    /// <summary>Stands in for the DTS transmit queue: every build returns the same transmission.</summary>
+    private sealed class FakeTransmitter(MacSublayer mac) : ITransmissionSource
+    {
+        public static readonly Transmit Tx = new(new byte[] { 0x90, 0xeb }, 2, Interleaver.Long, 7, true);
+
+        public bool EmptyOnExpire { get; set; }
+
+        public int Builds { get; private set; }
+
+        public void ExpireDue()
+        {
+            if (EmptyOnExpire)
+            {
+                mac.QueueState(false);
+            }
+        }
+
+        public Transmit Build()
+        {
+            Builds++;
+            return Tx;
         }
     }
 }
