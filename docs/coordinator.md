@@ -26,7 +26,7 @@ How the coordinating session runs this project. It is written so that a fresh se
 ## In flight (update when this changes)
 
 - Phase 3 is complete (P3-0 to P3-7 merged; 971 tests; corpus 0.7.x). Phase 4 issues are #39 onwards (P4-1 to P4-7), in the order of core-architecture.md section 9.
-- #35 fix merged (#46, corpus 0.8.0, address_size setting removed). P4-1 merged (#47, corpus 0.9.0). P4-2 (#40, ARQ data path) is with an Opus implementer; interp ids C-1120 to C-1149 and A-0310 to A-0319 are reserved. Next: P4-3 to P4-6, then P4-7 (T3 ARQ).
+- #35 fix merged (#46, corpus 0.8.0, address_size setting removed). P4-1 merged (#47, corpus 0.9.0). P4-2 is merged (#48, corpus 0.10.0). P4-3 (#41, ids C-1150 to C-1169) and P4-4 (#42, ids C-1170 to C-1189) are with Opus implementers in parallel. Then P4-5, P4-6 and P4-7. Issue #49 (derived cas.* defaults, reject a too-short ack wait) goes into a P5 item.
 - Modem: 0.5.0 and 0.6.0 are published (v0.6.0 tagged 2026-11-07). Tom gave standing permission (2026-11-07) to push M0LTE.Ms110d release tags, with each tag pinned to the full merge-commit SHA. Follow-up #36 (NewPreamble trailing probes) is for 0.6.1.
 - Phase 7 inputs: #38 (reception-window latency allowance); the SNR estimate tracks post-equaliser SNR, so calibrate block error rate against the estimate per WN (M0LTE.Ms110d docs/snr-calibration.md).
 - Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. Merging uses /home/tf/src/s5066-research/scripts/merge-pair.sh <conf_pr> <code_pr>. When two items run in parallel, reserve separate interp id ranges, and expect an integration step for whichever merges second.
