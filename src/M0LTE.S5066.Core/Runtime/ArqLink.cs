@@ -137,7 +137,10 @@ internal sealed class ArqLink
 
         // An in-order C_PDU goes once every D_PDU before it has been received (RX LWE has passed
         // its last segment), oldest first (C-0178, C-1123).
-        _pendingInOrder.Sort((a, b) => Seq.Distance(b.First, RxLwe).CompareTo(Seq.Distance(a.First, RxLwe)));
+        // Held runs lie within the maximum window behind or ahead of RX LWE, so measuring each from
+        // RX LWE - 32768 puts them in FSN order even when some are still ahead of RX LWE.
+        int origin = Seq.Add(RxLwe, -MaxWindowSize);
+        _pendingInOrder.Sort((a, b) => Seq.Distance(origin, a.First).CompareTo(Seq.Distance(origin, b.First)));
         while (_pendingInOrder.Count > 0 && Behind(_pendingInOrder[0].Last))
         {
             CPduRun r = _pendingInOrder[0];

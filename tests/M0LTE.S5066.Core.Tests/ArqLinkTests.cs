@@ -80,4 +80,19 @@ public class ArqLinkTests
         link.Receive(1, false, true, false, false, [5]).Should().BeEmpty();   // C-0184, C-1125
         link.RxLwe.Should().Be(2);
     }
+
+    [Fact]
+    public void An_in_order_cpdu_is_released_when_rx_lwe_passes_it_though_a_later_one_still_waits()
+    {
+        // A (FSN 1) and C (FSN 4) are in-order C_PDUs. FSN 0 and FSN 3 are missing, so both wait.
+        // When FSN 0 and then FSN 2 arrive RX LWE reaches 3: A may go (C-1123) while C, still
+        // ahead of RX LWE, waits for FSN 3.
+        var link = new ArqLink(1);
+        link.Receive(1, true, true, true, false, [0xA]).Should().BeEmpty();
+        link.Receive(4, true, true, true, false, [0xC]).Should().BeEmpty();
+        link.Receive(2, true, true, false, false, [0xB]).Should().ContainSingle();   // no flag: at once (C-0179)
+        link.Receive(0, true, true, false, false, [0x0]).Select(m => m.ToArray()[0]).Should().Equal(0x0, 0xA);
+        link.RxLwe.Should().Be(3);
+        link.Receive(3, true, true, false, false, [0xD]).Select(m => m.ToArray()[0]).Should().Equal(0xD, 0xC);
+    }
 }
