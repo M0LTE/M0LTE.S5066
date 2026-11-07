@@ -152,6 +152,23 @@ public class ArqLinkTests
     }
 
     [Fact]
+    public void A_receive_resync_never_moves_rx_lwe_back_over_delivered_data()
+    {
+        var link = new ArqLink(1);
+        for (int f = 0; f < 10; f++)
+        {
+            link.Receive(f, true, true, false, false, new byte[] { (byte)f }).Should().ContainSingle();
+        }
+
+        // The peer's TX LWE 3 lags our RX LWE 10 (its acknowledgements were lost): that passes
+        // Equation 2, so nothing moves, and its retransmissions of FSNs 3 to 9 stay copies (C-1178).
+        link.ResyncReceive(3).Should().BeEmpty();
+        link.RxLwe.Should().Be(10);
+        link.RxUwe.Should().Be(9);
+        link.Receive(5, true, true, false, false, new byte[] { 5 }).Should().BeEmpty("FSN 5 was delivered already");
+    }
+
+    [Fact]
     public void A_full_reset_returns_to_the_initial_edges()
     {
         var link = new ArqLink(1);

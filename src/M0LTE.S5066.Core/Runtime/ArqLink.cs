@@ -260,10 +260,18 @@ internal sealed class ArqLink
     /// the new receive window are kept, those behind it are discarded, RX UWE becomes the furthest
     /// segment kept (or NEW RECEIVE LWE - 1 when none), RX LWE then passes every segment already
     /// received (C-0776), and the in-order C_PDUs that leaves behind RX LWE are returned for delivery,
-    /// oldest first (C-0178, C-1178). Our transmit window is not touched.
+    /// oldest first (C-0178, C-1178). Our transmit window is not touched. A NEW RECEIVE LWE that
+    /// would pass Test 2 (Equation 2, C-0797) changes nothing: the peer's TX LWE is already in step
+    /// with our window, and moving RX LWE back would forget C_PDUs already delivered, so the peer's
+    /// retransmissions of them would be delivered twice (C-0777, C-1178).
     /// </summary>
     public List<ReadOnlyMemory<byte>> ResyncReceive(int newRxLwe)
     {
+        if (Seq.InArc(newRxLwe, Seq.Add(RxUwe, -(MaxWindowSize - 1)), RxLwe))
+        {
+            return [];   // in sync by Equation 2 (C-0797): RX LWE never moves back (C-0777, C-1178)
+        }
+
         // The FSNs that can be held: every one from RX LWE to RX UWE, and the unconsumed segments
         // just behind RX LWE that belong to a C_PDU not yet complete. They are visited in FSN order
         // and looked up, so the dictionary is never enumerated (core-architecture.md 6 rule 3).
