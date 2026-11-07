@@ -9,9 +9,10 @@ namespace M0LTE.S5066.Core.Runtime;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A C_PDU is identified by (source, type 7 or 8, C_PDU ID): the two ID spaces are separate
-/// (C-0328, C-0359) and an ID names one C_PDU of one sender until its reception window has passed
-/// (C-0327). A segment's place is its offset and size within the C_PDU size it states (C-0531,
+/// A C_PDU is identified by (source, destination with its group flag, type 7 or 8, C_PDU ID), as
+/// core-architecture.md 4 keys it: the two ID spaces are separate (C-0328, C-0359), an ID names one
+/// C_PDU of one sender until its reception window has passed (C-0327), and the destination keeps
+/// apart a sender that numbers its C_PDUs per destination (C-1076). A segment's place is its offset and size within the C_PDU size it states (C-0531,
 /// C-0343, C-0346). Completion is every byte of the C_PDU covered; overlapping copies (repeats) are
 /// harmless. A complete C_PDU is handed to the CAS at once (C-0539) with the primitive matching its
 /// type (C-0540, C-0732), so C_PDUs are delivered in the order they complete (C-0010, C-0537). The
@@ -64,7 +65,7 @@ internal sealed class NonArqReassembler
             return;   // does not fit the C_PDU it claims to belong to (C-1076)
         }
 
-        var key = new Key(src, expedited, f.CPduId);
+        var key = new Key(src, dst, dstIsGroup, expedited, f.CPduId);
         long deadline = _context.Now + (f.ReceptionWindow * 500L);   // C-0350, C-1077
 
         if (_delivered.TryGetValue(key, out (int Size, long Deadline) done))
@@ -193,11 +194,21 @@ internal sealed class NonArqReassembler
         return keys;
     }
 
-    private readonly record struct Key(uint Src, bool Expedited, int Id) : IComparable<Key>
+    private readonly record struct Key(uint Src, uint Dst, bool DstIsGroup, bool Expedited, int Id) : IComparable<Key>
     {
         public int CompareTo(Key other)
         {
             int c = Src.CompareTo(other.Src);
+            if (c == 0)
+            {
+                c = Dst.CompareTo(other.Dst);
+            }
+
+            if (c == 0)
+            {
+                c = DstIsGroup.CompareTo(other.DstIsGroup);
+            }
+
             if (c != 0)
             {
                 return c;

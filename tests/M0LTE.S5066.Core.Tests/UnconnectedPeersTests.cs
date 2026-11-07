@@ -39,6 +39,19 @@ public class UnconnectedPeersTests
     }
 
     [Fact]
+    public void The_same_id_to_different_destinations_names_different_cpdus()
+    {
+        // C-1076: a sender may number C_PDUs per destination, so the same source and ID sent to
+        // broadcast and to this node individually are two C_PDUs, neither completing the other.
+        var r = new Rig();
+        var group = new NonArqFields(4, false, true, 4, 0, 10);
+        r.Peers.OnDpdu(new NonArqData(new DpduHeader(0, 10, 4, DpduAddress.MaxValue, X), group, new Octets([1, 2]), true));
+        r.Peers.OnDpdu(T(X, Us, 4, [3, 4, 5, 6], 2, 2, 10));
+        r.Take().Should().BeEmpty();
+        r.Peers.Reassembler.PartialCount.Should().Be(2);
+    }
+
+    [Fact]
     public void A_segment_outside_its_cpdu_is_discarded()
     {
         // C-1076.
