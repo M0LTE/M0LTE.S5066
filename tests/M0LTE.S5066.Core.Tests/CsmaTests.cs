@@ -124,19 +124,32 @@ public class MacTests
     }
 
     [Fact]
-    public void An_external_busy_period_still_set_when_our_transmission_ends_makes_it_someone_elses()
+    public void An_external_busy_period_still_set_when_our_transmission_ends_keeps_the_own_last_slot()
     {
-        // K-0006, K-0086: the busy period goes on after our transmission ended, so the idle it delays
-        // is DCD-determined (rule 2, not K-0074's VDCD value) and slotted contention uses position - 1.
+        // K-0006: the idle it delays is DCD-determined (rule 2, not K-0074's VDCD value), and the input
+        // never counts for K-0086, so slotted contention keeps K-0082's extra slot.
         var rig = new MacRig(CsmaMode.Slotted, position: 2);
         rig.Queue(0);
         rig.Handle(new TimerExpired(30000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
         rig.Handle(new TimerExpired(33000, Cont)).Should().Equal(FakeTransmitter.Tx);
         rig.Handle(new ChannelBusy(36000, true)).Should().BeEmpty();
         rig.Handle(new TransmitDone(38000)).Should().BeEmpty();
-        rig.Mac.LastTransmissionOwn.Should().BeFalse();
+        rig.Mac.LastTransmissionOwn.Should().BeTrue();
         rig.Handle(new ChannelBusy(39000, false)).Should().Equal(new TimerStart(Lbt, 30000));
-        rig.Handle(new TimerExpired(69000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
+        rig.Handle(new TimerExpired(69000, Lbt)).Should().Equal(new TimerStart(Cont, 6000));
+    }
+
+    [Fact]
+    public void An_idle_the_external_busy_input_delays_never_gets_less_than_the_vdcd_value()
+    {
+        // K-0006: with lbt_wait_vdcd_ms above lbt_wait_dcd_ms, rule 2 alone would let the input
+        // shorten the wait after our own transmission (K-0074).
+        var rig = new MacRig(CsmaMode.Jitter, seed: SeedWithFirstDraw(16, 0), lbtDcdMs: 2000, lbtVdcdMs: 5000);
+        rig.Queue(0).Should().Equal(new TimerStart(Lbt, 2000));
+        rig.Handle(new TimerExpired(2000, Lbt)).Should().Equal(FakeTransmitter.Tx);
+        rig.Handle(new TransmitDone(10000)).Should().Equal(new TimerStart(Lbt, 5000));
+        rig.Handle(new ChannelBusy(11000, true)).Should().Equal(new TimerCancel(Lbt));
+        rig.Handle(new ChannelBusy(11500, false)).Should().Equal(new TimerStart(Lbt, 5000));
     }
 
     [Fact]
@@ -220,12 +233,12 @@ public class MacTests
     {
         private readonly Dispatcher _dispatcher;
 
-        public MacRig(CsmaMode? mode, ulong seed = 0, int? position = null, int lbtDcdMs = 30000)
+        public MacRig(CsmaMode? mode, ulong seed = 0, int? position = null, int lbtDcdMs = 30000, int lbtVdcdMs = 3000)
         {
             var log = new List<string>();
             NodeConfig config = TestConfig.Basic(mode) with
             {
-                Csma = new CsmaConfig(mode, 3000, 16, lbtDcdMs, 3000, position),
+                Csma = new CsmaConfig(mode, 3000, 16, lbtDcdMs, lbtVdcdMs, position),
             };
             Context = new CoreContext(config, new NullModem());
             Mac = new MacSublayer(Context, new SplitMix64(seed));
