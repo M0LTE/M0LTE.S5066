@@ -19,6 +19,8 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## Where things are
 
+- Restricted-distribution documents from Tom's contacts (AComP-4539 Ed A V3, AComP-5069 Ed A V1) are in /home/tf/src/s5066-research/private/. Cite them by table or section only, and never put them or their text in a repo. 5069 confirmed assumption A1.
+
 - The plan is `docs/plan.md`. The matrix and corpus are in M0LTE/s5066-conformance (a submodule at `conformance/` from P1a).
 - The Ed4 annex texts are local only, in `/home/tf/src/s5066-research/ed4/`. Research notes are in `/home/tf/src/s5066-research/notes/`.
 - The Claude Doc snapshot of the plan is https://claude.ai/artifact/Vmj59EyJtYbabb8yziDKpq. It is not maintained; the repo is the master.

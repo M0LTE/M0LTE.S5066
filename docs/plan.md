@@ -253,7 +253,7 @@ Already present and usable: autobaud lock info (WN, interleaver, K) per burst, t
 
 | 5066 field [Ed4 C.6.5.1, Figures C-50, C-51] | Our mapping | Status |
 |---|---|---|
-| Speed 1-13 = "STANAG 5069 waveform number" | 110D Appendix D WN 1-13 at 3 kHz | Assumption A1 |
+| Speed 1-13 = "STANAG 5069 waveform number" | 110D Appendix D WN 1-13 at 3 kHz | Confirmed (A1): AComP-5069 Edition A Version 1 numbers its waveforms 0 to 13 with the same 3 kHz rates and modulations (Table B.3.1.2-1, p.B-5), and uses the same preamble WID and interleaver mapping (B.3.2.1.3.2) |
 | Speed codes 17-30 (narrowband rates in bps) | Not used by us | We send WBHF codes only |
 | WN 0 (75 bps Walsh) | Cannot be named in an EOW: 00000 is reserved. A sender may still choose WN 0, because a lower speed never exceeds a recommendation [Ed4 C.7.6.2 item 6, p.C-120]. | Our choice |
 | Interleaver 001 Ultra Short, 011 Short, 100 Medium, 101 Long | 110D Appendix D Ultra Short, Short, Medium, Long [110D Table D-XVI, p.168] | Mapping by name; Annex C does not state it |
@@ -544,7 +544,7 @@ Each phase ends with its tests green, its conformance matrix rows filled, and a 
 
 | Ref | Item | Effect | Mitigation |
 |---|---|---|---|
-| A1 | We assume STANAG 5069 waveform numbers 1-13 equal 110D Appendix D WN 1-13 | Only matters for interop with other 5069 equipment | Seek STANAG 5069 (D1). The mapping is a single table, easy to change. |
+| A1 | STANAG 5069 waveform numbers 1-13 equal 110D Appendix D WN 1-13 | Resolved 2026-11-07 | Confirmed against AComP-5069 Edition A Version 1 (Table B.3.1.2-1 and B.3.2.1.3.2), obtained by Tom. It is held locally only, never in a repo. |
 | A2 | Ed3 text unavailable. Ed4 refers out to it for hard links, expedited primitives, HDRCR, Ed3 DRC and Ed3 Annex I | None for our scope, because all are out of scope (section 4.3) | Note in the matrix as n/a with reason |
 | A3 | Several Ed4 inconsistencies (section 4.4) | Possible mismatch with other implementations | Each resolution is a matrix row. Revisit if an official Ed4 copy differs. |
 | A4 | No timer values for CAS link setup, link break, ACK wait or confirmation wait [Ed4 B.7.2.1, B.7.2.8; C.7.5.6; A.3.2.3] | Tuning burden | Derive from burst duration plus turnaround, measured in T4, and document the formulas |
