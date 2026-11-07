@@ -112,10 +112,10 @@ internal sealed class DtsPeers
     private const int NoFrameId = 256;
 
     /// <summary>
-    /// Answer waits (<c>dts.ack_wait</c> or <c>dts.reset_wait</c>) that may expire in a row, with no
-    /// answer from the peer between, before the DTS declares the connection lost (C-0739; interp C-1250).
+    /// How long, in answer waits (<see cref="NodeConfig.AnswerWaitMs"/>), a connected peer may go
+    /// without answering before the DTS declares the connection lost (C-0739; interp C-1250).
     /// </summary>
-    public const int MaxUnansweredWaits = 16;
+    public const int SilenceWaits = 16;
 
     private readonly CoreContext _context;
     private readonly TransmitQueue _tx;
@@ -272,7 +272,7 @@ internal sealed class DtsPeers
         }
 
         peer.Connected = true;
-        peer.Unanswered = 0;
+        peer.SilentSince = null;   // C-1250: nothing awaited yet
         peer.Exchange = null;
         peer.ResetSent = false;
         peer.RxResetFrameId = NoFrameId;   // C-1173: each connection starts its RESET FRAME ID sequences afresh
@@ -666,12 +666,12 @@ internal sealed class DtsPeers
 
     /// <summary>
     /// <c>dts.reset_wait/&lt;peer&gt;</c> expired with no RESET ACK: the same command goes again, same
-    /// RESET FRAME ID NUMBER (C-0255, C-0272, C-1172), unless this was the last unanswered wait the
-    /// connection allows, when the connection is lost instead (C-1172 note, C-1250).
+    /// RESET FRAME ID NUMBER (C-0255, C-0272, C-1172), unless the peer has been silent too long, when
+    /// the connection is lost instead (C-1172 note, C-1250).
     /// </summary>
     public void OnResetWaitTimer(uint address)
     {
-        if (!_peers.TryGetValue(address, out Peer? peer) || !peer.Connected || Unanswered(address, peer))
+        if (!_peers.TryGetValue(address, out Peer? peer) || !peer.Connected || TooSilent(address, peer))
         {
             return;
         }
@@ -683,21 +683,56 @@ internal sealed class DtsPeers
     }
 
     /// <summary>
-    /// <c>dts.ack_wait/&lt;peer&gt;</c> expired with no acknowledgement. Returns true when this was
-    /// the last unanswered wait the connection allows and the connection has been lost (C-1250); the
-    /// caller then does not retransmit (C-1120).
+    /// <c>dts.ack_wait/&lt;peer&gt;</c> expired with no acknowledgement. Returns true when the peer
+    /// has been silent too long and the connection has been lost (C-1250); the caller then does not
+    /// retransmit (C-1120).
     /// </summary>
     public bool OnAckWaitExpired(uint address) =>
-        _peers.TryGetValue(address, out Peer? peer) && peer.Connected && Unanswered(address, peer);
+        _peers.TryGetValue(address, out Peer? peer) && peer.Connected && TooSilent(address, peer);
 
     /// <summary>
-    /// Counts an answer wait that expired (C-1250): at the <see cref="MaxUnansweredWaits"/>th in a row
-    /// with no answer from the peer between, the connection is lost. Returns true when it was.
+    /// Our transmission has ended, before its answer waits start (C-1250): each connected peer it
+    /// carried a D_PDU to that has been silent too long loses its connection, in ascending address
+    /// order, so no wait starts for it.
     /// </summary>
-    private bool Unanswered(uint address, Peer peer)
+    public void CheckSilence(IEnumerable<uint> sentTo)
     {
-        peer.Unanswered++;
-        if (peer.Unanswered < MaxUnansweredWaits)
+        foreach (uint address in sentTo)
+        {
+            if (_peers.TryGetValue(address, out Peer? peer) && peer.Connected)
+            {
+                TooSilent(address, peer);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Our transmission has ended and its answer waits have started (C-1250): for each connected
+    /// peer now awaiting an answer (<c>dts.ack_wait</c> or <c>dts.reset_wait</c> running) whose
+    /// silence is not yet being timed, it starts now. Silence is timed only while an answer is
+    /// awaited, so an idle link is never lost by its first transmission after a quiet spell.
+    /// </summary>
+    public void OnWaitsStarted()
+    {
+        foreach ((uint address, Peer peer) in _peers)
+        {
+            if (peer.Connected && peer.SilentSince is null
+                && (_context.Timers.IsRunning(TimerName.ForPeer(TimerKind.DtsAckWait, address))
+                    || _context.Timers.IsRunning(TimerName.ForPeer(TimerKind.DtsResetWait, address))))
+            {
+                peer.SilentSince = _context.Now;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Link failure detected by the DTS (C-0739; interp C-1250): the peer has given no answer for
+    /// <see cref="SilenceWaits"/> answer waits since we began awaiting one, so the connection is
+    /// lost. Returns true when it was.
+    /// </summary>
+    private bool TooSilent(uint address, Peer peer)
+    {
+        if (peer.SilentSince is not long since || _context.Now - since < SilenceWaits * _tx.AnswerWaitMs())
         {
             return false;
         }
@@ -706,8 +741,8 @@ internal sealed class DtsPeers
         return true;
     }
 
-    /// <summary>The peer answered: a D_PDU from it that its ARQ machine acted on (C-1250). The count starts again.</summary>
-    private static void Answered(Peer peer) => peer.Unanswered = 0;
+    /// <summary>The peer answered: a D_PDU from it that its ARQ machine acted on (C-1250). Its silence is timed afresh from the next answer wait.</summary>
+    private static void Answered(Peer peer) => peer.SilentSince = null;
 
     /// <summary>
     /// The DTS abandons the connection itself (C-0739): D_CONNECTION_LOST to the CAS, then, as for
@@ -988,8 +1023,11 @@ internal sealed class DtsPeers
         /// <summary>The RESET FRAME ID NUMBER our next command takes, modulo 256 (C-0272, C-0273, C-1173).</summary>
         public int TxResetFrameId { get; set; }
 
-        /// <summary>Answer waits expired in a row with no answer from the peer (C-1250).</summary>
-        public int Unanswered { get; set; }
+        /// <summary>
+        /// When the first transmission after the peer's last answer (or since the connection was
+        /// made) that left us awaiting an answer ended; null while nothing has been awaited since (C-1250).
+        /// </summary>
+        public long? SilentSince { get; set; }
 
         /// <summary>The received transmission that carried the peer's last type 4 (C-1231).</summary>
         public long Type4Transmission { get; set; }
