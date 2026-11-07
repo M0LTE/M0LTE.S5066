@@ -25,7 +25,7 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- P3-0, P3-1 and P3-2 are merged (#27, #29, #28). P3-3 (#22) and P3-4 (#23) are with Opus implementers in parallel; expect an integration step for whichever merges second. Rulings for P3-4 are in issue #23's comments; P6-1 notes are in #30.
+- P3-0 to P3-4 are merged (#27, #29, #28, #32, #31). P3-5 (#24) and P3-6 (#25) are with Opus implementers in parallel, with interp ids reserved (P3-5: C-1050 to C-1069, A-0270 to A-0279; P3-6: C-1070 to C-1089, A-0280 to A-0289). Expect an integration step for whichever merges second. P3-7 (#26, the T3 harness) comes after. Rulings for P3-4 are in issue #23's comments; P6-1 notes are in #30.
 - Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. The coordinator's prompt only names the item, issue and PRs.
 - Merging is one command: `/home/tf/src/s5066-research/scripts/merge-pair.sh <conformance_pr> <code_pr>` merges the conformance PR, repins the submodule, waits for CI, merges the code PR and cleans up.
 - Modem 0.5.0 is published (tag v0.5.0, 2026-11-07; Tom gave explicit permission to tag NuGet releases). The SNR estimator (0.6.0) is with an Opus agent on branch feat/5066-snr; a full validation sweep may need a spot instance.
