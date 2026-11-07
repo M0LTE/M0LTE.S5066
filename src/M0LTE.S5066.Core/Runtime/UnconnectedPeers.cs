@@ -1,0 +1,241 @@
+using M0LTE.S5066.Core.Dts;
+
+namespace M0LTE.S5066.Core.Runtime;
+
+/// <summary>The four UNCONNECTED DTS states of Figure C-54 (C-0562). The CONNECTED half arrives with P4-1.</summary>
+internal enum DtsPeerState
+{
+    IdleUnconnected,
+    DataUnconnected,
+    ExpeditedDataUnconnected,
+    ManagementUnconnected,
+}
+
+/// <summary>
+/// The receive side of the DTS state machine for peers with no ARQ connection, which before CAS-1
+/// linking (P4-1) is every peer: Tables C-10, C-12, C-14 and C-16 (C-0577 to C-0589, C-0597 to
+/// C-0609, C-0617 to C-0629, C-0637 to C-0649), the MANAGEMENT receive procedure [Ed4 C.4.10,
+/// p.C-43 to C-45], WARNING generation [Ed4 C.4.15, p.C-54 to C-56] and the UNRECOGNIZED-TYPE-ERROR
+/// EOW [Ed4 C.6.3, p.C-70].
+/// </summary>
+/// <remarks>
+/// <para>
+/// State is kept per remote node (C-0565, C-0568) and driven only by D_PDUs addressed to this node,
+/// or for types 7 and 8 to a group it belongs to, from that node (C-0566). Every valid D_PDU is
+/// processed whatever the state (C-0749). The four tables give the same response to each received
+/// type and differ only in the state they move to, so the response is written once.
+/// </para>
+/// <para>
+/// WARNINGs (C-0376, C-0385): only for D_PDUs addressed to this node's own individual address, never
+/// for group or broadcast destinations (C-0394, C-0735, J-0053). Reason 1 for every
+/// connection-related type, 0 to 5 and 9 to 12, in all four states (C-0578 to C-0583 and the matching
+/// rows; C-0734 over C-0389 and C-0390). Reason 4 for every EXTENSION, since no extended type is
+/// implemented (C-0392, C-0735; the stream receiver already resumed after its header CRC, C-0365).
+/// Reason 0 for a type undefined in Ed3 from a peer read as Ed3 (C-0388; none before P4-1). Reason 3
+/// for an Ed3 DRC or frequency change request in a MANAGEMENT D_PDU, after acknowledging it (C-0920,
+/// C-0921, C-1071). Never for a received WARNING (C-0393). A WARNING already queued and unsent with
+/// the same peer, type and reason is not queued again, and the CAS is told D_WARNING_TRANSMITTED
+/// when the WARNING is queued (C-0578, C-0733; C-1075). WARNINGs are not acknowledged (C-0386).
+/// </para>
+/// <para>
+/// MANAGEMENT (C-0584, C-0604, C-0624, C-0644): a type 6 with VALID MESSAGE set is a message. Its
+/// frame ID is compared with the peer's RX MANAGEMENT FRAME ID NUMBER, which starts above 255
+/// (C-0310, C-0314); a different ID is new and becomes the RX value (C-0315, C-1015), an equal one is
+/// a repeat and leaves it (C-0316, C-1016). Every copy is acknowledged (C-0296), but an
+/// acknowledgement already queued for the same ID is not queued twice (C-1074); only a new message is
+/// acted on. A type 6 with VALID MESSAGE clear is an acknowledgement only (C-0302): it is not itself
+/// acknowledged, and since this node never sends a MANAGEMENT message before phase 7, there is
+/// nothing for it to acknowledge (C-1072). Extended content is ignored (C-0321). The acknowledgement
+/// echoes the received frame ID and does not touch TX MANAGEMENT FRAME ID NUMBER (C-1073). The
+/// receiving side of the stop-and-wait exchange is finished when the acknowledgement is placed in a
+/// transmission (C-1070); the peer then leaves MANAGEMENT(UNCONNECTED) by C-0738.
+/// </para>
+/// <para>
+/// EOWs (C-0445): an EOW type this node does not recognise (2, 5, 6, 7, 13, 14; C-0405, C-0411,
+/// C-0412, C-0421) in a D_PDU addressed to its individual address is answered with an
+/// UNRECOGNIZED-TYPE-ERROR (C-0446 to C-0448), carried in the EOW of the next D_PDU sent to that
+/// peer (C-0396, C-1079). Recognised EOWs are for data rate selection and capability, phase 7.
+/// </para>
+/// </remarks>
+internal sealed class UnconnectedPeers
+{
+    /// <summary>RX MANAGEMENT FRAME ID NUMBER before any MANAGEMENT D_PDU is received: above 255 (C-0310).</summary>
+    private const int NoFrameId = 256;
+
+    private readonly CoreContext _context;
+    private readonly TransmitQueue _tx;
+    private readonly NonArqReassembler _reassembler;
+    private readonly SortedDictionary<uint, Peer> _peers = new();
+
+    public UnconnectedPeers(CoreContext context, TransmitQueue tx)
+    {
+        _context = context;
+        _tx = tx;
+        _reassembler = new NonArqReassembler(context);
+    }
+
+    /// <summary>The non-ARQ reassembly, for tests and the <c>dts.reception_window</c> expiry.</summary>
+    internal NonArqReassembler Reassembler => _reassembler;
+
+    /// <summary>The state kept for a peer, for tests; IDLE(UNCONNECTED) for a peer never heard.</summary>
+    internal DtsPeerState StateOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.State : DtsPeerState.IdleUnconnected;
+
+    /// <summary>A whole D_PDU with good CRCs, whoever it is addressed to (C-0838).</summary>
+    public void OnDpdu(Dpdu pdu)
+    {
+        NodeConfig config = _context.Config;
+        DpduHeader h = pdu.Header;
+        bool toUs = h.Dst == config.LocalAddress;   // the individual address (C-0394)
+
+        if (pdu is NonArqData or ExpeditedNonArqData)
+        {
+            NonArqFields f = pdu is NonArqData d ? d.Fields : ((ExpeditedNonArqData)pdu).Fields;
+            bool forUs = f.GroupAddress ? IsOurGroup(h.Dst) : toUs;
+            if (!forUs)
+            {
+                return;   // C-0566
+            }
+
+            OweEowIfUnrecognised(h, toUs && !f.GroupAddress);
+            bool expedited = pdu is ExpeditedNonArqData;
+            Peer peer = PeerOf(h.Src);
+            if (peer.State != DtsPeerState.ManagementUnconnected)
+            {
+                // C-0585, C-0586, C-0605, C-0606, C-0625, C-0626; C-0645 and C-0646 stay in MANAGEMENT.
+                peer.State = expedited ? DtsPeerState.ExpeditedDataUnconnected : DtsPeerState.DataUnconnected;
+            }
+
+            Octets segment = pdu is NonArqData d2 ? d2.Segment : ((ExpeditedNonArqData)pdu).Segment;
+            _reassembler.OnSegment(h.Src, h.Dst, f.GroupAddress, expedited, f, segment.Span);
+            return;
+        }
+
+        if (!toUs)
+        {
+            return;   // C-0566; no other type has a group form (C-0122)
+        }
+
+        OweEowIfUnrecognised(h, true);
+        switch (pdu)
+        {
+            case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
+                or DataOnly or AckOnly or DataAck or ResetWinResync:
+                // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
+                // (C-0578 to C-0583, C-0598 to C-0603, C-0618 to C-0623, C-0638 to C-0643; C-0734).
+                Warn(h.Src, pdu.Type, 1);
+                break;
+            case Management m:
+                OnManagement(m);
+                break;
+            case Extension:
+                // C-0735: no WTRP, so every EXTENSION to us is unrecognised: WARNING reason 4 (C-0392),
+                // no state change, nothing else done with it (C-0587 and the matching rows do not apply).
+                Warn(h.Src, 13, 4);
+                break;
+            case UndefinedTypeDpdu u:
+                Warn(h.Src, u.Type, 0);   // C-0388: a type undefined for an Ed3 peer
+                break;
+            case Padding:
+                break;   // C-0588, C-0608, C-0628, C-0648: ignored; its EOT was used by the receiver
+            case Warning w:
+                // C-0589, C-0609, C-0629, C-0649: tell the CAS; never answer it (C-0393). Nothing this
+                // node does before P4-1 can be stopped by a WARNING.
+                _context.Enqueue(new DWarningReceived(h.Src, h.Dst, w.ReceivedFrameType, w.Reason));
+                break;
+            default:
+                throw new InvalidOperationException($"unhandled D_PDU {pdu.GetType().Name}");
+        }
+    }
+
+    /// <summary>The <c>dts.reception_window</c> expiry (C-0336).</summary>
+    public void OnReceptionWindowTimer() => _reassembler.OnTimer();
+
+    private void OnManagement(Management m)
+    {
+        Peer peer = PeerOf(m.Header.Src);
+        if (!m.ValidMessage)
+        {
+            return;   // an acknowledgement only (C-0302, C-1072)
+        }
+
+        // C-0584, C-0604, C-0624, C-0644: go to (or stay in) MANAGEMENT(UNCONNECTED).
+        peer.State = DtsPeerState.ManagementUnconnected;
+        bool isNew = m.ManagementFrameId != peer.RxFrameId;   // C-0314 to C-0316
+        if (isNew)
+        {
+            peer.RxFrameId = m.ManagementFrameId;   // C-1015
+        }
+
+        if (!_tx.PendingControl.Any(c => c is ManagementAck a && a.Dst == m.Header.Src && a.FrameId == m.ManagementFrameId))
+        {
+            peer.AcksOutstanding++;
+            _tx.AddControl(new ManagementAck(m.Header.Src, m.ManagementFrameId) { Placed = () => AckPlaced(peer) });   // C-0296, C-1073, C-1074
+        }
+
+        if (isNew && EowCodec.Decode(m.Header.Eow).Type is 1 or 2 or 5 or 6)
+        {
+            // An Ed3 stop/start data rate change or Annex I frequency change request (C-0919): not
+            // supported, so refused with WARNING reason 3 after the acknowledgement (C-0920, C-0921,
+            // C-1071). Nothing in it is acted on.
+            Warn(m.Header.Src, 6, 3);
+        }
+    }
+
+    /// <summary>
+    /// The acknowledgement went into a transmission: when it was the last one owed, the management
+    /// exchange with this peer is finished (C-1070) and the peer leaves MANAGEMENT(UNCONNECTED) for
+    /// IDLE(UNCONNECTED) (C-0738: no non-ARQ data is pending in a state that would hold it).
+    /// </summary>
+    private static void AckPlaced(Peer peer)
+    {
+        peer.AcksOutstanding--;
+        if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementUnconnected)
+        {
+            peer.State = DtsPeerState.IdleUnconnected;
+        }
+    }
+
+    private void Warn(uint dst, int receivedFrameType, int reason)
+    {
+        if (_tx.PendingControl.Any(c => c is WarningItem w && w.Dst == dst && w.ReceivedFrameType == receivedFrameType && w.Reason == reason))
+        {
+            return;   // C-1075
+        }
+
+        _tx.AddControl(new WarningItem(dst, receivedFrameType, reason));
+        _context.Enqueue(new DWarningTransmitted(dst, receivedFrameType, reason));   // C-0733, C-1075
+    }
+
+    /// <summary>C-0445, C-0421, C-1079: an unrecognised EOW from a peer, in a D_PDU to our individual address.</summary>
+    private void OweEowIfUnrecognised(DpduHeader h, bool individual)
+    {
+        if (individual && EowCodec.Decode(h.Eow) is UnrecognisedEow u)
+        {
+            _tx.OweEow(h.Src, EowCodec.Encode(new UnrecognizedTypeErrorEow(u.EowType)));
+        }
+    }
+
+    /// <summary>A group address this node receives: one configured in <c>groups</c> (A-0120), or broadcast (C-0123).</summary>
+    private bool IsOurGroup(uint dst) => dst == DpduAddress.MaxValue || _context.Config.Groups.Contains(dst);
+
+    private Peer PeerOf(uint src)
+    {
+        if (!_peers.TryGetValue(src, out Peer? p))
+        {
+            p = new Peer();
+            _peers[src] = p;
+        }
+
+        return p;
+    }
+
+    private sealed class Peer
+    {
+        public DtsPeerState State { get; set; } = DtsPeerState.IdleUnconnected;
+
+        /// <summary>RX MANAGEMENT FRAME ID NUMBER (C-0308, C-0310). TX MANAGEMENT FRAME ID NUMBER is not kept: no MANAGEMENT message is sent before phase 7.</summary>
+        public int RxFrameId { get; set; } = NoFrameId;
+
+        public int AcksOutstanding { get; set; }
+    }
+}
