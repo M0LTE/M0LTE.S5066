@@ -25,14 +25,12 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- P3-0 to P3-4 are merged (#27, #29, #28, #32, #31). P3-6 (#25) is merged (#33); P3-5 (#24) is being integrated onto it (corpus 0.7.0), with interp ids reserved (P3-5: C-1050 to C-1069, A-0270 to A-0279; P3-6: C-1070 to C-1089, A-0280 to A-0289). Expect an integration step for whichever merges second. P3-7 (#26, the T3 harness) comes after. Rulings for P3-4 are in issue #23's comments; P6-1 notes are in #30.
-- Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. The coordinator's prompt only names the item, issue and PRs.
-- Merging is one command: `/home/tf/src/s5066-research/scripts/merge-pair.sh <conformance_pr> <code_pr>` merges the conformance PR, repins the submodule, waits for CI, merges the code PR and cleans up.
-- Modem 0.5.0 is published (tag v0.5.0, 2026-11-07; Tom gave explicit permission to tag NuGet releases). SNR estimator 0.6.0 is PR M0LTE.Ms110d#21, under Opus review. Finding: on fading the estimate tracks post-equaliser SNR, so phase 7 calibrates estimate against block error rate per WN, not against channel SNR.
-- C-1052 (reception-window commitment) leaves only the half-second rounding as slack for host latency, so repeats spread across transmissions may often be dropped on a real modem. Measure in T3/T4 before phase 9.
-- Lesson: merge-pair.sh once removed every agent worktree mid-review. It now removes only the merged branches' worktrees.
-- Lesson: in the main checkout, run `git submodule update` before any `git add -A`.
-- Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
+- Phase 3 is complete (P3-0 to P3-7 merged; 971 tests; corpus 0.7.x). Phase 4 issues are #39 onwards (P4-1 to P4-7), in the order of core-architecture.md section 9.
+- Fix for #35 (broadcast crash when address_size is below 7; choose the address field size per D_PDU, C-0133) is with an Opus implementer. Review, then merge with merge-pair.sh.
+- Modem: 0.5.0 is published. 0.6.0 (the SNR estimator) is merged in M0LTE.Ms110d (merge commit 5862646b), but the v0.6.0 tag is blocked by the classifier: Tom's tag permission covered 0.5.0 only. Asked Tom for standing permission. Follow-up #36 (NewPreamble trailing probes) is for 0.6.1.
+- Phase 7 inputs: #38 (reception-window latency allowance); the SNR estimate tracks post-equaliser SNR, so calibrate block error rate against the estimate per WN (M0LTE.Ms110d docs/snr-calibration.md).
+- Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. Merging uses /home/tf/src/s5066-research/scripts/merge-pair.sh <conf_pr> <code_pr>. When two items run in parallel, reserve separate interp id ranges, and expect an integration step for whichever merges second.
+- Lessons: run `git submodule update` before any `git add -A` in the main checkout; merge-pair.sh removes only the merged branches' worktrees; an interrupt can stop background agents silently (check ListAgents); stop finished agents' leftover background work with TaskStop.
 
 ## Next
 
