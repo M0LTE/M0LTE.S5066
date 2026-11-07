@@ -4,9 +4,12 @@ namespace M0LTE.S5066.Core.Tests.T3;
 
 /// <summary>
 /// T3 regression for issue #49 (P5-1): the half-open link that <see cref="ArqTransferTests"/> seed 349
-/// left with the derived acknowledgement wait. Both nodes call at once (B-0405); node 1 accepts and
-/// makes the link, but every accept it sends is lost or unheard while node 0, whose 30 s answer wait
-/// is shorter than the time node 1 needs to answer, gives up its call (and its U_PDUs, A-0300). Node 1
+/// left with the derived acknowledgement wait. Node 1 accepts and makes the link, but every accept it
+/// sends is lost or unheard while node 0, whose 30 s answer wait is shorter than the time node 1 needs
+/// to answer, gives up its call (and its U_PDUs, A-0300). Since issue #64 (K-0120) a node that lost a
+/// contention round contends again at once, so node 1's accepts are no longer crowded out: seed 349
+/// links cleanly, and no seed of 3000 at the ArqTransferTests loss left a half-open link. The run here
+/// loses 15 percent of bursts whole, where seed 929 still leaves one. Node 1
 /// then sends its data into a link node 0 does not hold, and node 0 answers each time with WARNING
 /// reason 1. Before P5-1 node 1 kept that up until its first-data wait of 10 000 s ended the link.
 /// Now node 1 still waits for the first DATA C_PDU, so the WARNINGs alone do not end the link (the
@@ -19,16 +22,16 @@ public class HalfOpenLinkTests(ITestOutputHelper output)
     private const byte Sap = 5;
 
     [Fact]
-    public void Seed_349_half_open_link_is_given_up_and_a_new_link_carries_later_data()
+    public void Seed_929_half_open_link_is_given_up_and_a_new_link_carries_later_data()
     {
-        var channel = new ChannelModel(BlockErrorPpm: 150_000, BurstMissPpm: 50_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
-        var sim = new Simulation(349, channel, [ArqTransferTests.Node("0.0.1.1", true, false), ArqTransferTests.Node("0.0.1.2", true, false)]);
+        var channel = new ChannelModel(BlockErrorPpm: 150_000, BurstMissPpm: 150_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
+        var sim = new Simulation(929, channel, [ArqTransferTests.Node("0.0.1.1", true, false), ArqTransferTests.Node("0.0.1.2", true, false)]);
         uint a = sim.AddressOf(0);
         uint b = sim.AddressOf(1);
         sim.BindArq(0, 0, Sap);
         sim.BindArq(1, 0, Sap);
 
-        // As ArqTransferTests seed 349 (derived acknowledgement wait, 16-bit family).
+        // As ArqTransferTests (derived acknowledgement wait, 16-bit family), with heavier burst loss.
         for (int i = 0; i < 10; i++)
         {
             sim.SendArq(0, 1_000 + (i * 20_000), b, Sap, ArqTransferTests.Payload(0, i, 150 + (i * 37)));
