@@ -228,7 +228,7 @@ So we define our own **modem port**. It is an in-process interface, and it can a
 | Operation or event | Purpose | Source of requirement |
 |---|---|---|
 | `Transmit(bytes, wn, interleaver, k, eom)` returning the planned duration | One 5066 transmission = one modem burst | 110D D.5.4.6 a, b; Ed4 main 3.4 item 1 |
-| `PlanBurst(wn, interleaver, byteCount)` returning duration, block count and bytes per block | EOT computation [Ed4 C.4.2.3, p.C-13] and modem block alignment [Ed4 C.7.5.3.1, pp.C-112 to C-113] | Ours |
+| `PlanBurst(wn, interleaver, byteCount)` returning duration, preamble, per-block and flush durations, block count and bytes per block | EOT computation [Ed4 C.4.2.3, p.C-13] and modem block alignment [Ed4 C.7.5.3.1, pp.C-112 to C-113] | Ours |
 | `TerminateReceive()` | D.5.4.6 d | 110D |
 | `SetMaxInputBlocks(n)` at run time | D.5.4.6 c, for fixed-size ARQ bursts | 110D D.5.4.5.3, p.239 |
 | `BurstStarted(time)` | Carrier detect for CSMA [Ed4 K.2.2.4, p.K-2] | Ed4 K |
@@ -503,6 +503,8 @@ The work slots into phases 6 (SIS client part), 8 (monitor) and 9 (on-air trials
 ---
 
 ## 12. Implementation phases
+
+The authoritative work breakdown for phases 3 to 6 is in `docs/core-architecture.md`, which moves CSMA and a thin SIS/CAS slice into phase 3, CAS-1 linking into phase 4, and block alignment and PADDING into phase 4 (they need a peer known to be Ed4). The table below is the original outline.
 
 Each phase ends with its tests green, its conformance matrix rows filled, and a short demo. Work runs on branches with draft PRs pushed early, so it can be handed over.
 
