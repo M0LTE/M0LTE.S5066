@@ -27,5 +27,27 @@ jobs:
       - name: Test (includes the conformance corpus harness)
         run: dotnet test -c Release --no-build --verbosity normal
 
-      - name: Validate the pinned corpus
-        run: python3 conformance/tools/validate_corpus.py
+      # The test run writes one {"id", "result", "reason"} line per corpus case.
+      - name: Corpus summary
+        if: always()
+        run: |
+          python3 -c "import json,collections,sys; r=[json.loads(l) for l in open(sys.argv[1])]; print(open('conformance/corpus/VERSION').read().strip(), dict(collections.Counter(x['result'] for x in r)))" tests/M0LTE.S5066.Core.Tests/bin/Release/net10.0/corpus-results.jsonl
+
+      - name: Upload corpus results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-results
+          path: tests/M0LTE.S5066.Core.Tests/bin/Release/net10.0/corpus-results.jsonl
+
+      - name: Validate the pinned corpus against its matrix
+        run: python3 conformance/tools/validate_corpus.py --matrix conformance/matrix/
+
+      - name: Pack
+        run: dotnet pack -c Release --no-build -o artifacts
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: nupkg
+          path: artifacts/*.nupkg
