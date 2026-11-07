@@ -12,27 +12,40 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// <c>dts.ack_wait</c> retransmission all take part. Every U_PDU must arrive exactly once and in
 /// order, every C_PDU must be confirmed, and at the end the two ends' windows must agree: each
 /// sender's TX LWE and TX UWE + 1 equal the receiver's RX LWE, with nothing outstanding. The Ed3
-/// variant (P4-5) has the Caller record its peer Ed3 first, so it calls with Ed4 clear and the link
+/// variant (P4-5) has each node record the other Ed3 first, so a node calls with Ed4 clear and the link
 /// uses the 8-bit family (B-0122, B-0232), with segments small enough that the FSNs wrap modulo 256.
 /// </summary>
 /// <remarks>
+/// <para>
+/// The long-transfer variants (P4-7) send 40 U_PDUs one way and 10 the other through a channel that
+/// also duplicates data D_PDUs within a transmission, reorders them, and adds late DATA-ONLY copies of
+/// earlier transmissions' data (see <see cref="ChannelModel"/>), on both families: copies behind RX
+/// LWE are acknowledged and not delivered again (C-0777, C-1126), copies already held do not move RX
+/// UWE back (C-0778), FSNs arrive out of order and wrap modulo 256 on the 8-bit family, and the
+/// synchronisation tests never fire (C-0790): no RESET/WIN-RESYNC is ever sent. A sweep of 400 seeds
+/// of each family passed (P4-7).
+/// </para>
+/// <para>
 /// A review sweep of 300 seeds at 30% block loss, 10% missed bursts and fades passed wherever the
 /// link was made (12 seeds ended half open after the Caller gave up, which is link setup, not this
 /// test), and 100 seeds with the full window and 60 s transmissions passed with acknowledgements
 /// of up to 144 bytes (the long form).
+/// </para>
 /// </remarks>
 public class ArqTransferTests(ITestOutputHelper output)
 {
     private const byte Sap = 5;
 
-    public static TheoryData<ulong, bool, bool> Cases()
+    public static TheoryData<ulong, bool, bool, bool> Cases()
     {
-        var data = new TheoryData<ulong, bool, bool>();
+        var data = new TheoryData<ulong, bool, bool, bool>();
         for (ulong seed = 1; seed <= 8; seed++)
         {
-            data.Add(seed, false, false);   // dts.ack_wait_ms set
-            data.Add(seed, true, false);    // dts.ack_wait_ms unset: the derived wait (C-1120)
-            data.Add(seed, false, true);    // the 8-bit family (P4-5)
+            data.Add(seed, false, false, false);   // dts.ack_wait_ms set
+            data.Add(seed, true, false, false);    // dts.ack_wait_ms unset: the derived wait (C-1120)
+            data.Add(seed, false, true, false);    // the 8-bit family (P4-5)
+            data.Add(seed, false, false, true);    // a long transfer with duplication and reordering (P4-7)
+            data.Add(seed, false, true, true);     // the same on the 8-bit family
         }
 
         return data;
@@ -40,15 +53,17 @@ public class ArqTransferTests(ITestOutputHelper output)
 
     [Theory]
     [MemberData(nameof(Cases))]
-    public void A_transfer_under_loss_completes_in_order_with_the_windows_in_step(ulong seed, bool derivedAckWait, bool ed3)
+    public void A_transfer_under_loss_completes_in_order_with_the_windows_in_step(ulong seed, bool derivedAckWait, bool ed3, bool mangle)
     {
         var parts = new List<DtsSublayer>();
         CoreDriver Factory(NodeConfig config, ulong s, IModemPort modem)
         {
             var context = new CoreContext(config, modem);
-            if (ed3 && parts.Count == 0)
+            if (ed3)
             {
-                context.Peers.SetEdition(0x0102, KnownEdition.Ed3);   // node 0 calls node 1 (0.0.1.2) with Ed4 clear
+                // Each node has the other recorded Ed3, so whichever calls (and in a crossed call both
+                // do, B-0405) calls with Ed4 clear and the link uses the 8-bit family.
+                context.Peers.SetEdition(parts.Count == 0 ? 0x0102u : 0x0101u, KnownEdition.Ed3);
             }
 
             var mac = new MacSublayer(context, new SplitMix64(s));
@@ -59,29 +74,32 @@ public class ArqTransferTests(ITestOutputHelper output)
             return new CoreDriver(dispatcher.Handle, context.TakeOutputs);
         }
 
-        var channel = new ChannelModel(BlockErrorPpm: 150_000, BurstMissPpm: 50_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
+        var channel = new ChannelModel(BlockErrorPpm: 150_000, BurstMissPpm: 50_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50,
+            DuplicatePpm: mangle ? 100_000 : 0, ReorderPpm: mangle ? 300_000 : 0, StaleCopyPpm: mangle ? 300_000 : 0);
         var sim = new Simulation(seed, channel, [Node("0.0.1.1", derivedAckWait, ed3), Node("0.0.1.2", derivedAckWait, ed3)], Factory);
         uint a = sim.AddressOf(0);
         uint b = sim.AddressOf(1);
         sim.BindArq(0, 0, Sap);
         sim.BindArq(1, 0, Sap);
 
+        // The long transfer: 40 U_PDUs one way and 10 the other, about 11 kB, so on the 8-bit family
+        // the FSNs wrap modulo 256 several times.
         var sent = new List<byte[]>[] { [], [] };
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < (mangle ? 40 : 10); i++)
         {
-            byte[] u = Payload(0, i, 150 + (i * 37));
+            byte[] u = Payload(0, i, mangle ? 150 + (i * 37 % 200) : 150 + (i * 37));
             sent[0].Add(u);
             sim.SendArq(0, 1_000 + (i * 20_000), b, Sap, u);
         }
 
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < (mangle ? 10 : 4); i++)
         {
-            byte[] u = Payload(1, i, 90 + (i * 53));
+            byte[] u = Payload(1, i, 90 + (i * 53 % 160));
             sent[1].Add(u);
             sim.SendArq(1, 150_000 + (i * 60_000), a, Sap, u);
         }
 
-        sim.Run(40_000_000);
+        sim.Run(mangle ? 200_000_000 : 40_000_000);
 
         sim.Violations.Should().BeEmpty();
         // Retransmissions: data D_PDUs whose (sender, FSN) went before. DATA-ACKs: merged acknowledgements.
@@ -106,8 +124,17 @@ public class ArqTransferTests(ITestOutputHelper output)
         }
 
         int expiries = sim.Log.Count(l => l.Contains("timer_expired dts.ack_wait", StringComparison.Ordinal));
-        output.WriteLine($"seed {seed} derived {derivedAckWait} ed3 {ed3}: {sim.Bursts.Count} bursts, {sim.Collisions} collisions, {retransmitted} retransmissions, {dataAcks} DATA-ACKs, {expiries} ack_wait expiries");
+        int resets = sim.Bursts.Sum(x => x.Dpdus.Count(d => d.Pdu is ResetWinResync or Ed3ResetWinResync));
+        output.WriteLine($"seed {seed} derived {derivedAckWait} ed3 {ed3} mangle {mangle}: {sim.Bursts.Count} bursts, {sim.Collisions} collisions, {retransmitted} retransmissions, {dataAcks} DATA-ACKs, {expiries} ack_wait expiries, "
+            + $"{sim.Duplicated} duplicated, {sim.Reordered} reordered, {sim.StaleCopies} late copies, last delivery at {sim.Deliveries.Max(d => d.T)}");
         retransmitted.Should().BePositive("the loss makes the nodes retransmit");
+        resets.Should().Be(0, "copies and reordering never put the windows out of step (C-0790)");
+        if (mangle)
+        {
+            sim.Duplicated.Should().BePositive();
+            sim.Reordered.Should().BePositive();
+            sim.StaleCopies.Should().BePositive();
+        }
 
         for (int receiver = 0; receiver < 2; receiver++)
         {
