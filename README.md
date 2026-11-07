@@ -1,0 +1,11 @@
+# M0LTE.S5066
+
+A STANAG 5066 Edition 4 HF data link (Subnetwork Interface, Channel Access, Data Transfer and CSMA sublayers) running over the MIL-STD-188-110D Appendix D modem in [M0LTE.Ms110d](https://github.com/M0LTE/M0LTE.Ms110d). Applications use the standard SIS interface on TCP port 5066.
+
+Status: early development. The plan is [docs/plan.md](docs/plan.md), and progress is tracked in [docs/status.md](docs/status.md) and the issues.
+
+The conformance corpus and requirements matrix live in [M0LTE/s5066-conformance](https://github.com/M0LTE/s5066-conformance).
+
+## Licence
+
+AGPL-3.0-or-later; see [LICENSE](LICENSE). If the AGPL does not suit your use, commercial licences are available from the copyright holder, Thomas Fanning. To ask, open a GitHub issue titled "Commercial licence enquiry". Because of that, outside contributions can only be accepted with a contributor licence agreement; please open an issue before writing code.
