@@ -387,8 +387,9 @@ internal sealed class SisSublayer : ISisSublayer
     /// a group address, by default or explicitly, with reason 6 (S-0135, S-0136, S-0138). DEFAULT
     /// (Transmission Mode 0) takes the bind Service Type and ignores its other subfields; any other
     /// value overrides it for this U_PDU (A-0035, A-0068, S-0086, S-0140 to S-0143). A rejection
-    /// echoes the destination SAP and address and carries the whole U_PDU (A-0099, A-0109 to
-    /// A-0111); a partial copy needs sis.frag_size, which P6-1 adds. Always a valid primitive.
+    /// echoes the destination SAP and address and carries the U_PDU cut to <c>sis.frag_size</c>
+    /// (A-0109 to A-0113; interp A-0341). An accepted U_PDU that asks for node or client
+    /// confirmation is recorded for its answer (A-0094, A-0105). Always a valid primitive.
     /// </summary>
     private bool OnUnidata(int conn, Connection c, byte srcSap, SisUnidataRequest r)
     {
