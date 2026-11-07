@@ -22,7 +22,8 @@ namespace M0LTE.S5066.Core.Runtime;
 /// reports the link made, as Caller or Called node, the soft link is established and the U_PDUs held
 /// for that peer go down in arrival order (A-0194, A-0200). A failed make rejects them (B-0029,
 /// A-0300), except for Maximum Physical Links In Use or the peer's reason 4, where the SIS holds off
-/// and asks again when a link closes or another call ends (B-0028, B-0303, B-0412). A broken link
+/// and asks again when a link closes or another call ends (B-0028, B-0303, B-0412), and after the
+/// peer's reason 4 also when <c>sis.held_off/&lt;peer&gt;</c> expires (interp B-0451). A broken link
 /// ends the soft link (A-0199). Non-ARQ data needs no soft link (A-0189).
 /// </para>
 /// <para>

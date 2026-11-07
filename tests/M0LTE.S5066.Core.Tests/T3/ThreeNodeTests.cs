@@ -38,9 +38,10 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// C-1254); in-order C_PDUs to one peer were delivered in priority order (#72, interp C-1253); and a
 /// node held off by a peer's reason 4 with no other link never asked again (#73, interp B-0451).
 /// In-order delivery is checked across priorities. Broadcast repeats dropped for want of reception
-/// window (#38) are counted, not failed. A local sweep of 300 seeds of each variant passed
-/// (S5066_T3_SEEDS=300); S5066_T3_DUMP=seed-mode-inOrder writes one run's trace to the temporary
-/// directory.
+/// window (#38) are counted, not failed. In a local sweep of 300 seeds of each variant
+/// (S5066_T3_SEEDS=300) 1199 of 1200 runs passed; seed 229 slotted any order failed only the end
+/// check, a link still in use when the run ended. S5066_T3_DUMP=seed-mode-inOrder writes one run's
+/// trace to the temporary directory.
 /// </para>
 /// </remarks>
 public class ThreeNodeTests(ITestOutputHelper output)

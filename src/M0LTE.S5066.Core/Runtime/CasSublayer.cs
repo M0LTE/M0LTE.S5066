@@ -452,8 +452,10 @@ internal sealed class CasSublayer : ICasSublayer
 
     /// <summary>
     /// Step 2, a PHYSICAL LINK REQUEST received (B-0130). In order: LINK set is rejected with
-    /// reason 5 (B-0128); on a made link the request is answered again with the values in force
-    /// (B-0214, B-0314), once while an answer is unsent (B-0401); while accepting nothing more is
+    /// reason 5 (B-0128); on a made link a Called node that has had no ARQ D_PDU from the Caller
+    /// answers it again with the values in force (B-0214, B-0314), once while an answer is unsent
+    /// (B-0401), and any other breaks the link locally and is taken as a new request (interp
+    /// B-0452); while accepting nothing more is
     /// needed; a call of ours to the same peer gives way to it (B-0405); otherwise reason 4 when
     /// accepting would exceed <c>cas.max_links</c> (B-0209, B-0313, B-0402), else accept (B-0210,
     /// B-0211): Ed4 echoed (B-0138, B-0139), Short when offered with Ed4 (B-0140, B-0409), LINK 0
