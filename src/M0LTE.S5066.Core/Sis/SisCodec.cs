@@ -46,7 +46,7 @@ public static class SisCodec
     /// <summary>
     /// Decodes exactly one frame. Check order: fewer than 2 bytes is truncated; a preamble that is
     /// not 90 EB is bad sync; fewer than 5 bytes truncated; version, size, truncated body, type,
-    /// body length, then trailing bytes (corpus-format.md section 3.5).
+    /// body length, then trailing bytes (corpus-format.md section 3.7).
     /// </summary>
     public static SisDecodeResult DecodeFrame(ReadOnlySpan<byte> frame)
     {

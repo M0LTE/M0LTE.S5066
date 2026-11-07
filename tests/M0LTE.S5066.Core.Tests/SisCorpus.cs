@@ -5,7 +5,7 @@ using M0LTE.S5066.Core.Sis;
 namespace M0LTE.S5066.Core.Tests;
 
 /// <summary>
-/// Runs the sis_frame and sis_stream corpus kinds (corpus-format.md section 3.5). Converts between
+/// Runs the sis_frame and sis_stream corpus kinds (corpus-format.md section 3.7). Converts between
 /// the corpus JSON shape and the core's types; the core knows nothing about JSON.
 /// </summary>
 internal static class SisCorpus
@@ -57,7 +57,7 @@ internal static class SisCorpus
         var chunks = value.GetProperty("chunks").EnumerateArray().Select(c => Convert.FromHexString(c.GetString()!)).ToList();
         JsonElement events = value.GetProperty("events");
 
-        // The result must not depend on chunking (corpus-format.md section 3.5).
+        // The result must not depend on chunking (corpus-format.md section 3.7).
         foreach (var (name, split) in new (string, List<byte[]>)[]
         {
             ("given chunks", chunks),

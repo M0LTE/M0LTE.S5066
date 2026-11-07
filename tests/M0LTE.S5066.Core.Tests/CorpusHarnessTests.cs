@@ -166,6 +166,10 @@ public class CorpusHarnessTests
                     ? CorpusResults.Unsupported($"unknown key '{skey}'")
                     : SisCorpus.Run(line);
 
+            case "cpdu":
+            case "spdu":
+                return CpduSpduCorpus.Run(line, kind);
+
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
         }

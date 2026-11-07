@@ -64,7 +64,7 @@ public class SisCodecTests
     [Fact]
     public void Decoder_results_do_not_depend_on_chunking()
     {
-        // Random mixes of good frames, junk, bad headers and wrong sizes (corpus-format.md section 3.5, S-0159).
+        // Random mixes of good frames, junk, bad headers and wrong sizes (corpus-format.md section 3.7, S-0159).
         var rng = new Random(5066);
         byte[][] pieces =
         [

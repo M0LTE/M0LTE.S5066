@@ -1,6 +1,6 @@
 namespace M0LTE.S5066.Core.Sis;
 
-/// <summary>Why a frame was rejected. These match the corpus error kinds (corpus-format.md sections 3.1 and 3.5).</summary>
+/// <summary>Why a frame was rejected. These match the corpus error kinds (corpus-format.md sections 3.1 and 3.7).</summary>
 public enum SisErrorKind
 {
     /// <summary>The input ends before the frame does (whole-frame decode only; a stream waits instead).</summary>
