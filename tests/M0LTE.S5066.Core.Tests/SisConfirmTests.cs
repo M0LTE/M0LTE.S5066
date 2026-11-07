@@ -177,6 +177,39 @@ public class SisConfirmTests
     }
 
     [Fact]
+    public void A_client_confirmation_with_the_cas_confirm_but_no_peer_answer_times_out_with_reason_3()
+    {
+        // A-0230: the wait ends with the DATA DELIVERY CONFIRM still missing; a late one is ignored.
+        var rig = Rig(wait: 50_000);
+        int handle = CallerLink(rig, ConfirmClient);
+        rig.Deliver(new DUnidataRequestConfirm(handle));
+        SisOut(rig).Should().BeEmpty();
+        rig.Expire(Wait);
+        SisOut(rig).Should().ContainSingle().Which.Should().Equal(Rejected(3));
+        rig.Deliver(FromPeer(X, new SpduDeliveryConfirm(0, 5, 9, new byte[] { 1 })));
+        SisOut(rig).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Two_waits_ending_in_the_same_millisecond_are_both_answered_at_one_expiry()
+    {
+        // Collapsing rule (core-architecture.md 3.2): two U_PDUs held for the same soft link are handed
+        // down by one link made, so their waits end together; one expiry rejects both, in insertion
+        // order, and no timer is restarted for the second (it is due now) or cancelled (it has expired).
+        var rig = Rig(wait: 50_000);
+        rig.ArqRequest(X, confirm: ConfirmNode);
+        rig.ArqRequest(X);
+        rig.Sent(X);
+        rig.Deliver(Link(X, new PhysicalLinkAccepted(false, true, false)));
+        rig.Sis.Outstanding.Should().HaveCount(2);
+        rig.Expire(Wait);
+        List<byte[]> answers = SisOut(rig);
+        answers.Should().HaveCount(2);
+        answers.Should().AllSatisfy(a => a.Should().Equal(Rejected(3)));
+        rig.Outputs.Should().NotContain(o => (o is TimerStart && ((TimerStart)o).Name == Wait) || (o is TimerCancel && ((TimerCancel)o).Name == Wait));
+    }
+
+    [Fact]
     public void An_unbind_ends_every_wait_of_its_sap_with_no_answer()
     {
         // A-0260: the client went away.

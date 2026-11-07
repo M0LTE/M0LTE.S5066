@@ -116,6 +116,7 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly SortedSet<(long Deadline, long Seq, int Handle)> _deadlines = new();
     private long _deadlineSeq;
     private long? _armedDeadline;
+    private bool _expiring;   // inside OnConfirmWait: the timer is re-armed once, after every due entry
 
     public SisSublayer(CoreContext context) => _context = context;
 
@@ -633,12 +634,16 @@ internal sealed class SisSublayer : ISisSublayer
     /// </summary>
     private void OnConfirmWait()
     {
+        // Entries due together are all handled before the timer is re-armed: re-arming between them
+        // would start it with 0 ms for the next one (core-architecture.md 3.2, 3.3).
         _armedDeadline = null;
+        _expiring = true;
         while (_deadlines.Count > 0 && _deadlines.Min.Deadline <= _context.Now)
         {
             Expire(_pending[_deadlines.Min.Handle]);
         }
 
+        _expiring = false;
         ArmConfirmWait();
     }
 
@@ -714,6 +719,11 @@ internal sealed class SisSublayer : ISisSublayer
     /// <summary>Runs <c>sis.confirm_wait</c> to the head deadline: started or restarted only when the head changes, cancelled when the list empties.</summary>
     private void ArmConfirmWait()
     {
+        if (_expiring)
+        {
+            return;
+        }
+
         if (_deadlines.Count == 0)
         {
             if (_armedDeadline is not null)
