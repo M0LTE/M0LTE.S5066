@@ -220,9 +220,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// Our transmission has ended (core-architecture.md 5.7): <c>dts.ack_wait/&lt;peer&gt;</c> starts,
     /// or restarts, for each peer that had ARQ data D_PDUs in it and still has some awaiting an
     /// acknowledgement, in ascending address order (C-1120). Its value is <c>dts.ack_wait_ms</c>, or
-    /// when that is unset the time allowed for one later transmission (<see cref="LaterTransmissionMs"/>):
-    /// the peer's turnaround (LBT wait and the longest contention wait) plus a transmission of the
-    /// configured length, by which time a peer that heard us has normally answered (C-1120).
+    /// when that is unset <see cref="DerivedAckWaitMs"/>.
     /// </summary>
     public void OnTransmitDone()
     {
@@ -230,7 +228,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (_links.TryGetValue(peer, out ArqLink? link) && link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
             {
-                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.AckWaitMs ?? LaterTransmissionMs());
+                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.AckWaitMs ?? DerivedAckWaitMs());
             }
         }
 
@@ -1063,6 +1061,18 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// The acknowledgement wait when <c>dts.ack_wait_ms</c> is unset (C-1120): the longest the peer may
+    /// wait before it transmits after hearing us, the longer LBT wait (K-0067, K-0077) plus the longest
+    /// contention wait (K-0080), then a transmission of the configured length, by whose end a peer
+    /// that heard us and shares our settings has answered unless it chose to send elsewhere.
+    /// </summary>
+    private long DerivedAckWaitMs()
+    {
+        CsmaConfig csma = _context.Config.Csma;
+        return Budget + Math.Max(csma.LbtWaitDcdMs, csma.LbtWaitVdcdMs) + ((long)csma.NumContSlots * csma.ContSlotWidthMs);
     }
 
     /// <summary>

@@ -83,8 +83,8 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
 /// dts.ack_wait_ms: how long after the end of a transmission carrying ARQ data to a peer the DTS
 /// waits for an acknowledgement before it treats the unacknowledged D_PDUs as failed (C-0911,
 /// C-1120). The standard gives no value. When null the wait is derived: the configured transmission
-/// length plus the LBT wait after an own transmission plus the longest contention wait, the same
-/// allowance per later transmission as a reception window (C-1051). Read when <c>dts.ack_wait</c> starts.
+/// length plus the longer of the two LBT waits plus the longest contention wait, the longest a peer
+/// sharing our settings takes to answer. Read when <c>dts.ack_wait</c> starts.
 /// </param>
 public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs, int MaxWindow = DtsConfig.MaxWindowLimit, int? AckWaitMs = null)
 {
