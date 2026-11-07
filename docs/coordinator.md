@@ -25,8 +25,9 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- P1a (#10): scaffold, harness and CRCs. A Sonnet agent was running; next comes an Opus reviewer, then merge.
-- P2 design (#8): a Fable agent writing `docs/design-5066-support.md` as a draft PR in M0LTE/M0LTE.Ms110d. Next comes an Opus review, then the implementation items it defines.
+- P1a (#10) is merged. The conformance corpus is tagged v0.1.0 and the submodule is pinned to it.
+- P1b (#11) D_PDU codecs, P1c (#12) C_PDU and S_PDU codecs, and P1d (#13) Annex S codec are running in parallel (Sonnet). Each opens a PR in s5066-conformance (its vectors) and one in M0LTE.S5066 (its code, with the submodule on its branch). Merge order: the conformance PR first, then repin the submodule to conformance main, then merge the code PR. Each needs an Opus reviewer first.
+- P2 design: draft PR M0LTE/M0LTE.Ms110d#19, under Opus review. After merge, the design's work items 1 to 7 are the phase-2 implementation (C# and C++ level), at version 0.5.0. Consumers do not change until they choose to.
 
 ## Next
 
