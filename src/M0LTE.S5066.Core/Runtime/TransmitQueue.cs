@@ -196,6 +196,19 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
+    /// The CAS withdraws an expedited request of its own (interp B-0453): removed if none of it has
+    /// been placed yet, with no confirm or reject; otherwise left to finish.
+    /// </summary>
+    public void Withdraw(int handle)
+    {
+        if (_entries.RemoveAll(e => e.Expedited && e.Handle == handle && !e.Placed) > 0)
+        {
+            _mac.QueueState(Placeable());
+            ReconcileTimer();
+        }
+    }
+
+    /// <summary>
     /// An ARQ D_UNIDATA_REQUEST for a peer with a connection (C-0653, C-0673): held whole with its
     /// TTD, so <c>dts.ttd</c> covers it (C-0857, C-1050), and placed by the planner when the peer's
     /// connection exists, with either family (C-0653, C-0673, C-0730).

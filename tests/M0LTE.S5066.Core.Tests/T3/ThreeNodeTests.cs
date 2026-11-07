@@ -554,6 +554,13 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 ["link_request_timeout_ms"] = 30_000,
                 ["link_request_retries"] = 10,
                 ["break_retries"] = 3,
+                // Test departure: the first-data wait (B-0215, B-0406) is made longer than the run. A
+                // Called node that aborts on it does so locally, so the Caller holds a half-open link until
+                // WARNINGs reach it (B-0426) or 16 answer waits pass (C-1250); for node 0, which may hold
+                // one link, that can stop all its traffic for minutes. Since #70 and #71 that is a delay,
+                // not a fault: with the derived wait a 300-seed sweep showed no safety failure, and four
+                // runs in 1200 still had traffic in flight when the run ended.
+                ["first_data_timeout_ms"] = 10_000_000,
             },
             ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 60_000, ["soft_link_min_hold_ms"] = 30_000, ["soft_link_max_ms"] = 150_000 },
             ["dts"] = new JsonObject { ["max_segment_size"] = 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000, ["ack_wait_ms"] = 20_000 },

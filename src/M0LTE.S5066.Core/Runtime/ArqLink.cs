@@ -116,6 +116,9 @@ internal sealed class ArqLink
     /// <summary>A regular ARQ D_PDU has been sent or received on this connection (C-0738).</summary>
     public bool ArqUsed { get; set; }
 
+    /// <summary>The CAS has been told a regular ARQ D_PDU from the peer arrived on this connection (<see cref="DPeerArqHeard"/>, interp B-0452).</summary>
+    public bool PeerHeard { get; set; }
+
     /// <summary>Allocates the next FSN for a new D_PDU, ascending modulo 256 or 65536 (C-0189, C-0190, C-0191, C-0766), and moves TX UWE to it (C-0769).</summary>
     public int AllocateFsn()
     {

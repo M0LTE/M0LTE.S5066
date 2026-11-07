@@ -142,6 +142,9 @@ internal sealed class DtsSublayer : IDtsSublayer
             case DCloseRequest c:
                 _peers.OnCloseRequest(c);   // B-0246, interp B-0421
                 break;
+            case DExpeditedWithdraw w:
+                _tx.Withdraw(w.Handle);   // interp B-0453
+                break;
             case DExpeditedUnidataRequest { Arq: false } r:
                 _tx.AddExpedited(r);
                 break;

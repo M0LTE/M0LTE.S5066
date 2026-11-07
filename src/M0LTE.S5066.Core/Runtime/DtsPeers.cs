@@ -332,6 +332,11 @@ internal sealed class DtsPeers
     private void OnArq(Peer peer, ArqLink link, Dpdu pdu)
     {
         DpduHeader h = pdu.Header;
+        if (!link.PeerHeard)
+        {
+            link.PeerHeard = true;
+            _context.Enqueue(new DPeerArqHeard(h.Src));   // interp B-0452: the peer has held this connection
+        }
         if (pdu is DataOnly or DataAck or Ed3DataOnly or Ed3DataAck && peer.Expedited.Partial && peer.Type4Transmission < _transmission)
         {
             // C-1231: regular ARQ data in a later transmission than the last type 4 of a partly sent
