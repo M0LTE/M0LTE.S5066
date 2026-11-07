@@ -20,11 +20,22 @@ internal enum MacState
 /// zero-duration waits (core-architecture.md 3.3 and 3.5 rule 4).
 /// </para>
 /// <para>
-/// The channel model in this item is DCD only: DCD is true from <c>burst_started</c> to
-/// <c>burst_ended</c> (K-0019, D-0018, C-0845). VDCD from parsed EOTs, the <c>csma.vdcd_end</c>
-/// timer and LBT rules 1 and 3 come with the D_PDU receiver (P3-3); the external busy input is
-/// recorded and ignored until P5-4. So every idle here is DCD-determined (K-0070, K-0073), except
-/// the end of this node's own transmission, which counts as VDCD-determined (K-0074).
+/// The channel model: DCD is true from <c>burst_started</c> to <c>burst_ended</c> (K-0019,
+/// D-0018, C-0845). VDCD (K-0020, K-0021) is the predicted end time the DTS derives from parsed
+/// EOTs (C-0842, C-0843; see <see cref="PredictedEndTime"/>). The channel is busy while DCD is true
+/// or the predicted end time lies in the future (K-0073, C-0844, C-0889), and <c>burst_ended</c>,
+/// whatever its reason, never clears the prediction [Ed4 C.7.5.1.1, p.C-110]. As no input arrives
+/// at the predicted end time, the MAC runs <c>csma.vdcd_end</c> to it (core-architecture.md 4.3);
+/// its expiry is the VDCD idle event. The external busy input is recorded and ignored until P5-4.
+/// </para>
+/// <para>
+/// LBT rules on entry to LBT_WAIT from SENSE, tried in the order 1, 2, 3 (K-0072): rule 1, zero,
+/// when the most recent received transmission held D_PDUs addressed directly to this node and none
+/// addressed directly to another node, and its end (not an earlier burst's EOT) produced the idle
+/// (K-0067, K-0068); rule 2, <c>lbt_wait_dcd_ms</c>, when DCD
+/// cleared last (K-0070); rule 3, <c>lbt_wait_vdcd_ms</c>, when the EOT prediction cleared last or
+/// at the same time (K-0071, K-0073). The end of this node's own transmission counts as
+/// VDCD-determined (K-0074). Ed3 mode uses the one common value and no rule 1 (K-0107).
 /// </para>
 /// <para>
 /// Hold while busy (K-0077, K-0087, K-0089): a busy indication in LBT_WAIT or CONT_WAIT cancels
@@ -41,6 +52,7 @@ internal sealed class MacSublayer : IMacSublayer
 {
     private static readonly TimerName LbtWait = TimerName.Of(TimerKind.CsmaLbtWait);
     private static readonly TimerName ContWait = TimerName.Of(TimerKind.CsmaContWait);
+    private static readonly TimerName VdcdEnd = TimerName.Of(TimerKind.CsmaVdcdEnd);
 
     private readonly CoreContext _context;
     private readonly SplitMix64 _prng;
@@ -52,6 +64,19 @@ internal sealed class MacSublayer : IMacSublayer
 
     // LBT_WAIT with csma.lbt_wait deliberately not running because the channel is busy (K-0087).
     private bool _lbtHeld;
+
+    // The channel model fed by the DTS (C-0842, C-0843, K-0021; core-architecture.md 10 item 2).
+    // _burstEnd: minimum over the EOTs of the current burst, reset at burst_started.
+    // _priorEnd: the prediction carried from earlier bursts (the latest of their estimates), never
+    // cleared (C-0844).
+    private long? _burstEnd;
+    private long? _priorEnd;
+    private long? _dcdClearedAt;
+
+    // Two-node condition (a) over the current burst, and its value for the last burst (K-0068, K-0072).
+    private bool _burstToUs;
+    private bool _burstToOther;
+    private bool _lastBurstTwoNode;
 
     public MacSublayer(CoreContext context, SplitMix64 prng)
     {
@@ -75,13 +100,31 @@ internal sealed class MacSublayer : IMacSublayer
     public bool LastTransmissionOwn { get; private set; }
 
     /// <summary>
-    /// K-0073, K-0074: the last idle was determined by VDCD rather than DCD. In this item only the
-    /// end of our own transmission sets it (K-0074); P3-3 adds the EOT prediction clearing last.
+    /// K-0073, K-0074: the last idle was determined by VDCD rather than DCD. True after this node's
+    /// own transmission (K-0074), or when the EOT prediction cleared at or after the moment DCD
+    /// cleared (a tie counts as VDCD); false when DCD cleared last, including when no EOT was parsed.
     /// </summary>
-    public bool IdleByVdcd { get; private set; }
+    public bool IdleByVdcd =>
+        LastTransmissionOwn || (PredictedEndTime is long p && _dcdClearedAt is long c && p >= c);
 
-    /// <summary>The last predicted EOT end time reported by the DTS (used from P3-3).</summary>
-    public long? PredictedEndTime { get; private set; }
+    /// <summary>
+    /// The predicted end time of the channel activity heard so far (C-0842, C-0843, K-0021): the
+    /// later of the current burst's estimate (the minimum of its EOT end times) and the prediction
+    /// carried from earlier bursts. Null when no EOT has been parsed. Never cleared by a burst end
+    /// (C-0844); once it is in the past it simply no longer makes the channel busy.
+    /// </summary>
+    public long? PredictedEndTime => _burstEnd is long b ? (_priorEnd is long p ? Math.Max(b, p) : b) : _priorEnd;
+
+    /// <summary>Whether the last received burst met two-node condition (a) (K-0068, K-0072).</summary>
+    public bool LastBurstTwoNode => _lastBurstTwoNode;
+
+    /// <summary>
+    /// The idle was produced by the EOT prediction carried from an earlier burst, not by the last
+    /// burst's own DCD clear or EOTs (a tie counts as the earlier burst). Then more than one received
+    /// transmission is in play, so rule 1 does not apply (K-0067, K-0072).
+    /// </summary>
+    private bool IdleFromEarlierBurst =>
+        _priorEnd is long p && _dcdClearedAt is long c && p >= (_burstEnd is long b ? Math.Max(b, c) : c);
 
     /// <summary>The last queue state reported by the DTS (K-0096).</summary>
     public bool QueueNonEmpty { get; private set; }
@@ -96,10 +139,12 @@ internal sealed class MacSublayer : IMacSublayer
     internal ITransmissionSource? Transmitter { get; set; }
 
     /// <summary>
-    /// Busy for Annex K: DCD (K-0063). P3-3 adds a predicted EOT end time in the future (K-0073);
-    /// P5-4 ORs in the external busy input (K-0006).
+    /// Busy for Annex K: DCD, or a predicted EOT end time still in the future (K-0063, K-0073,
+    /// C-0844, C-0889). A prediction equal to now has passed. P5-4 ORs in the external busy input (K-0006).
     /// </summary>
-    private bool Busy => Dcd;
+    private bool Busy => Dcd || VdcdBusy;
+
+    private bool VdcdBusy => PredictedEndTime is long p && p > _context.Now;
 
     public void OnConfigChanged(NodeConfig oldConfig, NodeConfig newConfig) => CheckSlotPosition(newConfig.Csma);
 
@@ -113,6 +158,10 @@ internal sealed class MacSublayer : IMacSublayer
             case TimerKind.CsmaContWait:
                 _contExpired = true;
                 break;
+            case TimerKind.CsmaVdcdEnd:
+                // The predicted end time has been reached: VDCD has cleared (K-0073). Nothing to
+                // record, since Busy is computed from the prediction and the clock.
+                break;
             default:
                 throw new InvalidOperationException($"MAC timer {name} is not started by this MAC (now {_context.Now})");
         }
@@ -122,26 +171,59 @@ internal sealed class MacSublayer : IMacSublayer
     {
         Dcd = true;
 
+        // A new burst starts a new EOT estimate; the old prediction still binds (C-0844), so it is
+        // carried, and the later of the two is used (core-architecture.md 10 item 2).
+        _priorEnd = PredictedEndTime;
+        _burstEnd = null;
+        _burstToUs = false;
+        _burstToOther = false;
+
         // K-0086: a busy period has been seen since our own transmission ended.
         LastTransmissionOwn = false;
     }
 
     public void OnBurstEnded(BurstEnded burst)
     {
+        // Whatever the reason, the burst end clears DCD only; the EOT prediction stays (C-0844).
         Dcd = false;
+        _dcdClearedAt = _context.Now;
 
-        // K-0070, K-0073: DCD cleared, so this idle is DCD-determined (P3-3 refines this with EOTs).
-        IdleByVdcd = false;
+        // K-0072: condition (a) is evaluated over the transmission whose end produced the idle.
+        _lastBurstTwoNode = _burstToUs && !_burstToOther;
     }
 
     public void OnTransmitDone() => _ownTransmissionEnded = true;
 
     public void OnChannelBusy(bool busy) => ExternalBusy = busy;
 
-    public void EotHeard(long predictedEndTime) => PredictedEndTime = predictedEndTime;
+    /// <summary>
+    /// One end time from a valid header with EOT &gt; 0 (C-0842, K-0021). Each is an upper bound on
+    /// the true end, so the burst's estimate is the minimum of them (C-0843; core-architecture.md
+    /// 10 item 2).
+    /// </summary>
+    public void EotHeard(long predictedEndTime) =>
+        _burstEnd = _burstEnd is long b ? Math.Min(b, predictedEndTime) : predictedEndTime;
 
+    /// <summary>
+    /// A valid header was heard (C-0868, K-0068). Group destinations (non-ARQ to multicast or
+    /// broadcast) may be present without spoiling condition (a); any other destination is
+    /// "directly addressed" (K-0072), to this node or to another.
+    /// </summary>
     public void DpduHeard(uint src, uint dst, bool dstIsGroup)
     {
+        if (dstIsGroup)
+        {
+            return;
+        }
+
+        if (dst == _context.Config.LocalAddress)
+        {
+            _burstToUs = true;
+        }
+        else
+        {
+            _burstToOther = true;
+        }
     }
 
     public void QueueState(bool nonEmpty) => QueueNonEmpty = nonEmpty;
@@ -163,13 +245,14 @@ internal sealed class MacSublayer : IMacSublayer
             // Table 5 (K-0092, K-0093): the transmission ended, back to SENSE with no timer. Our
             // transmission is now the last one (K-0086) and its end counts as VDCD-determined (K-0074).
             LastTransmissionOwn = true;
-            IdleByVdcd = true;
             State = MacState.Sense;
         }
 
         while (Step())
         {
         }
+
+        ReconcileVdcdEnd();
 
         if (_lbtExpired || _contExpired)
         {
@@ -272,10 +355,12 @@ internal sealed class MacSublayer : IMacSublayer
     }
 
     /// <summary>
-    /// The LBT_WAIT_TIMER value on entry from SENSE (K-0066). Rule 2: a DCD-determined idle gets
-    /// <c>lbt_wait_dcd_ms</c> (K-0070); a VDCD-determined one, which here is only the end of our
-    /// own transmission (K-0074), gets <c>lbt_wait_vdcd_ms</c>. In ed3 mode both are the one
-    /// common value, <c>lbt_wait_dcd_ms</c> (K-0107). Rules 1 and 3 from parsed D_PDUs: P3-3.
+    /// The LBT_WAIT_TIMER value on entry from SENSE (K-0066), rules tried in the order 1, 2, 3
+    /// (K-0072). Rule 1: zero when the last transmission was a received one meeting two-node
+    /// condition (a) and its end produced the idle (K-0067, K-0068). Rule 2: a DCD-determined idle
+    /// gets <c>lbt_wait_dcd_ms</c> (K-0070). Rule 3: a VDCD-determined one gets <c>lbt_wait_vdcd_ms</c> (K-0071, K-0073), and so
+    /// does the end of our own transmission (K-0074). In ed3 mode both are the one common value,
+    /// <c>lbt_wait_dcd_ms</c>, and rule 1 is off (K-0107).
     /// </summary>
     private int LbtValueOnIdle()
     {
@@ -285,7 +370,34 @@ internal sealed class MacSublayer : IMacSublayer
             return csma.LbtWaitDcdMs;
         }
 
+        if (!LastTransmissionOwn && _lastBurstTwoNode && !IdleFromEarlierBurst)
+        {
+            return 0;
+        }
+
         return IdleByVdcd ? csma.LbtWaitVdcdMs : csma.LbtWaitDcdMs;
+    }
+
+    /// <summary>
+    /// <c>csma.vdcd_end</c> runs exactly while the MAC is in SENSE or LBT_WAIT, data is queued,
+    /// DCD is false and the predicted end time is later than now; its deadline is the predicted
+    /// end time (core-architecture.md 4.3, 10 item 3; K-0073, C-0844). Started, restarted or
+    /// cancelled here, after every transition of the input.
+    /// </summary>
+    private void ReconcileVdcdEnd()
+    {
+        bool wanted = (State is MacState.Sense or MacState.LbtWait) && QueueNonEmpty && !Dcd && VdcdBusy;
+        if (!wanted)
+        {
+            _context.Timers.Cancel(VdcdEnd);
+            return;
+        }
+
+        long end = PredictedEndTime!.Value;
+        if (_context.Timers.Deadline(VdcdEnd) != end)
+        {
+            _context.Timers.Start(VdcdEnd, end - _context.Now);
+        }
     }
 
     private void EnterLbtWait(int ms)
