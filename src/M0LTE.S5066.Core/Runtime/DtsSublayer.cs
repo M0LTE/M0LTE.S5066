@@ -13,12 +13,14 @@ internal sealed class DtsSublayer : IDtsSublayer
     private readonly DtsReceiver _receiver;
     private readonly TransmitQueue _tx;
     private readonly DtsPeers _peers;
+    private readonly ChannelAnalysis _analysis;
 
     public DtsSublayer(CoreContext context, IMacObserver mac)
     {
         _context = context;
         _mac = mac;
-        _receiver = new DtsReceiver(context, mac, OnDpduReceived);
+        _analysis = new ChannelAnalysis(context);
+        _receiver = new DtsReceiver(context, mac, OnDpduReceived, _analysis.OnHeader);
         _tx = new TransmitQueue(context, mac);
         _peers = new DtsPeers(context, _tx);
     }
@@ -63,22 +65,31 @@ internal sealed class DtsSublayer : IDtsSublayer
     {
         _peers.OnBurstStarted();   // a new transmission from some node (C-1231)
         _receiver.OnBurstStarted();
+        _analysis.OnBurstStarted();
     }
 
     public void OnBytesReceived(ReadOnlyMemory<byte> bytes) => _receiver.OnBytesReceived(bytes.Span);
 
-    /// <summary>The received burst ended: the turn to judge clean close state that usually follows a peer's transmission (B-0237, B-0422).</summary>
+    /// <summary>
+    /// The received burst ended: the turn to judge clean close state that usually follows a peer's
+    /// transmission (B-0237, B-0422), then the channel analysis of the burst (J-0046 to J-0051).
+    /// </summary>
     public void OnBurstEnded(BurstEnded burst)
     {
         _receiver.OnBurstEnded(burst);
         _peers.CheckClean();
+        _analysis.OnBurstEnded();
     }
 
     /// <summary>
     /// A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), to the per-peer state
     /// machine, which acts only on the ones addressed to this node or its groups (C-0566).
     /// </summary>
-    private void OnDpduReceived(Dts.Dpdu pdu) => _peers.OnDpdu(pdu);
+    private void OnDpduReceived(Dts.Dpdu pdu)
+    {
+        _analysis.OnDpdu(pdu);   // J-0043: what it says about the sender's MAC mode
+        _peers.OnDpdu(pdu);
+    }
 
     /// <summary>
     /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed

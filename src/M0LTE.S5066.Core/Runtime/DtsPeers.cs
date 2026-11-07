@@ -100,10 +100,21 @@ internal enum DtsPeerState
 /// transmission (C-1070); the peer then leaves MANAGEMENT(UNCONNECTED) by C-0738.
 /// </para>
 /// <para>
-/// EOWs (C-0445): an EOW type this node does not recognise (2, 5, 6, 7, 13, 14; C-0405, C-0411,
-/// C-0412, C-0421) in a D_PDU addressed to its individual address is answered with an
+/// EOWs (C-0445): an EOW type this node does not recognise (2, 5, 6, 7, 14; C-0405, C-0412, C-0421)
+/// in a D_PDU addressed to its individual address is answered with an
 /// UNRECOGNIZED-TYPE-ERROR (C-0446 to C-0448), carried in the EOW of the next D_PDU sent to that
 /// peer (C-0396, C-1079). Recognised EOWs are for data rate selection and capability, phase 7.
+/// EOW 13, the WTRP token, is known and kept from the state machine (C.7.5.1), so it draws no
+/// UNRECOGNIZED-TYPE-ERROR (J-0070, interp J-0081).
+/// </para>
+/// <para>
+/// MAC-mode discovery, the WARNING element (P5-3; J-0030 to J-0039): a MANAGEMENT message to this
+/// node whose EOW, its subtype, is not recognised (7 or 14) draws WARNING reason 0 (J-0035, J-0036,
+/// J-0054); one whose EOW is the WTRP token, a subtype of a MAC protocol this node does not run,
+/// draws reason 3 (J-0037, J-0038, J-0070); both after the acknowledgement and only for a new
+/// message, as for C-1071 (interp J-0081). Every EXTENSION to our individual address, a WTRP type
+/// or not, draws reason 4 (J-0039, J-0052, J-0053, C-0735). The channel analysis element is
+/// <see cref="ChannelAnalysis"/>.
 /// </para>
 /// </remarks>
 internal sealed class DtsPeers
@@ -834,12 +845,27 @@ internal sealed class DtsPeers
             _tx.AddControl(new ManagementAck(src, m.ManagementFrameId) { Placed = () => AckPlaced(src, peer) });   // C-0296, C-1073, C-1074
         }
 
-        if (isNew && EowCodec.Decode(m.Header.Eow).Type is 1 or 2 or 5 or 6)
+        int subtype = EowCodec.Decode(m.Header.Eow).Type;
+        if (isNew && subtype is 1 or 2 or 5 or 6)
         {
             // An Ed3 stop/start data rate change or Annex I frequency change request (C-0919): not
             // supported, so refused with WARNING reason 3 after the acknowledgement (C-0920, C-0921,
             // C-1071). Nothing in it is acted on.
             Warn(m.Header.Src, 6, 3);
+        }
+        else if (isNew && subtype == ChannelAnalysis.TokenEowType)
+        {
+            // The WTRP token (EOW 13): a known subtype for a MAC protocol this node does not run,
+            // so the D_PDU is unexpected: WARNING reason 3, and no UNRECOGNIZED-TYPE-ERROR (J-0038,
+            // J-0070, interp J-0081).
+            Warn(m.Header.Src, 6, 3);
+        }
+        else if (isNew && subtype is 7 or 14)
+        {
+            // A subtype this node does not recognise, RESERVED (C-0405, C-0412): the D_PDU is
+            // treated as unrecognised, WARNING reason 0 (J-0035, J-0036), beside the
+            // UNRECOGNIZED-TYPE-ERROR EOW already owed (C-0445; J-0054, interp J-0081).
+            Warn(m.Header.Src, 6, 0);
         }
     }
 
@@ -970,10 +996,14 @@ internal sealed class DtsPeers
         _context.Enqueue(new DWarningTransmitted(dst, receivedFrameType, reason));   // C-0733, C-1075
     }
 
-    /// <summary>C-0445, C-0421, C-1079: an unrecognised EOW from a peer, in a D_PDU to our individual address.</summary>
+    /// <summary>
+    /// C-0445, C-0421, C-1079: an unrecognised EOW from a peer, in a D_PDU to our individual address.
+    /// The WTRP token, EOW 13, is a known type that Annex C keeps from the state machine when WTRP is
+    /// not in use, so it is not answered (C.7.5.1; J-0070, interp J-0081).
+    /// </summary>
     private void OweEowIfUnrecognised(DpduHeader h, bool individual)
     {
-        if (individual && EowCodec.Decode(h.Eow) is UnrecognisedEow u)
+        if (individual && EowCodec.Decode(h.Eow) is UnrecognisedEow { EowType: not ChannelAnalysis.TokenEowType } u)
         {
             _tx.OweEow(h.Src, EowCodec.Encode(new UnrecognizedTypeErrorEow(u.EowType)));
         }

@@ -38,7 +38,7 @@ namespace M0LTE.S5066.Core.Runtime;
 /// </para>
 /// <para>
 /// Not here yet: delivery confirmation and the TTD check on receipt are P6-1; flow control and
-/// management messages are P6-2. The node sends no unprompted keep-alive and never unbind
+/// other management messages are P6-2 (P5-3 sends the MAC-mode discovery report, interp J-0082). The node sends no unprompted keep-alive and never unbind
 /// reason 2 (S-0045), never unbind reasons 1 or 4 (A-0060), and never bind reason 4, having no
 /// exclusive broadcast session (A-0052).
 /// </para>
@@ -50,6 +50,9 @@ internal sealed class SisSublayer : ISisSublayer
 
     /// <summary>Invalid primitives in a row, with no valid one between, that end a connection (S-0077).</summary>
     public const int InvalidPrimitiveLimit = 10;
+
+    /// <summary>The MSG TYPE of our MAC-mode discovery report in S_MANAGEMENT_MSG_INDICATION (S-0038; interp J-0082).</summary>
+    public const byte MacModeMsgType = 1;
 
     // Bind reject reasons (A-0052, A-0053).
     private const byte BindRejectNotEnoughResources = 1;
@@ -207,6 +210,9 @@ internal sealed class SisSublayer : ISisSublayer
                 break;
             case CPhysicalLinkRejected j:
                 OnLinkRejected(j.Peer, j.Reason);
+                break;
+            case MacModeReport r:
+                OnMacModeReport(r);
                 break;
             case CPhysicalLinkBroken b:
                 // A-0199: the soft link ends, and its timers stop (idle, minimum hold, maximum). Anything
@@ -708,6 +714,28 @@ internal sealed class SisSublayer : ISisSublayer
 
     private void Reject(int conn, SisUnidataRequest r, byte reason) =>
         Send(conn, new SisUnidataRequestRejected(reason, r.DestSap, r.DestAddress, r.UPdu));
+
+    /// <summary>
+    /// A channel analysis finding for the operator (J-0051): S_MANAGEMENT_MSG_INDICATION, sent
+    /// unprompted (S-0034, S-0037), to every bound client in connection order, with our published
+    /// encoding (S-0035, S-0038; interp J-0082): MSG TYPE <see cref="MacModeMsgType"/>, and a 9-byte
+    /// MSG BODY: the finding code, then the node the finding is about and the addressee of the
+    /// WARNING behind it (0 when none), each a 28-bit address in 4 bytes, most significant first.
+    /// </summary>
+    private void OnMacModeReport(MacModeReport r)
+    {
+        byte[] body = new byte[9];
+        body[0] = (byte)r.Finding;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(body.AsSpan(1), r.Node);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(body.AsSpan(5), r.Addressee);
+        foreach ((int conn, Connection c) in _connections)
+        {
+            if (c.Sap is not null)
+            {
+                Send(conn, new SisManagementMsgIndication(MacModeMsgType, body));
+            }
+        }
+    }
 
     private void Send(int conn, SisPrimitive primitive) =>
         _context.Emit(new SisBytesOut(conn, SisCodec.Encode(primitive)));   // one output per primitive (core-architecture.md 2.2)
