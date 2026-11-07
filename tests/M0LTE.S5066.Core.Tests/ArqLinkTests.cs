@@ -80,6 +80,33 @@ public class ArqLinkTests
         link.DataAckLimit.Should().Be(16);
     }
 
+    [Theory]
+    [InlineData(130)]
+    [InlineData(300)]
+    public void An_8_bit_cpdu_longer_than_the_window_or_the_modulus_is_reassembled(int segments)
+    {
+        // C-0510, C-0512, C-0516: nothing bounds the segments of a C_PDU by the window, and its FSNs
+        // wrap modulo 256 (C-0190). Sent in window-sized bursts as a sender must (C-0771), with a
+        // late segment arriving out of order in each.
+        var link = new ArqLink(1, shortFamily: true);
+        var got = new List<ReadOnlyMemory<byte>>();
+        for (int b = 0; b < segments; b += 100)
+        {
+            int end = Math.Min(segments, b + 100);
+            for (int i = end - 1; i >= b; i--)
+            {
+                got.AddRange(link.Receive(i % 256, i == 0, i == segments - 1, true, false, [(byte)i, (byte)(i >> 8)]));
+            }
+
+            link.RxLwe.Should().Be(end % 256);
+        }
+
+        got.Should().ContainSingle();
+        byte[] expected = Enumerable.Range(0, segments).SelectMany(i => new[] { (byte)i, (byte)(i >> 8) }).ToArray();
+        got[0].ToArray().Should().Equal(expected);
+        link.AckBits().Should().BeEmpty();
+    }
+
     [Fact]
     public void Segments_received_out_of_order_are_joined_in_fsn_order()
     {

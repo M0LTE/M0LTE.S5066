@@ -50,7 +50,11 @@ internal sealed class ArqLink
     /// </summary>
     public const int MaxSelectiveAckBytes8 = 16;
 
-    private readonly Dictionary<int, InFrame> _received = new();   // looked up by FSN only, never enumerated (core-architecture.md 6 rule 3)
+    // Received segments are keyed by serial number, the FSN counted without wrapping from the start of
+    // the link, so that segments of a C_PDU longer than the modulus never meet a later FSN of the same
+    // value (C-0516, interp C-1194). Looked up by key only, never enumerated (core-architecture.md 6 rule 3).
+    private readonly Dictionary<long, InFrame> _received = new();
+    private long _rxLweSerial;   // the serial number of RX LWE
     private readonly List<CPduRun> _pendingInOrder = [];
     private IReadOnlyList<AckUnit>? _acknowledgement;   // cached until the receive window next changes
 
@@ -145,29 +149,22 @@ internal sealed class ArqLink
         }
 
         AckOwed = true;
-        if (_received.ContainsKey(fsn))
+        long serial = _rxLweSerial + ahead;
+        if (_received.ContainsKey(serial))
         {
             return deliver;   // a copy of a D_PDU already held: edges unchanged (C-0777, C-0778)
         }
 
-        _received[fsn] = new InFrame(start, end, inOrder, drop, drop ? [] : segment.ToArray());
+        _received[serial] = new InFrame(start, end, inOrder, drop, drop ? [] : segment.ToArray());
         int span = Seq.Distance(RxLwe, Seq.Add(RxUwe, 1));   // FSNs from RX LWE to RX UWE, 0 when none
         if (ahead + 1 > span)
         {
             RxUwe = fsn;   // the newest FSN received (C-0778)
         }
 
-        while (_received.TryGetValue(RxLwe, out InFrame? f))
-        {
-            if (f.Consumed)
-            {
-                _received.Remove(RxLwe);
-            }
+        AdvanceRxLwe();
 
-            RxLwe = Seq.Add(RxLwe, 1);   // C-0776; it never moves back (C-0777)
-        }
-
-        if (FindRun(fsn) is CPduRun run)
+        if (FindRun(serial) is CPduRun run)
         {
             if (run.Dropped)
             {
@@ -187,10 +184,7 @@ internal sealed class ArqLink
 
         // An in-order C_PDU goes once every D_PDU before it has been received (RX LWE has passed
         // its last segment), oldest first (C-0178, C-1123).
-        // Held runs lie within the maximum window behind or ahead of RX LWE, so measuring each from
-        // RX LWE - the maximum window puts them in FSN order even when some are still ahead of RX LWE.
-        int origin = Seq.Add(RxLwe, -MaxWindowSize);
-        _pendingInOrder.Sort((a, b) => Seq.Distance(origin, a.First).CompareTo(Seq.Distance(origin, b.First)));
+        _pendingInOrder.Sort((a, b) => a.First.CompareTo(b.First));   // serial numbers: FSN order, each unique
         while (_pendingInOrder.Count > 0 && Behind(_pendingInOrder[0].Last))
         {
             CPduRun r = _pendingInOrder[0];
@@ -213,7 +207,7 @@ internal sealed class ArqLink
         var bits = new List<bool>(count);
         for (int i = 0; i < count; i++)
         {
-            bits.Add(_received.ContainsKey(Seq.Add(RxLwe, 1 + i)));
+            bits.Add(_received.ContainsKey(_rxLweSerial + 1 + i));
         }
 
         return bits;
@@ -365,6 +359,7 @@ internal sealed class ArqLink
         RxUwe = Seq.Modulus - 1;
         Outstanding.Clear();
         _received.Clear();
+        _rxLweSerial = 0;
         _pendingInOrder.Clear();
         AckOwed = false;
         ArqUsed = false;
@@ -391,8 +386,8 @@ internal sealed class ArqLink
         // The FSNs that can be held: every one from RX LWE to RX UWE, and the unconsumed segments
         // just behind RX LWE that belong to a C_PDU not yet complete. They are visited in FSN order
         // and looked up, so the dictionary is never enumerated (core-architecture.md 6 rule 3).
-        var held = new List<int>();
-        for (int f = Seq.Add(RxLwe, -1); _received.ContainsKey(f) && held.Count < MaxWindowSize; f = Seq.Add(f, -1))
+        var held = new List<long>();
+        for (long f = _rxLweSerial - 1; _received.ContainsKey(f); f--)
         {
             held.Insert(0, f);
         }
@@ -400,27 +395,29 @@ internal sealed class ArqLink
         int span = Seq.Distance(RxLwe, Seq.Add(RxUwe, 1));
         for (int i = 0; i < span; i++)
         {
-            int f = Seq.Add(RxLwe, i);
+            long f = _rxLweSerial + i;
             if (_received.ContainsKey(f))
             {
                 held.Add(f);
             }
         }
 
-        var kept = new Dictionary<int, InFrame>();
+        // NEW RECEIVE LWE is not behind RX LWE within Equation 2, so it is taken as ahead of it.
+        long newSerial = _rxLweSerial + Seq.Distance(RxLwe, newRxLwe);
+        var kept = new Dictionary<long, InFrame>();
         int furthest = -1;
-        foreach (int f in held)
+        foreach (long f in held)
         {
-            int ahead = Seq.Distance(newRxLwe, f);
-            if (ahead < MaxWindowSize)
+            long ahead = f - newSerial;
+            if (ahead >= 0 && ahead < MaxWindowSize)
             {
                 kept[f] = _received[f];
-                furthest = Math.Max(furthest, ahead);
+                furthest = Math.Max(furthest, (int)ahead);
             }
         }
 
         _received.Clear();
-        foreach (int f in held)
+        foreach (long f in held)
         {
             if (kept.TryGetValue(f, out InFrame? frame))
             {
@@ -430,20 +427,12 @@ internal sealed class ArqLink
 
         _pendingInOrder.RemoveAll(r => !_received.ContainsKey(r.First) || !_received.ContainsKey(r.Last));
         RxLwe = newRxLwe;
+        _rxLweSerial = newSerial;
         RxUwe = Seq.Add(newRxLwe, furthest);   // NEW RECEIVE LWE - 1 when nothing is kept
-        while (_received.TryGetValue(RxLwe, out InFrame? f))
-        {
-            if (f.Consumed)
-            {
-                _received.Remove(RxLwe);
-            }
-
-            RxLwe = Seq.Add(RxLwe, 1);
-        }
+        AdvanceRxLwe();
 
         var deliver = new List<ReadOnlyMemory<byte>>();
-        int origin = Seq.Add(RxLwe, -MaxWindowSize);
-        _pendingInOrder.Sort((a, b) => Seq.Distance(origin, a.First).CompareTo(Seq.Distance(origin, b.First)));
+        _pendingInOrder.Sort((a, b) => a.First.CompareTo(b.First));
         while (_pendingInOrder.Count > 0 && Behind(_pendingInOrder[0].Last))
         {
             CPduRun r = _pendingInOrder[0];
@@ -454,20 +443,36 @@ internal sealed class ArqLink
         return deliver;
     }
 
-    private bool Behind(int fsn) => Seq.Distance(RxLwe, fsn) >= MaxWindowSize;
+    /// <summary>RX LWE passes every segment already received (C-0776); it never moves back (C-0777).</summary>
+    private void AdvanceRxLwe()
+    {
+        while (_received.TryGetValue(_rxLweSerial, out InFrame? f))
+        {
+            if (f.Consumed)
+            {
+                _received.Remove(_rxLweSerial);
+            }
+
+            RxLwe = Seq.Add(RxLwe, 1);
+            _rxLweSerial++;
+        }
+    }
+
+    /// <summary>The segment with this serial number lies behind RX LWE, so every segment before it has been received.</summary>
+    private bool Behind(long serial) => serial < _rxLweSerial;
 
     /// <summary>
-    /// The C_PDU whose segments include FSN <paramref name="fsn"/>, when every segment from its
-    /// C_PDU START to its C_PDU END has arrived (C-0512, C-0513, C-0516); null otherwise.
+    /// The C_PDU whose segments include serial number <paramref name="serial"/>, when every segment from its
+    /// C_PDU START to its C_PDU END has arrived (C-0512, C-0513, C-0516); null otherwise. Serial
+    /// numbers, so a C_PDU may have any number of segments, more than the modulus included.
     /// </summary>
-    private CPduRun? FindRun(int fsn)
+    private CPduRun? FindRun(long serial)
     {
-        int first = fsn;
-        int steps = 0;
+        long first = serial;
         while (!_received[first].Start)
         {
-            int prev = Seq.Add(first, -1);
-            if (++steps >= MaxWindowSize || !_received.TryGetValue(prev, out InFrame? p) || p.End)
+            long prev = first - 1;
+            if (!_received.TryGetValue(prev, out InFrame? p) || p.End)
             {
                 return null;
             }
@@ -475,12 +480,11 @@ internal sealed class ArqLink
             first = prev;
         }
 
-        int last = fsn;
-        steps = 0;
+        long last = serial;
         while (!_received[last].End)
         {
-            int next = Seq.Add(last, 1);
-            if (++steps >= MaxWindowSize || !_received.TryGetValue(next, out InFrame? n) || n.Start)
+            long next = last + 1;
+            if (!_received.TryGetValue(next, out InFrame? n) || n.Start)
             {
                 return null;
             }
@@ -490,7 +494,7 @@ internal sealed class ArqLink
 
         bool dropped = false;
         bool inOrder = false;
-        for (int f = first; ; f = Seq.Add(f, 1))
+        for (long f = first; ; f++)
         {
             InFrame frame = _received[f];
             if (frame.Consumed)
@@ -513,7 +517,7 @@ internal sealed class ArqLink
     private ReadOnlyMemory<byte> Consume(CPduRun run)
     {
         var bytes = new List<byte>();
-        for (int f = run.First; ; f = Seq.Add(f, 1))
+        for (long f = run.First; ; f++)
         {
             InFrame frame = _received[f];
             bytes.AddRange(frame.Data);
@@ -532,7 +536,7 @@ internal sealed class ArqLink
         return bytes.ToArray();
     }
 
-    private sealed record CPduRun(int First, int Last, bool InOrder, bool Dropped);
+    private sealed record CPduRun(long First, long Last, bool InOrder, bool Dropped);
 
     private sealed class InFrame(bool start, bool end, bool inOrder, bool drop, byte[] data)
     {
