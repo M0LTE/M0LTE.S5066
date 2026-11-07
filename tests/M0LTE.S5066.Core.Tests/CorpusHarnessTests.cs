@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using M0LTE.S5066.Core.Dts;
 
 namespace M0LTE.S5066.Core.Tests;
 
@@ -156,12 +158,129 @@ public class CorpusHarnessTests
                 return null;
 
             case "dpdu":
-                return UnknownKey(root, T1Keys) is { } dkey
-                    ? CorpusResults.Unsupported($"unknown key '{dkey}'")
-                    : CorpusResults.Skipped("D_PDU codec not implemented yet (phase 1b)");
+            case "eow":
+            case "address":
+            case "speed_interleaver":
+                if (UnknownKey(root, T1Keys) is { } dkey)
+                {
+                    return CorpusResults.Unsupported($"unknown key '{dkey}'");
+                }
+
+                return RunCodec(line, kind, dir);
 
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
+        }
+    }
+
+    private static string? RunCodec(CorpusLine line, string kind, string dir)
+    {
+        JsonElement root = line.Root;
+        byte[] bytes = Convert.FromHexString(root.GetProperty("bytes").GetString()!);
+        bool hasError = root.TryGetProperty("error", out JsonElement errorEl);
+        JsonNode? expected = root.TryGetProperty("value", out JsonElement valueEl) ? JsonNode.Parse(valueEl.GetRawText()) : null;
+        bool decode = dir is "decode" or "both";
+        bool encode = dir is "encode" or "both";
+        if (kind == "eow" && hasError)
+        {
+            return CorpusResults.Unsupported("error cases for kind 'eow'");
+        }
+
+        if (decode)
+        {
+            (JsonNode? actual, string? error) = DecodeToJson(kind, root, bytes);
+            if (hasError)
+            {
+                error.Should().Be(errorEl.GetString(), $"{line.Where}, error kind");
+            }
+            else
+            {
+                error.Should().BeNull($"{line.Where}, decode error");
+                JsonNode.DeepEquals(actual, expected).Should().BeTrue($"{line.Where}: decoded {actual?.ToJsonString()} but expected {expected?.ToJsonString()}");
+            }
+        }
+
+        if (encode)
+        {
+            Convert.ToHexStringLower(EncodeFromJson(kind, expected!)).Should().Be(root.GetProperty("bytes").GetString(), $"{line.Where}, encoded bytes");
+        }
+
+        return null;
+    }
+
+    private static (JsonNode? Value, string? Error) DecodeToJson(string kind, JsonElement root, byte[] bytes)
+    {
+        switch (kind)
+        {
+            case "dpdu":
+            {
+                var peer = DpduCorpusAdapter.Peer(root.GetProperty("peer_edition").GetString()!);
+                DecodeResult<Dpdu> r = DpduCodec.Decode(bytes, peer);
+                return r.IsSuccess ? (DpduCorpusAdapter.ToJson(r.Value!), null) : (null, DpduCorpusAdapter.ErrorName(r.Error!.Value));
+            }
+
+            case "address":
+            {
+                if (bytes.Length is < 1 or > 7)
+                {
+                    return (null, "bad_address_size");
+                }
+
+                DpduAddress.Read(bytes, out uint dst, out uint src);
+                return (new JsonObject
+                {
+                    ["address_size"] = bytes.Length,
+                    ["dst"] = DpduAddress.ToDotted(dst),
+                    ["src"] = DpduAddress.ToDotted(src),
+                }, null);
+            }
+
+            case "speed_interleaver":
+            {
+                if (bytes.Length != 1)
+                {
+                    return (null, bytes.Length < 1 ? "truncated" : "trailing_bytes");
+                }
+
+                SpeedInterleaver s = SpeedInterleaver.FromByte(bytes[0]);
+                return (new JsonObject { ["interleaver"] = s.Interleaver, ["speed"] = s.Speed }, null);
+            }
+
+            default: // eow: 2 bytes, type then contents
+                if (bytes.Length != 2)
+                {
+                    return (null, bytes.Length < 2 ? "truncated" : "trailing_bytes");
+                }
+
+                return bytes[0] > 15
+                    ? (null, "invalid_field")
+                    : (DpduCorpusAdapter.EowToJson(EowCodec.Decode((bytes[0] << 8) | bytes[1])), null);
+        }
+    }
+
+    private static byte[] EncodeFromJson(string kind, JsonNode value)
+    {
+        switch (kind)
+        {
+            case "dpdu":
+                return DpduCodec.Encode(DpduCorpusAdapter.FromJson(value));
+            case "address":
+            {
+                int m = value["address_size"]!.GetValue<int>();
+                DpduAddress.TryParse(value["dst"]!.GetValue<string>(), out uint dst).Should().BeTrue();
+                DpduAddress.TryParse(value["src"]!.GetValue<string>(), out uint src).Should().BeTrue();
+                var field = new byte[m];
+                DpduAddress.Write(m, dst, src, field);
+                return field;
+            }
+
+            case "speed_interleaver":
+                return [new SpeedInterleaver(value["interleaver"]!.GetValue<int>(), value["speed"]!.GetValue<int>()).ToByte()];
+            default:
+            {
+                int v = EowCodec.Encode(DpduCorpusAdapter.EowFromJson(value));
+                return [(byte)(v >> 8), (byte)v];
+            }
         }
     }
 
