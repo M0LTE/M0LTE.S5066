@@ -168,6 +168,16 @@ public class CorpusHarnessTests
 
                 return RunCodec(line, kind, dir);
 
+            case "sis_frame":
+            case "sis_stream":
+                return UnknownKey(root, T1Keys) is { } skey
+                    ? CorpusResults.Unsupported($"unknown key '{skey}'")
+                    : SisCorpus.Run(line);
+
+            case "cpdu":
+            case "spdu":
+                return CpduSpduCorpus.Run(line, kind);
+
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
         }

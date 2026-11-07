@@ -4,14 +4,14 @@ Last updated: 2026-11-07.
 
 ## Now
 
-Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harness, CRC-16, CRC-32, SplitMix64) is done; P1b (D_PDU, EOW and address codecs, issue #11) is in review. Phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) runs alongside.
+Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harness, CRC-16, CRC-32, SplitMix64), P1c (C_PDU and S_PDU codecs) and P1d (SIS S_primitive codec, `src/M0LTE.S5066.Core/Sis/`) are merged; P1b (D_PDU, EOW and address codecs, issue #11) is in review. Phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) runs alongside.
 
 ## Phases
 
 | Phase | State |
 |---|---|
 | 0. Foundations: requirements matrix, corpus format, harness contract | done |
-| 1. Codecs | in progress: P1a done (#10), P1b in review (#11) |
+| 1. Codecs | in progress: P1a (#10), P1c (#12), P1d (#13) done; P1b in review (#11) |
 | 2. Modem work (M0LTE.Ms110d, ms110d-cpp) | design in progress (#8) |
 | 3. DTS non-ARQ | not started |
 | 4. DTS ARQ | not started |
@@ -38,4 +38,5 @@ None.
 - 2026-11-07: repos created (public). Plan v1.1 committed with decisions D1 to D8.
 - 2026-11-07: phase 0 complete; plan v1.2.
 - 2026-11-07: P1a done (issue #10): solution, M0LTE.S5066.Core, conformance submodule at corpus 0.1.0, corpus harness (CRC and PRNG cases pass; D_PDU and T2 cases skipped until P1b and phase 3), CI.
+- 2026-11-07: P1c (issue #12): C_PDU (Annex B types 0 to 10, 7 to 10 decode only) and S_PDU (Annex A types 0 to 2) codecs in Core, 89 T1 cases from conformance PR #7; all pass.
 - 2026-11-07: P1b (issue #11): codecs for D_PDU types 0 to 15, EOWs, address field and speed byte in `M0LTE.S5066.Core.Dts`; 378 new T1 vectors (corpus 0.2.0); all corpus cases pass.
