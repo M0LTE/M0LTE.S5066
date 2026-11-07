@@ -6,6 +6,10 @@ Status: early development. The plan is [docs/plan.md](docs/plan.md), and progres
 
 The conformance corpus and requirements matrix live in [M0LTE/s5066-conformance](https://github.com/M0LTE/s5066-conformance).
 
+## Building
+
+Clone with submodules (`git clone --recurse-submodules`, or `git submodule update --init` afterwards), then `dotnet build` and `dotnet run --project tests/M0LTE.S5066.Core.Tests`. The tests run the shared corpus in `conformance/`.
+
 ## Licence
 
 AGPL-3.0-or-later; see [LICENSE](LICENSE). If the AGPL does not suit your use, commercial licences are available from the copyright holder, Thomas Fanning. To ask, open a GitHub issue titled "Commercial licence enquiry". Because of that, outside contributions can only be accepted with a contributor licence agreement; please open an issue before writing code.
