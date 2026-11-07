@@ -91,6 +91,10 @@ internal sealed class DtsPeers
     /// <summary>The non-ARQ reassembly, for tests and the <c>dts.reception_window</c> expiry.</summary>
     internal NonArqReassembler Reassembler => _reassembler;
 
+    /// <summary>For tests: the Ed4 and short-family flags D_CONNECTION_MADE gave a connected peer, or null when not connected.</summary>
+    internal (bool PeerIsEd4, bool ShortFamily)? ConnectionOf(uint peer) =>
+        _peers.TryGetValue(peer, out Peer? p) && p.Connected ? (p.PeerIsEd4, p.ShortFamily) : null;
+
     /// <summary>The state kept for a peer, for tests; IDLE(UNCONNECTED) for a peer never heard.</summary>
     internal DtsPeerState StateOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.State : DtsPeerState.IdleUnconnected;
 

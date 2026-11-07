@@ -35,6 +35,9 @@ internal sealed class CasSublayer : ICasSublayer
     private const byte RejectTooManyLinks = 4;
     private const byte RejectExclusiveLinks = 5;
 
+    // The D_PDU type that carries our link C_PDUs (B-0129), as a WARNING names it (C-0589).
+    private const int ExpeditedNonArqType = 8;
+
     private readonly CoreContext _context;
     private readonly SortedDictionary<uint, Link> _links = new();
     private readonly SortedDictionary<int, uint> _ownHandles = new();
@@ -114,7 +117,7 @@ internal sealed class CasSublayer : ICasSublayer
                 OnSent(c.Handle);
                 break;
             case DWarningReceived w:
-                OnWarning(w.Src);
+                OnWarning(w.Src, w.ReceivedFrameType);
                 break;
             case DWarningTransmitted:
                 break;   // nothing in the CAS depends on WARNINGs we send
@@ -341,6 +344,7 @@ internal sealed class CasSublayer : ICasSublayer
         {
             _context.Timers.Cancel(RequestTimer(peer));   // B-0405: our own call gives way
             link.Phase = Phase.Accepting;
+            link.Crossed = true;
         }
 
         link.Ed4 = r.Ed4;
@@ -352,7 +356,9 @@ internal sealed class CasSublayer : ICasSublayer
     /// Step 3 (a), PHYSICAL LINK ACCEPTED (B-0219). Only what we offered is used (B-0308): Ed4 when
     /// both had it, Short never since we never ask (B-0409). Its Ed4 bit records the peer's edition
     /// when we asked with Ed4 (B-0228, B-0408). While our own accept is unsent (crossed calls) it
-    /// makes the link at once (B-0405); otherwise it is discarded (B-0410).
+    /// makes the link at once (B-0405), and if we had called, with the values of our own request as
+    /// answered, so both ends agree whichever of the two requests each side accepted; otherwise it
+    /// is discarded (B-0410).
     /// </summary>
     private void OnAccepted(uint peer, PhysicalLinkAccepted a)
     {
@@ -368,7 +374,13 @@ internal sealed class CasSublayer : ICasSublayer
             {
                 _context.Peers.SetEdition(peer, a.Ed4 ? KnownEdition.Ed4 : KnownEdition.Ed3);
             }
+        }
 
+        if (link.Phase == Phase.Calling || link.Crossed)
+        {
+            // The accept answers our request, so the link takes the values of our request as the
+            // peer answered it, which are the values the peer itself uses (B-0405). In crossed calls
+            // this replaces the values of the peer's request, taken when we accepted it.
             link.Ed4 = link.RequestEd4 && a.Ed4;
             link.ShortFamily = !link.Ed4;
         }
@@ -396,11 +408,14 @@ internal sealed class CasSublayer : ICasSublayer
     /// <summary>
     /// B.7.2.2: a WARNING from a peer we are calling with Ed4 set means the peer is not Ed4 (B-0229,
     /// B-0315): record Ed3 (B-0408) and start link establishment again with Ed4 clear (B-0230,
-    /// B-0411), stopping the timer and counting sends afresh.
+    /// B-0411), stopping the timer and counting sends afresh. Only a WARNING about a type 8 D_PDU
+    /// that arrives once our request has been sent can answer it; any other is about something
+    /// else and is ignored (B-0411).
     /// </summary>
-    private void OnWarning(uint peer)
+    private void OnWarning(uint peer, int receivedFrameType)
     {
-        if (!_links.TryGetValue(peer, out Link? link) || link.Phase != Phase.Calling || !link.RequestEd4)
+        if (!_links.TryGetValue(peer, out Link? link) || link.Phase != Phase.Calling || !link.RequestEd4 || link.Handle is not null
+            || receivedFrameType != ExpeditedNonArqType)
         {
             return;
         }
@@ -414,7 +429,10 @@ internal sealed class CasSublayer : ICasSublayer
 
     /// <summary>
     /// The DTS refused an expedited request (C-0731). For one of our link requests the call fails
-    /// (B-0022); for an accept or reject there is nothing to undo; a client request fails upward.
+    /// (B-0022). For an accept not yet sent the link is not made: in crossed calls the call the SIS
+    /// asked for fails the same way, otherwise the entry is dropped with no output (it had none),
+    /// so the peer's next request is answered afresh. For a repeated accept on a made link the next
+    /// request is answered again. A reject needs nothing; a client request fails upward.
     /// </summary>
     private void OnExpeditedRejected(int handle)
     {
@@ -424,9 +442,21 @@ internal sealed class CasSublayer : ICasSublayer
             return;
         }
 
-        if (_links.TryGetValue(peer, out Link? link) && link.Handle == handle && link.Phase == Phase.Calling)
+        if (!_links.TryGetValue(peer, out Link? link) || link.Handle != handle)
         {
-            Fail(peer, LinkReason.DtsRejected);
+            return;
+        }
+
+        link.Handle = null;
+        switch (link.Phase)
+        {
+            case Phase.Calling:
+            case Phase.Accepting when link.Crossed:
+                Fail(peer, LinkReason.DtsRejected);
+                break;
+            case Phase.Accepting:
+                _links.Remove(peer);
+                break;
         }
     }
 
@@ -476,6 +506,9 @@ internal sealed class CasSublayer : ICasSublayer
 
         /// <summary>The 8-bit FSN family is used on the link: Short with Ed4, or an Ed3 link (B-0141, B-0142, B-0232).</summary>
         public bool ShortFamily { get; set; }
+
+        /// <summary>Crossed calls: we were calling when the peer's request arrived, so we accepted it (B-0405).</summary>
+        public bool Crossed { get; set; }
 
         /// <summary>Called node: no DATA C_PDU received yet (B-0215).</summary>
         public bool AwaitingFirstData { get; set; }

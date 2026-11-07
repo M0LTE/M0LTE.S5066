@@ -83,6 +83,7 @@ internal sealed class Simulation
     private readonly List<string> _log = [];
     private readonly List<string> _violations = [];
     private readonly List<SimDelivery> _deliveries = [];
+    private readonly List<(int Node, long T, uint Peer, LinkStateName State)> _linkStates = [];
     private long _seq;
     private long _now;
 
@@ -116,6 +117,9 @@ internal sealed class Simulation
 
     public IReadOnlyList<SimDelivery> Deliveries => _deliveries;
 
+    /// <summary>Every <c>link_state</c> output: node, time, peer and state, in the order they happened.</summary>
+    public IReadOnlyList<(int Node, long T, uint Peer, LinkStateName State)> LinkStates => _linkStates;
+
     /// <summary>Breaches of the assertions the simulation checks itself (C-0844, C-0889, the harness rules).</summary>
     public IReadOnlyList<string> Violations => _violations;
 
@@ -141,6 +145,20 @@ internal sealed class Simulation
     {
         Sis(node, t, new SisConnect(t, Conn));
         Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(new SisBindRequest(sap, new ServiceType(2)))));
+    }
+
+    /// <summary>Connects a client to the node at <paramref name="t"/> and binds <paramref name="sap"/> for ARQ, no confirmation.</summary>
+    public void BindArq(int node, long t, byte sap)
+    {
+        Sis(node, t, new SisConnect(t, Conn));
+        Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(new SisBindRequest(sap, new ServiceType(1)))));
+    }
+
+    /// <summary>Queues an ARQ S_UNIDATA_REQUEST (the bound service) from the node's client at <paramref name="t"/>, TTL default.</summary>
+    public void SendArq(int node, long t, uint dst, byte dstSap, byte[] uPdu)
+    {
+        var request = new SisUnidataRequest(0, dstSap, new SisAddress(dst), ServiceType.Default, 0, uPdu);
+        Sis(node, t, new SisBytes(t, Conn, SisCodec.Encode(request)));
     }
 
     /// <summary>Queues an S_UNIDATA_REQUEST from the node's client at <paramref name="t"/>, non-ARQ, TTL default.</summary>
@@ -215,6 +233,9 @@ internal sealed class Simulation
                 break;
             case TimerCancel c:
                 n.Timers.Remove(c.Name);
+                break;
+            case LinkState l:
+                _linkStates.Add((n.Index, t, l.Peer, l.State));
                 break;
             case Transmit tx:
                 int given = n.Heard.Count;   // the headers this core had been given when it decided
@@ -449,6 +470,7 @@ internal sealed class Simulation
         TimerCancel c => "timer_cancel " + c.Name.ToTraceString(),
         Transmit t => "transmit " + Convert.ToHexStringLower(t.Bytes.Span),
         SisBytesOut b => "sis_bytes " + Convert.ToHexStringLower(b.Bytes.Span),
+        LinkState l => string.Create(CultureInfo.InvariantCulture, $"link_state {l.Peer} {l.State}"),
         _ => output.GetType().Name,
     };
 

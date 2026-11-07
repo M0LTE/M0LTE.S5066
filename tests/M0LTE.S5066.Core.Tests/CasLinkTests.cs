@@ -176,6 +176,63 @@ public class CasLinkTests
     }
 
     [Fact]
+    public void A_dts_refusal_of_our_accept_drops_the_entry_so_the_next_request_is_answered()
+    {
+        // B-0405 review: an accept that is never sent must not leave the peer stuck accepting.
+        var rig = new Rig();
+        rig.Deliver(Link(X, new PhysicalLinkRequest(false, true, false)));
+        rig.Deliver(new DExpeditedUnidataRequestRejected(rig.Cas.PendingHandleOf(X)!.Value, DReason.NoConnection));
+        rig.Outputs.Should().BeEmpty();
+        rig.Cas.PhaseOf(X).Should().BeNull();
+        rig.Deliver(Link(X, new PhysicalLinkRequest(false, true, false)));
+        rig.Cas.PhaseOf(X).Should().Be("Accepting");
+        rig.Cas.PendingHandleOf(X).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void A_dts_refusal_of_our_accept_in_crossed_calls_fails_the_call()
+    {
+        var rig = new Rig();
+        rig.ArqRequest(X, confirm: 1);
+        rig.Sent(X);
+        rig.Deliver(Link(X, new PhysicalLinkRequest(false, true, false)));
+        rig.Deliver(new DExpeditedUnidataRequestRejected(rig.Cas.PendingHandleOf(X)!.Value, DReason.NoConnection));
+        rig.Outputs[0].Should().Be(new LinkState(X, LinkStateName.Unlinked));
+        rig.Cas.PhaseOf(X).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_warning_before_our_request_is_sent_is_not_an_answer_to_it()
+    {
+        // B-0411: the WARNING cannot be about a request the peer has not heard.
+        var rig = new Rig();
+        rig.ArqRequest(X);
+        rig.Deliver(new DWarningReceived(X, Us, 8, 2));
+        rig.Outputs.Should().BeEmpty();
+        rig.Context.Peers.EditionOf(X).Should().Be(KnownEdition.Unknown);
+
+        // Once sent, a WARNING about some other D_PDU type is not about our request either.
+        rig.Sent(X);
+        rig.Deliver(new DWarningReceived(X, Us, 0, 2));
+        rig.Outputs.Should().BeEmpty();
+        rig.Context.Peers.EditionOf(X).Should().Be(KnownEdition.Unknown);
+    }
+
+    [Fact]
+    public void Crossed_calls_take_the_link_values_from_our_own_request_as_answered()
+    {
+        // B-0405 review: we asked with Ed4 clear (stale Ed3 record), X asked with Ed4 set and also
+        // accepted our request. X uses the values of our request, so we must too.
+        var rig = new Rig();
+        rig.Context.Peers.SetEdition(X, KnownEdition.Ed3);
+        rig.ArqRequest(X);
+        rig.Sent(X);
+        rig.Deliver(Link(X, new PhysicalLinkRequest(false, true, false)));
+        rig.Deliver(Link(X, new PhysicalLinkAccepted(false, false, false)));
+        rig.Dts.Peers.ConnectionOf(X).Should().Be((false, true));
+    }
+
+    [Fact]
     public void First_data_abort_terminates_the_connection_and_rejects_held_arq_cpdus()
     {
         // B-0406, C-0652: X calls us, we accept; our own client then queues ARQ data for X.
