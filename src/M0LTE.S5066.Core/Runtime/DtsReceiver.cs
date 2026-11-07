@@ -57,6 +57,7 @@ internal sealed class DtsReceiver
     private readonly CoreContext _context;
     private readonly IMacObserver _mac;
     private readonly Action<Dpdu> _toStateMachine;
+    private readonly Action<DpduHeaderInfo>? _onHeader;
     private readonly SortedDictionary<uint, RxQuality> _quality = new();
     private readonly SortedSet<uint> _heardThisBurst = new();
     private readonly SortedDictionary<uint, (long Headers, long DataCrc)> _countsThisBurst = new();
@@ -69,11 +70,12 @@ internal sealed class DtsReceiver
     // arriving, or -1. Stops the header effects being applied twice.
     private int _headerDoneAt = -1;
 
-    public DtsReceiver(CoreContext context, IMacObserver mac, Action<Dpdu> toStateMachine)
+    public DtsReceiver(CoreContext context, IMacObserver mac, Action<Dpdu> toStateMachine, Action<DpduHeaderInfo>? onHeader = null)
     {
         _context = context;
         _mac = mac;
         _toStateMachine = toStateMachine;
+        _onHeader = onHeader;
     }
 
     /// <summary>Headers with a sync that failed a header check (bad CRC, impossible sizes), all bursts.</summary>
@@ -214,6 +216,7 @@ internal sealed class DtsReceiver
         }
 
         _mac.DpduHeard(h.Src, h.Dst, info.GroupAddress);
+        _onHeader?.Invoke(info);   // channel analysis (J-0043, J-0070)
 
         _heardThisBurst.Add(h.Src);
         _countsThisBurst.TryGetValue(h.Src, out (long Headers, long DataCrc) c);

@@ -160,6 +160,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     public void OweEow(uint peer, int eow) => _owedEow[peer] = eow;
 
+    /// <summary>For tests: the EOW owed to a peer and not yet sent (C-1079), or null.</summary>
+    internal int? OwedEowFor(uint peer) => _owedEow.TryGetValue(peer, out int eow) ? eow : null;
+
     /// <summary>
     /// A non-ARQ D_UNIDATA_REQUEST: queued for type 7 D_PDUs (C-0575, C-0595). In the
     /// EXPEDITED-DATA(UNCONNECTED) state the tables queue it until the expedited data to that peer
