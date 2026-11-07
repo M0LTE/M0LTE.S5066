@@ -149,6 +149,8 @@ public class CrossedCallTests(ITestOutputHelper output)
             ["link_request_retries"] = 3,
             ["first_data_timeout_ms"] = 2_000_000,
         },
+        // The link must stay up for the whole run: no idle close or maximum session (A-0321 derives them when unset).
+        ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 2_000_000, ["soft_link_max_ms"] = 2_000_000 },
         ["dts"] = new JsonObject { ["ack_wait_ms"] = 120_000 },
     };
 }

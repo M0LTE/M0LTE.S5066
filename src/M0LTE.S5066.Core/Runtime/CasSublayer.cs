@@ -40,6 +40,12 @@ namespace M0LTE.S5066.Core.Runtime;
 /// clean close is awaited, <c>breaking</c> once type 4 is under way, <c>unlinked</c> when broken.
 /// </para>
 /// <para>
+/// Soft link closes (P5-2): C_PHYSICAL_LINK_MADE tells the SIS whether this node is the called node
+/// (A-0325). The reason the SIS gave for a close is kept for the peer after the link is broken, so the
+/// ARQ C_PDUs the DTS rejects when the connection ends go up with it (A-0207, A-0324). A
+/// C_PHYSICAL_LINK_BREAK during a close the peer asked for joins that close (B-0450).
+/// </para>
+/// <para>
 /// B-0089 (Address Not Known) never applies: no station list is configured (B-0404). Reject reason
 /// 1 is never sent: the node is never broadcast-only (A-0007).
 /// </para>
@@ -74,6 +80,12 @@ internal sealed class CasSublayer : ICasSublayer
     private readonly CoreContext _context;
     private readonly SortedDictionary<uint, Link> _links = new();
     private readonly SortedDictionary<int, uint> _ownHandles = new();
+
+    // ARQ data requests handed to the DTS and not yet confirmed or rejected, by handle, with their
+    // peer; and, per peer, the reason of the last soft link close the SIS asked for, kept until a new
+    // link to that peer is started, so the rejections the close causes carry it (A-0207).
+    private readonly SortedDictionary<int, uint> _arqHandles = new();
+    private readonly SortedDictionary<uint, SisBreakReason> _softLinkClosed = new();
 
     public CasSublayer(CoreContext context) => _context = context;
 
@@ -181,6 +193,7 @@ internal sealed class CasSublayer : ICasSublayer
             case DUnidataRequestConfirm c:
                 // The DTS delivered an ARQ C_PDU (C-0679): the request is confirmed upward, handle
                 // unchanged (B-0018), unless it is our own PHYSICAL LINK BREAK REQUEST (B-0312).
+                _arqHandles.Remove(c.Handle);
                 if (!_ownHandles.Remove(c.Handle))
                 {
                     _context.Enqueue(new CUnidataRequestConfirm(c.Handle));
@@ -193,7 +206,7 @@ internal sealed class CasSublayer : ICasSublayer
                 // it is our own PHYSICAL LINK BREAK REQUEST, which needs nothing.
                 if (!_ownHandles.Remove(j.Handle))
                 {
-                    _context.Enqueue(new CUnidataRequestRejected(j.Handle, j.Reason == DReason.TtlExpired ? CReason.TtlExpired : CReason.NoConnection));
+                    _context.Enqueue(new CUnidataRequestRejected(j.Handle, RejectReason(j)));
                 }
 
                 break;
@@ -213,9 +226,44 @@ internal sealed class CasSublayer : ICasSublayer
     /// </summary>
     private void OnUnidataRequest(CUnidataRequest r)
     {
+        if (r.Arq)
+        {
+            _arqHandles[r.Handle] = r.Dst;
+        }
+
         byte[] cpdu = CpduCodec.Encode(new CpduData(r.SPdu));
         _context.Enqueue(new DUnidataRequest(r.Dst, r.DstIsGroup, r.Arq, r.Priority, r.Ttd, r.DeliverInOrder,
                                              r.MinRetransmissions, cpdu, r.Handle));
+    }
+
+    /// <summary>
+    /// The reason a DTS rejection goes up with (B-0018, A-0206): TTL Expired for a dropped C_PDU;
+    /// for one rejected when the connection ended (C-0652, C-0866) after a soft link close the SIS
+    /// asked for, the reason the SIS gave for it (A-0205, A-0207; an operator break has no SIS reject
+    /// reason of its own); otherwise no connection.
+    /// </summary>
+    private CReason RejectReason(DUnidataRequestRejected j)
+    {
+        bool known = _arqHandles.Remove(j.Handle, out uint peer);
+        if (j.Reason == DReason.TtlExpired)
+        {
+            return CReason.TtlExpired;
+        }
+
+        if (j.Reason == DReason.NoConnection && known && _softLinkClosed.TryGetValue(peer, out SisBreakReason closed))
+        {
+            switch (closed)
+            {
+                case SisBreakReason.HigherPriorityLink:
+                    return CReason.SoftLinkHigherPriority;
+                case SisBreakReason.ShareChannel:
+                    return CReason.SoftLinkShareChannel;
+                case SisBreakReason.Idle:
+                    return CReason.SoftLinkIdle;
+            }
+        }
+
+        return CReason.NoConnection;
     }
 
     /// <summary>
@@ -245,6 +293,7 @@ internal sealed class CasSublayer : ICasSublayer
 
         var link = new Link(Phase.Calling) { RequestEd4 = _context.Peers.EditionOf(peer) != KnownEdition.Ed3 };
         _links.Add(peer, link);
+        _softLinkClosed.Remove(peer);
         _context.Emit(new LinkState(peer, LinkStateName.Calling));
         SendRequest(peer, link);
     }
@@ -326,7 +375,7 @@ internal sealed class CasSublayer : ICasSublayer
         link.Phase = Phase.Linked;
         _context.Emit(new LinkState(peer, LinkStateName.Linked));
         _context.Enqueue(new DConnectionMade(peer, link.Ed4, link.ShortFamily));
-        _context.Enqueue(new CPhysicalLinkMade(peer));
+        _context.Enqueue(new CPhysicalLinkMade(peer, called));
         if (called)
         {
             link.AwaitingFirstData = true;
@@ -442,6 +491,7 @@ internal sealed class CasSublayer : ICasSublayer
         {
             link = new Link(Phase.Accepting);
             _links.Add(peer, link);
+            _softLinkClosed.Remove(peer);
         }
         else
         {
@@ -595,10 +645,23 @@ internal sealed class CasSublayer : ICasSublayer
     /// </summary>
     private void OnLinkBreak(CPhysicalLinkBreak b)
     {
-        if (!_links.TryGetValue(b.Peer, out Link? link) || link.Phase != Phase.Linked)
+        if (!_links.TryGetValue(b.Peer, out Link? link))
         {
             return;
         }
+
+        if (link.Phase == Phase.Closing && !link.CloseLocal)
+        {
+            JoinPeerClose(b, link);
+            return;
+        }
+
+        if (link.Phase != Phase.Linked)
+        {
+            return;
+        }
+
+        link.SisReason = b.Reason;
 
         (byte requestReason, byte breakReason) = b.Reason switch
         {
@@ -619,6 +682,21 @@ internal sealed class CasSublayer : ICasSublayer
         int handle = _context.AllocateHandle();
         _ownHandles[handle] = b.Peer;
         _context.Enqueue(new DCloseRequest(b.Peer, new ClosePolicy(true, 0), CpduCodec.Encode(new PhysicalLinkBreakRequest(requestReason, priority)), handle));
+    }
+
+    /// <summary>
+    /// C_PHYSICAL_LINK_BREAK while a close the peer asked for is under way (interp B-0450): the close
+    /// becomes ours too. New C_PDUs stop as for any close of ours (B-0241, B-0246), merged with what the
+    /// peer's reason held back; no PHYSICAL LINK BREAK REQUEST is sent, since the peer has asked for the
+    /// close already (B-0242 is for the node that starts it); <c>cas.clean_close</c> runs if the link is
+    /// not clean (B-0322); the PHYSICAL LINK BREAK keeps the reason of the peer's request (B-0423); and
+    /// rejections the close causes carry the SIS reason (A-0207).
+    /// </summary>
+    private void JoinPeerClose(CPhysicalLinkBreak b, Link link)
+    {
+        link.CloseLocal = true;
+        link.SisReason = b.Reason;
+        _context.Enqueue(new DCloseRequest(b.Peer, new ClosePolicy(true, 0)));
     }
 
     /// <summary>
@@ -773,10 +851,17 @@ internal sealed class CasSublayer : ICasSublayer
     /// </summary>
     private void Broken(uint peer, LinkReason reason, bool confirm)
     {
+        Link link = _links[peer];
         _context.Timers.Cancel(FirstDataTimer(peer));
         _context.Timers.Cancel(CleanCloseTimer(peer));
         _context.Timers.Cancel(BreakTimer(peer));
         _links.Remove(peer);
+        if (link.SisReason is SisBreakReason sisReason && reason is not (LinkReason.ConnectionLost or LinkReason.HalfOpen))
+        {
+            // A link lost during the close keeps its own reason (interp A-0324).
+            _softLinkClosed[peer] = sisReason;   // A-0207: for the rejections D_CONNECTION_TERMINATED causes
+        }
+
         _context.Emit(new LinkState(peer, LinkStateName.Unlinked));
         if (confirm)
         {
@@ -837,7 +922,10 @@ internal sealed class CasSublayer : ICasSublayer
         /// <summary>The PHYSICAL LINK BREAK reason for this link's break (B-0302, B-0423).</summary>
         public byte BreakReason { get; set; }
 
-        /// <summary>The clean close was asked for by our SIS, not by the peer (B-0322).</summary>
+        /// <summary>The reason our SIS gave when it asked for this link to be broken (A-0205, A-0207), if it did.</summary>
+        public SisBreakReason? SisReason { get; set; }
+
+        /// <summary>The clean close was asked for by our SIS, not by the peer (B-0322), or joined by it (B-0450).</summary>
         public bool CloseLocal { get; set; }
 
         /// <summary>link_state closing has been emitted for this close.</summary>

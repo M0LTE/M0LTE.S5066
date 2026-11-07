@@ -300,10 +300,12 @@ public class CasLinkTests
     internal sealed class Rig
     {
         private readonly Dispatcher _dispatcher;
+        private readonly bool _showSisTimers;
         private bool _bound;
 
-        public Rig(Func<NodeConfig, NodeConfig>? configure = null)
+        public Rig(Func<NodeConfig, NodeConfig>? configure = null, bool showSisTimers = false)
         {
+            _showSisTimers = showSisTimers;
             NodeConfig config = TestConfig.Basic();
             Context = new CoreContext(configure is null ? config : configure(config), new NullModem());
             Sis = new SisSublayer(Context);
@@ -325,7 +327,7 @@ public class CasLinkTests
         /// <summary>Outputs since the last check; each read of the list in an assertion should be followed by a new action.</summary>
         public List<CoreOutput> Outputs { get; } = [];
 
-        public void ArqRequest(uint dst, byte confirm = 0, uint ttl = 0)
+        public void ArqRequest(uint dst, byte confirm = 0, uint ttl = 0, byte priority = 0)
         {
             if (!_bound)
             {
@@ -335,7 +337,7 @@ public class CasLinkTests
                 _bound = true;
             }
 
-            Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(0, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
+            Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(priority, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
         }
 
         /// <summary>The DTS reports our pending link C_PDU to the peer sent (C-1100).</summary>
@@ -345,12 +347,15 @@ public class CasLinkTests
             Deliver(new DExpeditedUnidataRequestConfirm(h ?? 9999));
         }
 
+        /// <summary>The client disconnects.</summary>
+        public void Disconnect() => Run(new SisDisconnect(Context.Now, 1));
+
         public void Deliver(ToCas primitive)
         {
             Outputs.Clear();
             Context.Enqueue(primitive);
             _dispatcher.Handle(new ChannelBusy(Context.Now, false));
-            Outputs.AddRange(Context.TakeOutputs());
+            Take();
         }
 
         public void Expire(TimerName name, long? at = null)
@@ -359,11 +364,22 @@ public class CasLinkTests
             Run(new TimerExpired(t, name));
         }
 
+        /// <summary>
+        /// Collects the outputs. The SIS soft link timers, which every made link starts (A-0321), are
+        /// left out unless asked for, so CAS tests see only what they test; they still run.
+        /// </summary>
+        private void Take() =>
+            Outputs.AddRange(Context.TakeOutputs().Where(o => _showSisTimers || !IsSisTimer(o)));
+
+        private static bool IsSisTimer(CoreOutput o) =>
+            (o is TimerStart s ? s.Name.Kind : o is TimerCancel c ? c.Name.Kind : (TimerKind?)null)
+                is TimerKind.SisSoftLinkIdle or TimerKind.SisSoftLinkMinHold or TimerKind.SisSoftLinkMax;
+
         private void Run(CoreInput input)
         {
             Outputs.Clear();
             _dispatcher.Handle(input);
-            Outputs.AddRange(Context.TakeOutputs());
+            Take();
         }
     }
 

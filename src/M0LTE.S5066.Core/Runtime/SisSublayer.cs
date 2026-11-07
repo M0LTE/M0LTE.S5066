@@ -26,7 +26,18 @@ namespace M0LTE.S5066.Core.Runtime;
 /// ends the soft link (A-0199). Non-ARQ data needs no soft link (A-0189).
 /// </para>
 /// <para>
-/// Not here yet: soft link timers and closing (P5-2); delivery confirmation and the TTD check on receipt are P6-1; flow control and
+/// Soft link sessions (P5-2): the SIS closes a soft link with C_PHYSICAL_LINK_BREAK and one of the
+/// three reasons of A-0205, and the CAS breaks the physical link (A-0195, A-0196). It closes one that
+/// has had no ARQ U_PDU outstanding and none received for <c>sis.soft_link_idle_ms</c> (A-0011,
+/// A-0013; interp A-0320); one that has run past <c>sis.soft_link_max_ms</c> while U_PDUs for another
+/// node are held off for want of a link (A-0014, A-0015; interp A-0322); and one whose outstanding
+/// U_PDUs are all of lower priority than those held off for another node (A-0198; interp A-0323).
+/// A called node closes nothing on its own until <c>sis.soft_link_min_hold_ms</c> has passed since
+/// the link was made (A-0197). A null setting is derived from the answer wait (interp A-0321). The rejections a
+/// close causes come back with its reason (A-0207, interp A-0324).
+/// </para>
+/// <para>
+/// Not here yet: delivery confirmation and the TTD check on receipt are P6-1; flow control and
 /// management messages are P6-2. The node sends no unprompted keep-alive and never unbind
 /// reason 2 (S-0045), never unbind reasons 1 or 4 (A-0060), and never bind reason 4, having no
 /// exclusive broadcast session (A-0052).
@@ -52,6 +63,9 @@ internal sealed class SisSublayer : ISisSublayer
     private const byte RejectTxModeNotSpecified = 5;
     private const byte RejectBroadcastNotAllowed = 6;
     private const byte RejectNodeNotResponding = 3;
+    private const byte RejectSoftLinkHigherPriority = 9;
+    private const byte RejectSoftLinkShareChannel = 10;
+    private const byte RejectSoftLinkIdle = 11;
     private const byte RejectOther = 15;
 
     // Transmission Mode values (S-0080, S-0152).
@@ -69,13 +83,14 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly SortedDictionary<byte, int> _sapOwner = [];
     private readonly List<Held> _awaitingSoftLink = [];
     private readonly SortedDictionary<uint, SoftLink> _softLinks = new();
+    private readonly SortedDictionary<int, Held> _outstanding = new();
 
     public SisSublayer(CoreContext context) => _context = context;
 
     /// <summary>Accepted ARQ requests waiting for the soft link P4-1 will make, in arrival order.</summary>
     internal IReadOnlyList<CUnidataRequest> AwaitingSoftLink => _awaitingSoftLink.Select(a => a.Request).ToList();
 
-    private enum SoftLink
+    private enum SoftLinkState
     {
         /// <summary>C_PHYSICAL_LINK_MAKE sent, no answer yet (A-0193).</summary>
         Making,
@@ -87,15 +102,50 @@ internal sealed class SisSublayer : ISisSublayer
         Established,
     }
 
-    /// <summary>For tests: the soft link state of a peer, or null when there is none.</summary>
-    internal string? SoftLinkOf(uint peer) => _softLinks.TryGetValue(peer, out SoftLink l) ? l.ToString() : null;
+    /// <summary>For tests: the soft link state of a peer (Closing once the SIS has asked for the break), or null when there is none.</summary>
+    internal string? SoftLinkOf(uint peer) =>
+        !_softLinks.TryGetValue(peer, out SoftLink? l) ? null : l.Closing ? "Closing" : l.State.ToString();
 
+    /// <summary>For tests: the ARQ requests handed to the CAS and not yet confirmed or rejected, in handle order.</summary>
+    internal IReadOnlyList<CUnidataRequest> Outstanding => _outstanding.Values.Select(h => h.Request).ToList();
+
+    /// <summary>A changed soft link time applies from the next start of that timer; running timers keep their deadlines.</summary>
     public void OnConfigChanged(NodeConfig oldConfig, NodeConfig newConfig)
     {
     }
 
-    public void OnTimer(TimerName name) =>
-        throw new InvalidOperationException($"SIS timer {name} expired, but the SIS starts no timers yet (now {_context.Now})");
+    public void OnTimer(TimerName name)
+    {
+        uint peer = name.Peer ?? throw new InvalidOperationException($"SIS timer {name} has no peer");
+        SoftLink link = _softLinks.TryGetValue(peer, out SoftLink? l) && l.State == SoftLinkState.Established && !l.Closing
+            ? l
+            : throw new InvalidOperationException($"SIS timer {name} for a peer with no open soft link (now {_context.Now})");
+        switch (name.Kind)
+        {
+            case TimerKind.SisSoftLinkIdle:
+                OnIdle(peer, link);
+                break;
+            case TimerKind.SisSoftLinkMinHold:
+                // A-0197: the called node may now close on its own: an idle close that waited for the
+                // minimum hold goes ahead, otherwise the link may now be closed for another node.
+                if (link.IdleDue)
+                {
+                    Close(peer, link, SisBreakReason.Idle, 0);
+                }
+                else
+                {
+                    CheckHeldOff();
+                }
+
+                break;
+            case TimerKind.SisSoftLinkMax:
+                link.Overdue = true;   // A-0014: closed as soon as another node waits for a link
+                CheckHeldOff();
+                break;
+            default:
+                throw new InvalidOperationException($"SIS timer {name} expired, but the SIS does not start it (now {_context.Now})");
+        }
+    }
 
     public void OnConnect(int conn)
     {
@@ -141,26 +191,27 @@ internal sealed class SisSublayer : ISisSublayer
     {
         switch (primitive)
         {
-            case CUnidataRequestConfirm:
+            case CUnidataRequestConfirm c:
                 // S_UNIDATA_REQUEST_CONFIRM for node delivery confirmation is P6-1's (A-0094 to
-                // A-0103), with the confirmation records the handle would match. Nothing to do yet.
+                // A-0103). Here the request is no longer outstanding on its soft link (A-0011).
+                Settled(c.Handle);
                 break;
-            case CUnidataRequestRejected:
-                // Only a request that asked for confirmation is answered with S_UNIDATA_REQUEST_REJECTED
-                // (A-0105); non-ARQ requests cannot ask for one here, and the confirmation records
-                // that would match the handle arrive with P6-1 (A-0223, A-0232). So nothing to do yet.
+            case CUnidataRequestRejected j:
+                OnRejected(j);
                 break;
             case CUnidataIndication ind:
                 OnUnidataIndication(ind);
                 break;
             case CPhysicalLinkMade m:
-                OnLinkMade(m.Peer);
+                OnLinkMade(m.Peer, m.Called);
                 break;
             case CPhysicalLinkRejected j:
                 OnLinkRejected(j.Peer, j.Reason);
                 break;
             case CPhysicalLinkBroken b:
-                // A-0199: the soft link ends. Anything the SIS still holds for the peer waits for a new one.
+                // A-0199: the soft link ends, and its timers stop (idle, minimum hold, maximum). Anything
+                // the SIS still holds for the peer waits for a new one.
+                CancelTimers(b.Peer);
                 _softLinks.Remove(b.Peer);
                 if (_awaitingSoftLink.Any(a => a.Request.Dst == b.Peer))
                 {
@@ -338,18 +389,26 @@ internal sealed class SisSublayer : ISisSublayer
             arq ? 0 : mode.MinRetx,              // valid only for non-ARQ (A-0080, A-0081, S-0095)
             SpduCodec.Encode(spdu),              // A-0143 to A-0147
             _context.AllocateHandle());
-        if (arq && _softLinks.TryGetValue(request.Dst, out SoftLink state) && state == SoftLink.Established)
+        var held = new Held(srcSap, request, r.DestSap, r.DestAddress, r.UPdu, mode.Confirm != ConfirmNone);
+        if (arq && _softLinks.TryGetValue(request.Dst, out SoftLink? link) && link.State == SoftLinkState.Established && !link.Closing)
         {
-            _context.Enqueue(request);           // the soft link exists (A-0194, A-0200)
+            HandDown(held);                      // the soft link exists (A-0194, A-0200)
+            UpdateIdle(request.Dst);
+            CheckHeldOff();
         }
         else if (arq)
         {
             // A soft link first (A-0008, A-0188): held, and a physical link asked for unless one is
             // already being made or the SIS is holding off (A-0193, B-0028).
-            _awaitingSoftLink.Add(new Held(srcSap, request, r.DestSap, r.DestAddress, r.UPdu, mode.Confirm != ConfirmNone));
-            if (!_softLinks.ContainsKey(request.Dst))
+            // One the SIS is closing gets a new link once the old one is broken.
+            _awaitingSoftLink.Add(held);
+            if (!_softLinks.TryGetValue(request.Dst, out SoftLink? existing))
             {
                 AskForLink(request.Dst);
+            }
+            else if (existing.State == SoftLinkState.HeldOff)
+            {
+                CheckHeldOff();                  // its priority may now displace another link (interp A-0323)
             }
         }
         else
@@ -370,6 +429,11 @@ internal sealed class SisSublayer : ISisSublayer
     /// </summary>
     private void OnUnidataIndication(CUnidataIndication ind)
     {
+        if (ind.Arq)
+        {
+            Received(ind.Src);
+        }
+
         if (SpduCodec.Decode(ind.SPdu.Span).Value is not SpduData d || !_sapOwner.TryGetValue(d.DstSap, out int conn))
         {
             return;
@@ -387,22 +451,217 @@ internal sealed class SisSublayer : ISisSublayer
 
     private void AskForLink(uint peer)
     {
-        _softLinks[peer] = SoftLink.Making;
+        _softLinks[peer] = new SoftLink(SoftLinkState.Making);
         _context.Enqueue(new CPhysicalLinkMake(peer));
+    }
+
+    /// <summary>Passes an ARQ request to the CAS and keeps it outstanding until it is confirmed or rejected.</summary>
+    private void HandDown(Held h)
+    {
+        _outstanding.Add(h.Request.Handle, h);
+        _context.Enqueue(h.Request);
     }
 
     /// <summary>
     /// C_PHYSICAL_LINK_MADE: the soft link is established on both sides with no SIS exchange
     /// (A-0192, A-0194), and the U_PDUs held for the peer go to the CAS in arrival order (A-0200).
+    /// The session timers start in the order minimum hold (called node only, A-0197), maximum
+    /// (A-0014) and idle (A-0011). A report for a soft link already established changes nothing but
+    /// the release.
     /// </summary>
-    private void OnLinkMade(uint peer)
+    private void OnLinkMade(uint peer, bool called)
     {
-        _softLinks[peer] = SoftLink.Established;
+        if (!_softLinks.TryGetValue(peer, out SoftLink? link) || link.State != SoftLinkState.Established)
+        {
+            link = new SoftLink(SoftLinkState.Established) { Called = called, EstablishedAt = _context.Now };
+            _softLinks[peer] = link;
+            NodeConfig config = _context.Config;
+            if (called && config.SoftLinkMinHoldMs() is long hold and > 0)
+            {
+                _context.Timers.Start(MinHoldTimer(peer), hold);
+            }
+
+            _context.Timers.Start(MaxTimer(peer), config.SoftLinkMaxMs());
+        }
+
         List<Held> release = _awaitingSoftLink.Where(a => a.Request.Dst == peer).ToList();
         _awaitingSoftLink.RemoveAll(a => a.Request.Dst == peer);
         foreach (Held h in release)
         {
-            _context.Enqueue(h.Request);
+            HandDown(h);
+        }
+
+        UpdateIdle(peer);
+        CheckHeldOff();
+    }
+
+    /// <summary>
+    /// C_UNIDATA_REQUEST_REJECTED. One caused by a soft link close of ours carries the reason the
+    /// close gave (A-0207), and the client gets S_UNIDATA_REQUEST_REJECTED with it if it asked for
+    /// confirmation (A-0105, A-0107: reasons 9, 10 and 11), with the whole U_PDU (A-0109 to A-0111).
+    /// Rejections for any other reason are answered by P6-1 (A-0223, A-0232), so nothing is sent for
+    /// them yet.
+    /// </summary>
+    private void OnRejected(CUnidataRequestRejected j)
+    {
+        Held? h = _outstanding.TryGetValue(j.Handle, out Held? found) ? found : null;
+        byte? reason = j.Reason switch
+        {
+            CReason.SoftLinkHigherPriority => RejectSoftLinkHigherPriority,
+            CReason.SoftLinkShareChannel => RejectSoftLinkShareChannel,
+            CReason.SoftLinkIdle => RejectSoftLinkIdle,
+            _ => null,
+        };
+        if (h is not null && h.Confirm && reason is byte r && _sapOwner.TryGetValue(h.Sap, out int conn))
+        {
+            Send(conn, new SisUnidataRequestRejected(r, h.DestSap, h.DestAddress, h.UPdu));
+        }
+
+        Settled(j.Handle);
+    }
+
+    /// <summary>An outstanding ARQ request was confirmed or rejected: its soft link may now be idle, and its priority no longer counts.</summary>
+    private void Settled(int handle)
+    {
+        if (_outstanding.Remove(handle, out Held? h))
+        {
+            UpdateIdle(h.Request.Dst);
+            CheckHeldOff();
+        }
+    }
+
+    /// <summary>
+    /// An ARQ C_PDU received from the peer is traffic on the soft link: an idle wait that is running
+    /// starts again, and an idle close waiting for the minimum hold is off (interp A-0320).
+    /// </summary>
+    private void Received(uint peer)
+    {
+        if (_softLinks.TryGetValue(peer, out SoftLink? link) && link.State == SoftLinkState.Established && !link.Closing
+            && (_context.Timers.IsRunning(IdleTimer(peer)) || link.IdleDue))
+        {
+            link.IdleDue = false;
+            StartIdle(peer, link);
+        }
+    }
+
+    /// <summary>
+    /// A-0011, interp A-0320: an open soft link with no ARQ request outstanding runs
+    /// <c>sis.soft_link_idle/&lt;peer&gt;</c>; one with any outstanding does not. The time is derived when the
+    /// setting is null (interp A-0321).
+    /// </summary>
+    private void UpdateIdle(uint peer)
+    {
+        if (!_softLinks.TryGetValue(peer, out SoftLink? link)
+            || link.State != SoftLinkState.Established || link.Closing)
+        {
+            return;
+        }
+
+        if (_outstanding.Values.Any(h => h.Request.Dst == peer))
+        {
+            link.IdleDue = false;
+            _context.Timers.Cancel(IdleTimer(peer));
+        }
+        else if (!_context.Timers.IsRunning(IdleTimer(peer)) && !link.IdleDue)
+        {
+            StartIdle(peer, link);
+        }
+    }
+
+    /// <summary>Starts or restarts the idle wait; a zero wait (A-0013) expires at once (core-architecture.md 3, zero-duration rule).</summary>
+    private void StartIdle(uint peer, SoftLink link)
+    {
+        long ms = _context.Config.SoftLinkIdleMs();
+        if (ms == 0)
+        {
+            _context.Timers.Cancel(IdleTimer(peer));
+            OnIdle(peer, link);
+            return;
+        }
+
+        _context.Timers.Start(IdleTimer(peer), ms);
+    }
+
+    /// <summary>The idle wait is over (A-0011): close, unless a called node's minimum hold is still running, when the close waits for it (A-0197).</summary>
+    private void OnIdle(uint peer, SoftLink link)
+    {
+        if (link.Called && _context.Timers.IsRunning(MinHoldTimer(peer)))
+        {
+            link.IdleDue = true;
+            return;
+        }
+
+        Close(peer, link, SisBreakReason.Idle, 0);
+    }
+
+    /// <summary>
+    /// Closes an open soft link (A-0196, A-0205): the session timers stop and C_PHYSICAL_LINK_BREAK
+    /// goes to the CAS with the reason, and for Higher Priority the priority of the traffic waiting
+    /// (B-0172). The soft link stays until the CAS reports it broken (A-0199).
+    /// </summary>
+    private void Close(uint peer, SoftLink link, SisBreakReason reason, int priority)
+    {
+        link.Closing = true;
+        link.IdleDue = false;
+        CancelTimers(peer);
+        _context.Enqueue(new CPhysicalLinkBreak(peer, reason, priority));
+    }
+
+    private void CancelTimers(uint peer)
+    {
+        _context.Timers.Cancel(IdleTimer(peer));
+        _context.Timers.Cancel(MinHoldTimer(peer));
+        _context.Timers.Cancel(MaxTimer(peer));
+    }
+
+    /// <summary>
+    /// U_PDUs held off for want of a link (B-0028) may make the SIS close another soft link (A-0014,
+    /// A-0198). Each held-off peer with U_PDUs waiting needs one link closed, less the soft links the
+    /// SIS is already closing; the peers are served highest waiting priority first, then by address.
+    /// For each, an open soft link that may be closed (not a called node's within its minimum hold,
+    /// A-0197) is chosen: first one whose outstanding requests are all of lower priority than the
+    /// highest waiting, closed with Higher Priority (interp A-0323), the lowest such priority first;
+    /// otherwise one past <c>sis.soft_link_max_ms</c>, closed with Share Channel (interp A-0322). Ties
+    /// go to the earliest made, then the lowest address. An open link with nothing outstanding is left
+    /// to its idle wait.
+    /// </summary>
+    private void CheckHeldOff()
+    {
+        var waiting = _softLinks
+            .Where(kv => kv.Value.State == SoftLinkState.HeldOff)
+            .Select(kv => (Peer: kv.Key, Priority: _awaitingSoftLink.Where(a => a.Request.Dst == kv.Key).Select(a => a.Request.Priority).DefaultIfEmpty(-1).Max()))
+            .Where(w => w.Priority >= 0)
+            .OrderByDescending(w => w.Priority).ThenBy(w => w.Peer)
+            .ToList();
+        int need = waiting.Count - _softLinks.Values.Count(l => l.Closing);
+        foreach ((uint _, int priority) in waiting)
+        {
+            if (need <= 0)
+            {
+                return;
+            }
+
+            var open = _softLinks
+                .Where(kv => kv.Value.State == SoftLinkState.Established && !kv.Value.Closing
+                             && !(kv.Value.Called && _context.Timers.IsRunning(MinHoldTimer(kv.Key))))
+                .Select(kv => (Peer: kv.Key, Link: kv.Value,
+                               Top: _outstanding.Values.Where(h => h.Request.Dst == kv.Key).Select(h => h.Request.Priority).DefaultIfEmpty(-1).Max()))
+                .ToList();
+            var lower = open.Where(o => o.Top >= 0 && o.Top < priority)
+                .OrderBy(o => o.Top).ThenBy(o => o.Link.EstablishedAt).ThenBy(o => o.Peer).ToList();
+            if (lower.Count > 0)
+            {
+                Close(lower[0].Peer, lower[0].Link, SisBreakReason.HigherPriorityLink, priority);
+                need--;
+                continue;
+            }
+
+            var overdue = open.Where(o => o.Link.Overdue).OrderBy(o => o.Link.EstablishedAt).ThenBy(o => o.Peer).ToList();
+            if (overdue.Count > 0)
+            {
+                Close(overdue[0].Peer, overdue[0].Link, SisBreakReason.ShareChannel, 0);
+                need--;
+            }
         }
     }
 
@@ -417,7 +676,8 @@ internal sealed class SisSublayer : ISisSublayer
     {
         if (reason is LinkReason.MaxLinksInUse or LinkReason.PeerTooManyLinks)
         {
-            _softLinks[peer] = SoftLink.HeldOff;
+            _softLinks[peer] = new SoftLink(SoftLinkState.HeldOff);
+            CheckHeldOff();
             return;
         }
 
@@ -439,7 +699,7 @@ internal sealed class SisSublayer : ISisSublayer
     /// <summary>B-0412: every held-off peer other than the one just closed asks again, in address order.</summary>
     private void RetryHeldOff(uint closed)
     {
-        List<uint> heldOff = _softLinks.Where(kv => kv.Value == SoftLink.HeldOff && kv.Key != closed).Select(kv => kv.Key).ToList();
+        List<uint> heldOff = _softLinks.Where(kv => kv.Value.State == SoftLinkState.HeldOff && kv.Key != closed).Select(kv => kv.Key).ToList();
         foreach (uint peer in heldOff)
         {
             AskForLink(peer);
@@ -464,11 +724,45 @@ internal sealed class SisSublayer : ISisSublayer
         {
             _sapOwner.Remove(sap);
             _awaitingSoftLink.RemoveAll(a => a.Sap == sap);
+
+            // Requests already handed down stay outstanding on their soft link, but their client is
+            // gone, so a later rejection is reported to nobody, even a new client of the SAP (A-0260).
+            foreach (int handle in _outstanding.Where(kv => kv.Value.Sap == sap).Select(kv => kv.Key).ToList())
+            {
+                _outstanding[handle] = _outstanding[handle] with { Confirm = false };
+            }
         }
     }
 
     /// <summary>An ARQ U_PDU held for a soft link, with what a rejection to its client needs (A-0109 to A-0111).</summary>
     private sealed record Held(byte Sap, CUnidataRequest Request, byte DestSap, SisAddress DestAddress, ReadOnlyMemory<byte> UPdu, bool Confirm);
+
+    private static TimerName IdleTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkIdle, peer);
+
+    private static TimerName MinHoldTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkMinHold, peer);
+
+    private static TimerName MaxTimer(uint peer) => TimerName.ForPeer(TimerKind.SisSoftLinkMax, peer);
+
+    /// <summary>The SIS's record of a soft link with one peer, made, being made or held off.</summary>
+    private sealed class SoftLink(SoftLinkState state)
+    {
+        public SoftLinkState State { get; } = state;
+
+        /// <summary>This node is the called node of the link (A-0197).</summary>
+        public bool Called { get; init; }
+
+        /// <summary>When the soft link was established, for the order in which links are closed.</summary>
+        public long EstablishedAt { get; init; }
+
+        /// <summary>The SIS has asked for the link to be broken (A-0196).</summary>
+        public bool Closing { get; set; }
+
+        /// <summary>The idle wait ended during a called node's minimum hold, so the close waits for it (A-0197).</summary>
+        public bool IdleDue { get; set; }
+
+        /// <summary><c>sis.soft_link_max_ms</c> has passed since the link was made (A-0014).</summary>
+        public bool Overdue { get; set; }
+    }
 
     private sealed class Connection
     {

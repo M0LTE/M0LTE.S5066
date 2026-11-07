@@ -29,6 +29,15 @@ internal enum CReason
 
     /// <summary>The DTS refused an ARQ C_PDU with no connection to the peer (C-0731), or rejected it when the connection ended (C-0652).</summary>
     NoConnection,
+
+    /// <summary>Rejected when the connection ended because the SIS closed the soft link for higher priority traffic (A-0205, A-0207); the SIS reason 9.</summary>
+    SoftLinkHigherPriority,
+
+    /// <summary>Rejected when the connection ended because the SIS closed the soft link to share the channel (A-0205, A-0207); the SIS reason 10.</summary>
+    SoftLinkShareChannel,
+
+    /// <summary>Rejected when the connection ended because the SIS closed the soft link as idle (A-0205, A-0207); the SIS reason 11.</summary>
+    SoftLinkIdle,
 }
 
 /// <summary>D_EXPEDITED_UNIDATA_REQUEST, CAS to DTS: one C_PDU for a peer with expedited delivery (C-0025, C-0029).</summary>

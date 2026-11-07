@@ -151,6 +151,8 @@ public class ArqResetTests(ITestOutputHelper output)
             ["link_request_retries"] = 10,
             ["first_data_timeout_ms"] = 10_000_000,
         },
+        // The link must stay up for the whole run: no idle close or maximum session (A-0321 derives them when unset).
+        ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 1_000_000_000, ["soft_link_max_ms"] = 1_000_000_000 },
         ["dts"] = new JsonObject { ["max_segment_size"] = 40, ["max_window"] = 6, ["max_transmission_ms"] = 12_000, ["ack_wait_ms"] = 20_000 },
     };
 }
