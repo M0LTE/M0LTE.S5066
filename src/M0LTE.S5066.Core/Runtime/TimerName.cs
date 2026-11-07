@@ -32,6 +32,9 @@ public enum TimerKind
     /// <summary>dts.reception_window.</summary>
     DtsReceptionWindow,
 
+    /// <summary>dts.reset_wait/&lt;peer&gt; (C-1172).</summary>
+    DtsResetWait,
+
     /// <summary>cas.link_request/&lt;peer&gt;.</summary>
     CasLinkRequest,
 
@@ -183,7 +186,8 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
     internal Sublayer Owner => Kind switch
     {
         TimerKind.CsmaLbtWait or TimerKind.CsmaContWait or TimerKind.CsmaVdcdEnd => Sublayer.Mac,
-        TimerKind.DtsAckWait or TimerKind.DtsManagementWait or TimerKind.DtsTtd or TimerKind.DtsReceptionWindow => Sublayer.Dts,
+        TimerKind.DtsAckWait or TimerKind.DtsManagementWait or TimerKind.DtsTtd or TimerKind.DtsReceptionWindow
+            or TimerKind.DtsResetWait => Sublayer.Dts,
         TimerKind.CasLinkRequest or TimerKind.CasFirstData or TimerKind.CasBreak or TimerKind.CasCleanClose => Sublayer.Cas,
         TimerKind.SisConfirmWait or TimerKind.SisTtd or TimerKind.SisSoftLinkIdle or TimerKind.SisSoftLinkMinHold
             or TimerKind.SisSoftLinkMax => Sublayer.Sis,
@@ -209,7 +213,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
 
     internal static TimerQualifier Qualifier(TimerKind kind) => kind switch
     {
-        TimerKind.DtsAckWait or TimerKind.DtsManagementWait or TimerKind.CasLinkRequest or TimerKind.CasFirstData
+        TimerKind.DtsAckWait or TimerKind.DtsManagementWait or TimerKind.DtsResetWait or TimerKind.CasLinkRequest or TimerKind.CasFirstData
             or TimerKind.CasBreak or TimerKind.CasCleanClose or TimerKind.SisSoftLinkIdle
             or TimerKind.SisSoftLinkMinHold or TimerKind.SisSoftLinkMax => TimerQualifier.Peer,
         _ => TimerQualifier.None,
@@ -225,6 +229,7 @@ public readonly record struct TimerName(TimerKind Kind, uint? Peer = null, int? 
         TimerKind.DtsManagementWait => "dts.management_wait",
         TimerKind.DtsTtd => "dts.ttd",
         TimerKind.DtsReceptionWindow => "dts.reception_window",
+        TimerKind.DtsResetWait => "dts.reset_wait",
         TimerKind.CasLinkRequest => "cas.link_request",
         TimerKind.CasFirstData => "cas.first_data",
         TimerKind.CasBreak => "cas.break",
