@@ -82,15 +82,18 @@ internal sealed class DtsSublayer : IDtsSublayer
 
     /// <summary>
     /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed
-    /// to the CAS, in placement order (C-1100). First, the ARQ bookkeeping of core-architecture.md 5.7:
+    /// to the CAS, in placement order (C-1100). First, a peer it carried a D_PDU to that has been silent
+    /// too long loses its connection (C-1250). Then the ARQ bookkeeping of core-architecture.md 5.7:
     /// <c>dts.ack_wait</c> for each peer the transmission carried ARQ data to (C-1120), then
-    /// <c>dts.reset_wait</c> for each peer it carried a RESET/WIN-RESYNC command to (C-1172). Last,
-    /// closing links that are now clean are reported (B-0422).
+    /// <c>dts.reset_wait</c> for each peer it carried a RESET/WIN-RESYNC command to (C-1172), and a
+    /// peer newly awaited has its silence timed from now (C-1250). Last, closing links that are now clean are reported (B-0422).
     /// </summary>
     public void OnTransmitDone()
     {
+        _peers.CheckSilence(_tx.TakeSentPeers());   // C-1250: before any wait starts
         _tx.OnTransmitDone();
         _peers.OnTransmitDone();
+        _peers.OnWaitsStarted();   // C-1250
         foreach (int handle in _tx.TakeSentExpedited())
         {
             _context.Enqueue(new DExpeditedUnidataRequestConfirm(handle));
