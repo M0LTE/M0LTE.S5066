@@ -105,7 +105,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
     /// The runs above must exercise what they claim to: across the seeds, soft links held off for
     /// want of a link (B-0028), closed when idle (A-0011), to share the channel (A-0014, interp
     /// A-0322) and for higher priority (A-0198, interp A-0323), links made again and again, and
-    /// collisions that CSMA allows.
+    /// collisions that CSMA allows, and contention rounds won (K-0090) and lost to a busy channel (K-0089).
     /// </summary>
     [Fact]
     public void The_runs_exercise_every_feature()
@@ -123,7 +123,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
         }
 
         output.WriteLine(string.Join(", ", totals.Select(kv => $"{kv.Value} {kv.Key}")));
-        foreach (string k in new[] { "links made", "held off", "idle closes", "share channel closes", "higher priority closes", "collisions", "resends" })
+        foreach (string k in new[] { "links made", "held off", "idle closes", "share channel closes", "higher priority closes", "collisions", "contention rounds won", "contention rounds lost", "resends" })
         {
             totals[k].Should().BePositive(k);
         }
@@ -409,7 +409,10 @@ public class ThreeNodeTests(ITestOutputHelper output)
         }
 
         int Peer(uint address) => Enumerable.Range(0, 3).Single(n => sim.AddressOf(n) == address);
-        bool Stale(int a, int b, long t) => relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.From <= t);
+        // A pair is stale from the re-link until the end that held the old link leaves linked (plus a
+        // second for the host latency of what it passed up meanwhile), and stale at the end if it never did.
+        bool Stale(int a, int b, long t) => relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.From <= t && (r.To == long.MaxValue || t <= r.To + 1_000));
+        bool StaleAtEnd(int a, int b) => relinks.Any(r => ((r.A == a && r.B == b) || (r.A == b && r.B == a)) && r.To == long.MaxValue);
         int knownStale = 0;
         foreach ((int a, int b, long t, string text) in windowFaults)
         {
@@ -464,7 +467,8 @@ public class ThreeNodeTests(ITestOutputHelper output)
         {
             string key = Convert.ToHexString(m.Payload);
             string silent = string.Join(",", parts[m.Src].Rejected.Where(r => r.UPdu == key).Select(r => $"{r.Reason}@{r.T}"));
-            string confirmed = string.Join(",", parts[m.Src].Confirmed.Where(r => r.UPdu == key).Select(r => r.T));
+            var confirmedAt = parts[m.Src].Confirmed.Where(r => r.UPdu == key).Select(r => r.T).ToList();
+            string confirmed = string.Join(",", confirmedAt);
             bool arrived = parts[m.Dst].Arrived.Any(r => r.UPdu == key);
             if (!strict && confirmed.Length == 0 && StuckHeldOff(m.Src, sim.AddressOf(m.Dst))
                 && parts[m.Src].Sis.AwaitingSoftLink.Any(r => r.Dst == sim.AddressOf(m.Dst) && SpduCodec.Decode(r.SPdu.Span).Value is SpduData sd && Convert.ToHexString(sd.UPdu.Span) == key))
@@ -472,13 +476,16 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 continue;   // still held in the SIS, issue #73 (counted with the node above)
             }
 
-            if (!strict && Stale(m.Src, m.Dst, long.MaxValue)
+            if (!strict && StaleAtEnd(m.Src, m.Dst)
                 && parts[m.Src].Sis.Outstanding.Any(r => SpduCodec.Decode(r.SPdu.Span).Value is SpduData sd && Convert.ToHexString(sd.UPdu.Span) == key))
             {
                 continue;   // still outstanding on a link left stale by issue #70 (counted with the re-link)
             }
 
-            if (!strict && confirmed.Length > 0 && !arrived && (inOrder || Stale(m.Src, m.Dst, long.MaxValue)))
+            // Issue #71 needs the receiver's link with the sender to have ended after the confirmation;
+            // issue #70 needs the confirmation to fall while the pair was stale.
+            bool linkEndedAfter = confirmedAt.Count > 0 && sim.LinkStates.Any(l => l.Node == m.Dst && l.Peer == sim.AddressOf(m.Src) && l.State == LinkStateName.Unlinked && l.T >= confirmedAt[0]);
+            if (!strict && !arrived && ((inOrder && linkEndedAfter) || confirmedAt.Any(t => Stale(m.Src, m.Dst, t))))
             {
                 // Confirmed, never passed up: held for in-order delivery when the link ended (issue
                 // #71), or acknowledged as a copy across a stale re-link (issue #70).
@@ -563,7 +570,7 @@ public class ThreeNodeTests(ITestOutputHelper output)
         {
             for (int b = 0; b < 3; b++)
             {
-                if (a != b && LastState(sim, a, sim.AddressOf(b)) is LinkStateName s and not LinkStateName.Unlinked && !(!strict && Stale(a, b, long.MaxValue)))
+                if (a != b && LastState(sim, a, sim.AddressOf(b)) is LinkStateName s and not LinkStateName.Unlinked && !(!strict && StaleAtEnd(a, b)))
                 {
                     failures.Add($"node {a} ends {s} with node {b}");
                 }
@@ -575,12 +582,12 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 stuckHeldOff++;   // issue #73
             }
             else if ((parts[a].Sis.Outstanding.Count > 0 || parts[a].Sis.AwaitingSoftLink.Count > 0)
-                     && !(!strict && parts[a].Sis.Outstanding.Concat(parts[a].Sis.AwaitingSoftLink).All(r => Stale(a, Peer(r.Dst), long.MaxValue))))
+                     && !(!strict && parts[a].Sis.Outstanding.Concat(parts[a].Sis.AwaitingSoftLink).All(r => StaleAtEnd(a, Peer(r.Dst)))))
             {
                 failures.Add($"node {a} SIS ends with {parts[a].Sis.Outstanding.Count} outstanding and {parts[a].Sis.AwaitingSoftLink.Count} awaiting a soft link");
             }
 
-            if (parts[a].Dts.HeldArq.Count > 0 && !(!strict && parts[a].Dts.HeldArq.All(r => Stale(a, Peer(r.Dst), long.MaxValue))))
+            if (parts[a].Dts.HeldArq.Count > 0 && !(!strict && parts[a].Dts.HeldArq.All(r => StaleAtEnd(a, Peer(r.Dst)))))
             {
                 failures.Add($"node {a} DTS ends holding {parts[a].Dts.HeldArq.Count} ARQ C_PDUs");
             }
@@ -596,6 +603,8 @@ public class ThreeNodeTests(ITestOutputHelper output)
             ["connections lost"] = parts.Sum(p => p.Lost),
             ["calls failed"] = parts.Sum(p => p.Failed),
             ["collisions"] = sim.Collisions,
+            ["contention rounds won"] = sim.Log.Count(l => l.EndsWith(" in timer_expired csma.cont_wait", StringComparison.Ordinal)),
+            ["contention rounds lost"] = sim.Log.Count(l => l.EndsWith(" out timer_cancel csma.cont_wait", StringComparison.Ordinal)),
             ["resends"] = msgs.Sum(m => m.Attempts - 1),
             ["resets"] = sim.Bursts.Sum(x => x.Dpdus.Count(d => d.Pdu is ResetWinResync or Ed3ResetWinResync)),
             ["probes"] = probes,
@@ -656,6 +665,11 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 ["link_request_timeout_ms"] = 30_000,
                 ["link_request_retries"] = 10,
                 ["break_retries"] = 3,
+                // Test departure: the first-data wait (B-0215, B-0406) is made longer than the run. With
+                // the derived value a Called node whose first C_PDU is held for in-order delivery, or
+                // which has only sent data, aborts a link in use and leaves it half-open, the main
+                // trigger of issues #70 and #71; that is shown in the issues, and this keeps the runs on
+                // the other paths. Remove when #70 is fixed.
                 ["first_data_timeout_ms"] = 10_000_000,
             },
             ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 60_000, ["soft_link_min_hold_ms"] = 30_000, ["soft_link_max_ms"] = 150_000 },
