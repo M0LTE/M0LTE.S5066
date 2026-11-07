@@ -297,7 +297,7 @@ public class CasLinkTests
         }
     }
 
-    private sealed class Rig
+    internal sealed class Rig
     {
         private readonly Dispatcher _dispatcher;
         private bool _bound;

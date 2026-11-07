@@ -296,6 +296,17 @@ internal sealed class ArqLink
     /// </summary>
     public bool Suspended { get; set; }
 
+    // ---- clean close (B-0236 to B-0254; interp B-0421) ----
+
+    /// <summary>The policy of a clean close in progress on this link, or null when none was asked for (B-0241, B-0245 to B-0253).</summary>
+    public ClosePolicy? Close { get; set; }
+
+    /// <summary>The handle of the PHYSICAL LINK BREAK REQUEST queued for the close, exempt from <see cref="Close"/> (B-0242, B-0312).</summary>
+    public int? CloseExemptHandle { get; set; }
+
+    /// <summary>Clean close state has been reported to the CAS (once per close, B-0243).</summary>
+    public bool CleanReported { get; set; }
+
     /// <summary>
     /// The destination-node tests on a DATA-ONLY or DATA-ACK from the peer, before it changes any
     /// window edge (C-0793, C-1180), each an arc on the FSN circle (C-0786) with the maximum window
