@@ -141,6 +141,10 @@ internal sealed class SisSublayer : ISisSublayer
     {
         switch (primitive)
         {
+            case CUnidataRequestConfirm:
+                // S_UNIDATA_REQUEST_CONFIRM for node delivery confirmation is P6-1's (A-0094 to
+                // A-0103), with the confirmation records the handle would match. Nothing to do yet.
+                break;
             case CUnidataRequestRejected:
                 // Only a request that asked for confirmation is answered with S_UNIDATA_REQUEST_REJECTED
                 // (A-0105); non-ARQ requests cannot ask for one here, and the confirmation records

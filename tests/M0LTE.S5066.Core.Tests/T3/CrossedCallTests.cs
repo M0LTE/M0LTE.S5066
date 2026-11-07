@@ -149,5 +149,6 @@ public class CrossedCallTests(ITestOutputHelper output)
             ["link_request_retries"] = 3,
             ["first_data_timeout_ms"] = 2_000_000,
         },
+        ["dts"] = new JsonObject { ["ack_wait_ms"] = 120_000 },
     };
 }

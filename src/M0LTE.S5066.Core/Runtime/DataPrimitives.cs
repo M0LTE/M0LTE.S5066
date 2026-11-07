@@ -49,3 +49,14 @@ internal sealed record DUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, int 
 /// <param name="Arq">True when received by ARQ.</param>
 /// <param name="CPdu">The C_PDU.</param>
 internal sealed record DUnidataIndication(uint Src, uint Dst, bool DstIsGroup, bool Arq, ReadOnlyMemory<byte> CPdu) : ToCas;
+
+/// <summary>
+/// D_UNIDATA_REQUEST_CONFIRM, DTS to CAS: every D_PDU of the ARQ C_PDU named by the handle has been
+/// acknowledged by the peer (Table C-1; C-0679, C-0680, C-1130).
+/// </summary>
+/// <param name="Handle">The request handle.</param>
+internal sealed record DUnidataRequestConfirm(int Handle) : ToCas;
+
+/// <summary>C_UNIDATA_REQUEST_CONFIRM, CAS to SIS: the request named by the handle was delivered (Table B-1, B-0018).</summary>
+/// <param name="Handle">The request handle.</param>
+internal sealed record CUnidataRequestConfirm(int Handle) : ToSis;

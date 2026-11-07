@@ -222,20 +222,21 @@ internal sealed class DtsReceiver
 
     /// <summary>
     /// A whole D_PDU. A failed data CRC means discard (C-0836): we run no non-ARQ with errors
-    /// service, so this applies to every type that carries one (C-0839). The rest go to the state
-    /// machine (C-0838).
+    /// service, so this applies to every type that carries one (C-0839), except a DROP PDU, which
+    /// carries no data and is acknowledged whatever its data CRC (C-0204, C-0217, C-1125). The rest
+    /// go to the state machine (C-0838).
     /// </summary>
     private void Deliver(Dpdu pdu)
     {
         bool dataOk = pdu switch
         {
-            Ed3DataOnly p => p.SegmentCrcOk,
-            Ed3DataAck p => p.SegmentCrcOk,
+            Ed3DataOnly p => p.SegmentCrcOk || p.Flags.DropCPdu,
+            Ed3DataAck p => p.SegmentCrcOk || p.Flags.DropCPdu,
             ExpeditedDataOnly p => p.SegmentCrcOk,
             NonArqData p => p.SegmentCrcOk,
             ExpeditedNonArqData p => p.SegmentCrcOk,
-            DataOnly p => p.SegmentCrcOk,
-            DataAck p => p.SegmentCrcOk,
+            DataOnly p => p.SegmentCrcOk || p.Flags.DropCPdu,
+            DataAck p => p.SegmentCrcOk || p.Flags.DropCPdu,
             AckOnly p => p.AckDataCrcOk != false,
             _ => true,
         };

@@ -75,8 +75,23 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
 /// dts.max_transmission_ms: the configured maximum transmission length, 1 to 127500 ms
 /// (K-0094, K-0095). Never applied so as to block a single D_PDU (C-0551, C-0878).
 /// </param>
-public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs)
+/// <param name="MaxWindow">
+/// dts.max_window: the maximum allowable transmit window size, 1 to 32768 D_PDUs for the 16-bit
+/// family (C-0772, C-0773, C-0774). Read whenever a new D_PDU is placed (C-0775).
+/// </param>
+/// <param name="AckWaitMs">
+/// dts.ack_wait_ms: how long after the end of a transmission carrying ARQ data to a peer the DTS
+/// waits for an acknowledgement before it treats the unacknowledged D_PDUs as failed; no default
+/// (C-0911, C-1120). Null until configured; read when <c>dts.ack_wait</c> starts.
+/// </param>
+public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs, int MaxWindow = DtsConfig.MaxWindowLimit, int? AckWaitMs = null)
 {
+    /// <summary>The maximum window size of the 16-bit family (C-0771).</summary>
+    public const int MaxWindowLimit = 32768;
+
+    /// <summary>dts.ack_wait_ms, or throws when unset.</summary>
+    public int RequireAckWaitMs() => AckWaitMs ?? throw new MissingSettingException("dts.ack_wait_ms");
+
     /// <summary>The largest segment size the standard allows (C-0503, C-0523).</summary>
     public const int MaxSegmentSizeLimit = 1023;
 

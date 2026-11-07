@@ -40,6 +40,9 @@ internal sealed class DtsSublayer : IDtsSublayer
             case TimerKind.DtsTtd:
                 _tx.OnTtdTimer();   // C-0857, C-0864, C-1050
                 break;
+            case TimerKind.DtsAckWait:
+                _tx.OnAckWaitTimer(name.Peer!.Value);   // C-0911, C-1120
+                break;
             case TimerKind.DtsReceptionWindow:
                 _peers.OnReceptionWindowTimer();
                 break;
@@ -62,10 +65,12 @@ internal sealed class DtsSublayer : IDtsSublayer
 
     /// <summary>
     /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed
-    /// to the CAS, in placement order (C-1100). The ARQ bookkeeping of core-architecture.md 5.7 is P4-2's.
+    /// to the CAS, in placement order (C-1100). First, the ARQ bookkeeping of core-architecture.md 5.7:
+    /// <c>dts.ack_wait</c> for each peer the transmission carried ARQ data to (C-1120).
     /// </summary>
     public void OnTransmitDone()
     {
+        _tx.OnTransmitDone();
         foreach (int handle in _tx.TakeSentExpedited())
         {
             _context.Enqueue(new DExpeditedUnidataRequestConfirm(handle));
@@ -80,7 +85,8 @@ internal sealed class DtsSublayer : IDtsSublayer
                 _tx.Add(r);
                 break;
             case DUnidataRequest r when _peers.IsConnected(r.Dst):
-                _tx.AddArq(r);   // C-0653; held until P4-2 places ARQ data
+                _peers.OnArqRequest(r.Dst);   // C-0653, C-0673
+                _tx.AddArq(r);
                 break;
             case DUnidataRequest r:
                 // An UNCONNECTED state rejects ARQ requests (C-0573, C-0593, C-0613, C-0633; C-0731).
