@@ -178,6 +178,55 @@ public class DtsPeersTests
         return expedited ? new ExpeditedNonArqData(h, f, seg, true) : new NonArqData(h, f, seg, true);
     }
 
+    [Fact]
+    public void An_ed3_family_dpdu_on_a_16_bit_link_draws_warning_3()
+    {
+        // C-0763, C-0391, interp C-1192: the families are never mixed on a link, so a type 0 on a
+        // 16-bit link is not used, changes no state and draws WARNING reason 3 naming type 0.
+        var r = new Rig();
+        r.Peers.OnConnectionMade(new DConnectionMade(X, true, false));
+        r.Peers.OnDpdu(new Ed3DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(true, true, false, false, true, true), 0, new Octets([1]), true));
+        r.Take().Should().ContainSingle().Which.Should().Be(new DWarningTransmitted(X, 0, 3));
+        r.Tx.PendingControl.Should().ContainSingle().Which.Should().Match<WarningItem>(w => w.ReceivedFrameType == 0 && w.Reason == 3);
+        r.Tx.LinkOf(X)!.RxLwe.Should().Be(0);
+        r.Peers.StateOf(X).Should().Be(DtsPeerState.IdleConnected);
+    }
+
+    [Fact]
+    public void Ed3_data_on_an_8_bit_link_is_delivered_and_owes_an_ed3_acknowledgement()
+    {
+        // C-0658, C-0730, C-1190: a type 0 on a link with the 8-bit family is processed as a DATA-ONLY.
+        var r = new Rig();
+        r.Peers.OnConnectionMade(new DConnectionMade(X, false, true));
+        r.Peers.OnDpdu(new Ed3DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(true, true, false, false, true, true), 0, new Octets([7]), true));
+        r.Take().Should().ContainSingle().Which.As<DUnidataIndication>().CPdu.ToArray().Should().Equal(7);
+        ArqLink link = r.Tx.LinkOf(X)!;
+        (link.ShortFamily, link.RxLwe, link.AckOwed).Should().Be((true, 1, true));
+        r.Peers.StateOf(X).Should().Be(DtsPeerState.DataConnected);
+    }
+
+    [Fact]
+    public void A_full_reset_on_an_8_bit_link_is_answered_with_a_type_3()
+    {
+        // C-0251, C-0730, C-0811 to C-0818: the FULL RESET CMD comes as a type 3 and the FULL RESET ACK goes as one.
+        var r = new Rig();
+        r.Peers.OnConnectionMade(new DConnectionMade(X, false, true));
+        r.Peers.OnDpdu(new Ed3ResetWinResync(new DpduHeader(0, 10, 3, Us, X), new ResetFlags(true, false, false, false), 0, 5));
+        ControlItem ack = r.Tx.PendingControl.Should().ContainSingle().Which;
+        ack.Build(new DpduHeader(0, 0, 3, X, Us)).Should().Be(new Ed3ResetWinResync(new DpduHeader(0, 0, 3, X, Us), new ResetFlags(false, false, false, true), 0, 0));
+    }
+
+    [Fact]
+    public void A_16_bit_reset_on_an_8_bit_link_draws_warning_3()
+    {
+        // C-0763, interp C-1192: a type 12 from an Ed4 peer on a Short link.
+        var r = new Rig();
+        r.Peers.OnConnectionMade(new DConnectionMade(X, true, true));
+        r.Peers.OnDpdu(new ResetWinResync(new DpduHeader(0, 10, 3, Us, X), new ResetFlags(true, false, false, false), 0, 5));
+        r.Take().Should().ContainSingle().Which.Should().Be(new DWarningTransmitted(X, 12, 3));
+        r.Tx.PendingControl.Should().ContainSingle().Which.Should().BeOfType<WarningItem>();
+    }
+
     private sealed class Rig
     {
         private readonly CoreContext _context;

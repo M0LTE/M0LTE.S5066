@@ -80,7 +80,16 @@ internal interface ITransmissionSource
 /// partly completed C_PDUs (<see cref="ResetArq"/>).
 /// EXPEDITED-ACK-ONLY (type 5, P4-6) is a control item after RESET/WIN-RESYNC (C-1211); D_PDU types a
 /// peer's state may not be sent are held per peer until the exchange that holds them ends (C-1215).
-/// Not here yet: the 8-bit family (P4-5).
+/// </para>
+/// <para>
+/// The 8-bit family (P4-5): on a link negotiated Short, or with an Ed3 peer (B-0141, B-0232), the
+/// same machine sends types 0, 1, 2 and 3 instead of 9, 10, 11 and 12, with FSNs modulo 256 and at
+/// most 128 D_PDUs outstanding (C-0166, C-0168, C-0190, C-0199, C-0730, C-0763, C-0771). Its
+/// acknowledgement is a SELECTIVE ACKS bitmap of at most 16 bytes with no encoding, offset or length
+/// field, so it is always one ACK-ONLY and always merges into a DATA-ACK (C-0194, C-0200, C-0236,
+/// C-0245, C-1190). The fill, block alignment and PADDING rules follow the peer's edition, not the
+/// family: towards an Ed3 peer no PADDING and no block alignment (C-0367, C-0554, C-0870), towards an
+/// Ed4 peer on a Short link both as for the 16-bit family (C-0553, C-0871, C-1191).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -182,7 +191,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// An ARQ D_UNIDATA_REQUEST for a peer with a connection (C-0653, C-0673): held whole with its
     /// TTD, so <c>dts.ttd</c> covers it (C-0857, C-1050), and placed by the planner when the peer's
-    /// connection uses the 16-bit family. On a link with the 8-bit family it stays held (P4-5).
+    /// connection exists, with either family (C-0653, C-0673, C-0730).
     /// </summary>
     public void AddArq(DUnidataRequest r)
     {
@@ -197,16 +206,16 @@ internal sealed class TransmitQueue : ITransmissionSource
         ReconcileTimer();
     }
 
-    /// <summary>The ARQ machine of a connected 16-bit peer, or null.</summary>
+    /// <summary>The ARQ machine of a connected peer, either family, or null.</summary>
     public ArqLink? LinkOf(uint peer) => _links.TryGetValue(peer, out ArqLink? l) ? l : null;
 
     /// <summary>
-    /// A connection with the 16-bit family is made: a new ARQ machine with the initial window edges
-    /// (C-0782, C-0787), and any ARQ C_PDUs already held for the peer can now be placed.
+    /// A connection is made: a new ARQ machine of the negotiated family with the initial window
+    /// edges (C-0762, C-0782, C-0787), and any ARQ C_PDUs already held for the peer can now be placed.
     /// </summary>
-    public ArqLink OpenLink(uint peer)
+    public ArqLink OpenLink(uint peer, bool shortFamily = false)
     {
-        var link = new ArqLink(peer);
+        var link = new ArqLink(peer, shortFamily);
         _links[peer] = link;
         _mac.QueueState(Placeable());
         return link;
@@ -287,6 +296,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     private bool Held(uint peer, int type, IReadOnlyCollection<ControlItem> placed)
     {
+        // The type numbers name the 16-bit family; on an 8-bit link 9, 10 and 11 stand for 0, 1 and 2 (C-0730).
         bool Open<T>() where T : ControlItem => _control.Any(c => c is T && c.Dst == peer && !placed.Contains(c));
         if (type is 5 or 7 or 9 or 10 or 11 && Open<ManagementAck>())
         {
@@ -377,7 +387,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         nacked.Add(rxLwe);   // RX LWE is the oldest FSN the peer has not received (C-0776, C-0907)
         List<bool> bits = AckData.Decode(encoding, bitmap);   // either encoding (C-0226, C-0246, C-0247)
         int first = (offset * ArqLink.OffsetUnit) + 1;
-        for (int i = 0; i < bits.Count && first + i < ArqLink.MaxWindowSize; i++)
+        for (int i = 0; i < bits.Count && first + i < link.MaxWindowSize; i++)
         {
             int fsn = seq.Add(rxLwe, first + i);
             if (bits[i])
@@ -552,13 +562,13 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (link.AckOwed && !link.Suspended)   // C-0257
             {
-                return link.Acknowledgement().Sum(u => AckOnlySize(link.Peer, u.Data.Length));
+                return link.Acknowledgement().Sum(u => AckOnlySize(link, u.Data.Length));
             }
         }
 
         foreach (ArqFrame f in FailedFrames(_control))
         {
-            return DataOnlySize(f.Owner.Peer, FrameLength(f));
+            return DataOnlySize(_links[f.Owner.Peer], FrameLength(f));
         }
 
         bool idFree = _normalIds.IsFree(_context.Now);
@@ -585,7 +595,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                 continue;   // C-0257: no regular data while a reset exchange is pending; C-1215
             }
 
-            if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
+            if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow(link))
             {
                 if (a.Partial)
                 {
@@ -595,7 +605,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                 continue;
             }
 
-            return DataOnlySize(a.Peer, a.Dropped ? 0 : a.NextSegmentLength(MaxSegment));
+            return DataOnlySize(link, a.Dropped ? 0 : a.NextSegmentLength(MaxSegment));
         }
 
         foreach (Entry e in Normal())
@@ -659,9 +669,9 @@ internal sealed class TransmitQueue : ITransmissionSource
         bool TakeArq(ArqLink link, ArqFrame? retransmit, ArqCPdu? fresh)
         {
             AckPiece? ack = acks.TryGetValue(link.Peer, out List<AckPiece>? set) && set.Count == 1 && !set[0].Merged
-                            && set[0].Unit.Data.Length <= ArqLink.MaxDataAckBytes ? set[0] : null;
+                            && set[0].Unit.Data.Length <= link.DataAckLimit ? set[0] : null;
             int ackBytes = ack?.Unit.Data.Length ?? 0;
-            int SizeWith(int length) => ack is null ? DataOnlySize(link.Peer, length) : DataAckSize(link.Peer, length, ackBytes);
+            int SizeWith(int length) => ack is null ? DataOnlySize(link, length) : DataAckSize(link, length, ackBytes);
             int released = ack?.Size ?? 0;
             int cut = 0;
             int carried;
@@ -782,7 +792,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
             // Every ACK-ONLY of the peer's acknowledgement goes, or none: together they acknowledge
             // every D_PDU received (C-0215, C-1151). Not fitting, the peer is skipped.
-            List<AckPiece> set = link.Acknowledgement().Select(u => new AckPiece(link, u, AckOnlySize(link.Peer, u.Data.Length))).ToList();
+            List<AckPiece> set = link.Acknowledgement().Select(u => new AckPiece(link, u, AckOnlySize(link, u.Data.Length))).ToList();
             long size = set.Sum(p => (long)p.Size);
             if (Fits(size))
             {
@@ -826,13 +836,13 @@ internal sealed class TransmitQueue : ITransmissionSource
                 var a = (ArqCPdu)c;
                 if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, chosenControl))
                 {
-                    continue;   // fully sent, its connection does not use the 16-bit family (P4-5), a reset exchange is pending (C-0257), or the peer's state holds it (C-0693, C-0713, C-1215)
+                    continue;   // fully sent, no connection, a reset exchange is pending (C-0257), or the peer's state holds it (C-0693, C-0713, C-1215)
                 }
 
                 bool started = a.Partial;
                 while (a.HasUnplacedSegment)
                 {
-                    if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
+                    if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow(link))
                     {
                         // C-0775, C-1131: no new D_PDU now. A C_PDU not yet started is passed over;
                         // one already started stops the class, so nothing splits it (C-0850, C-1127).
@@ -944,7 +954,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>The segment length a frame carries: none once its C_PDU has been dropped (C-0182, C-0183).</summary>
     private static int FrameLength(ArqFrame f) => f.Owner.Dropped ? 0 : f.Owner.Segments![f.Segment].Length;
 
-    private int MaxTxWindow => Math.Min(ArqLink.MaxWindowSize, _context.Config.Dts.MaxWindow);
+    /// <summary>
+    /// The maximum allowable window of a link: <c>dts.max_window</c>, never more than the family's
+    /// maximum window size, 128 or 32768 (C-0771 to C-0775).
+    /// </summary>
+    private int MaxTxWindow(ArqLink link) => Math.Min(link.MaxWindowSize, _context.Config.Dts.MaxWindow);
 
     /// <summary>
     /// The byte capacity of this transmission (core-architecture.md 5.3): whole blocks within the
@@ -1102,7 +1116,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             int eot = (int)((plan.DurationMs - airStart + HalfSecondMs - 1) / HalfSecondMs);
             DpduHeader header = Header(TakeEow(item.Dst, false), eot, item.Dst);
             Dpdu pdu = item.Unit is AckUnit u
-                ? new AckOnly(header, u.RxLwe, u.Encoding, u.Offset, new Octets(u.Data), null)
+                ? AckOnlyPdu(item.Link!, header, u)
                 : new Padding(header);
             byte[] encoded = DpduCodec.Encode(pdu);
             if (encoded.Length != item.Size)
@@ -1142,7 +1156,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// LWE, the encoding bit and the Selective Acks (C-0238, C-0245 to C-0247, C-1007, C-1152);
     /// otherwise DATA-ONLY. An ACK-ONLY carries RX LWE, the encoding, the offset and the Ack Data of
     /// its part of the acknowledgement (C-0195 to C-0233, C-1150, C-1151); the codec puts Ack Data of
-    /// more than 21 bytes in the long form with its CRC-32 (C-0219, C-0220, C-0234, C-0235).
+    /// more than 21 bytes in the long form with its CRC-32 (C-0219, C-0220, C-0234, C-0235). On a link
+    /// with the 8-bit family the same fields go in types 0, 1 and 2, with an 8-bit TX FSN and RX LWE
+    /// and a SELECTIVE ACKS bitmap (C-0170, C-0175, C-0190, C-0194, C-0199 to C-0211, C-0236, C-0245, C-0730).
     /// </summary>
     private byte[] EncodeArq(Piece piece, int eot)
     {
@@ -1152,8 +1168,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             {
                 a.Link.AckOwed = false;
                 var header = Header(TakeEow(a.Link.Peer, false), eot, a.Link.Peer);
-                AckUnit u = a.Unit;
-                return DpduCodec.Encode(new AckOnly(header, u.RxLwe, u.Encoding, u.Offset, new Octets(u.Data), null));
+                return DpduCodec.Encode(AckOnlyPdu(a.Link, header, a.Unit));
             }
 
             case ArqPiece d:
@@ -1178,10 +1193,14 @@ internal sealed class TransmitQueue : ITransmissionSource
                 {
                     link.AckOwed = false;
                     AckUnit u = ack.Unit;
-                    return DpduCodec.Encode(new DataAck(header, flags, f.Fsn, u.RxLwe, u.Encoding, new Octets(u.Data), segment, true));
+                    return DpduCodec.Encode(link.ShortFamily
+                        ? new Ed3DataAck(header, flags, f.Fsn, u.RxLwe, new Octets(u.Data), segment, true)
+                        : new DataAck(header, flags, f.Fsn, u.RxLwe, u.Encoding, new Octets(u.Data), segment, true));
                 }
 
-                return DpduCodec.Encode(new DataOnly(header, flags, f.Fsn, segment, true));
+                return DpduCodec.Encode(link.ShortFamily
+                    ? new Ed3DataOnly(header, flags, f.Fsn, segment, true)
+                    : new DataOnly(header, flags, f.Fsn, segment, true));
             }
 
             default:
@@ -1205,29 +1224,29 @@ internal sealed class TransmitQueue : ITransmissionSource
         long blocks = Math.Max(1, (chosenTotal + bytesPerBlock - 1) / bytesPerBlock);
         long room = (blocks * bytesPerBlock) - chosenTotal;
 
-        var units = new List<(uint Peer, AckUnit Unit)>();
+        var units = new List<(ArqLink Link, AckUnit Unit)>();
         foreach (Piece piece in laidOut)
         {
             if (piece is AckPiece a)
             {
-                units.Add((a.Link.Peer, a.Unit));
+                units.Add((a.Link, a.Unit));
             }
             else if (piece is ArqPiece { Ack: AckPiece merged } d)
             {
-                units.Add((d.Link.Peer, merged.Unit));
+                units.Add((d.Link, merged.Unit));
             }
         }
 
         for (int i = 0; units.Count > 0; i = (i + 1) % units.Count)
         {
-            (uint peer, AckUnit unit) = units[i];
-            int size = AckOnlySize(peer, unit.Data.Length);
+            (ArqLink link, AckUnit unit) = units[i];
+            int size = AckOnlySize(link, unit.Data.Length);
             if (size > room)
             {
                 break;
             }
 
-            fill.Add(new FillItem(peer, unit, size));
+            fill.Add(new FillItem(link.Peer, unit, size) { Link = link });
             room -= size;
         }
 
@@ -1258,14 +1277,34 @@ internal sealed class TransmitQueue : ITransmissionSource
         return fill;
     }
 
-    private int DataOnlySize(uint dst, int segmentLength) =>
-        DpduCodec.Encode(new DataOnly(Header(0, 0, dst), default, 0, new Octets(new byte[segmentLength]), true)).Length;
+    private int DataOnlySize(ArqLink link, int segmentLength)
+    {
+        DpduHeader h = Header(0, 0, link.Peer);
+        var segment = new Octets(new byte[segmentLength]);
+        return DpduCodec.Encode(link.ShortFamily ? new Ed3DataOnly(h, default, 0, segment, true) : new DataOnly(h, default, 0, segment, true)).Length;
+    }
 
-    private int DataAckSize(uint dst, int segmentLength, int ackBytes) =>
-        DpduCodec.Encode(new DataAck(Header(0, 0, dst), default, 0, 0, 0, new Octets(new byte[ackBytes]), new Octets(new byte[segmentLength]), true)).Length;
+    private int DataAckSize(ArqLink link, int segmentLength, int ackBytes)
+    {
+        DpduHeader h = Header(0, 0, link.Peer);
+        var acks = new Octets(new byte[ackBytes]);
+        var segment = new Octets(new byte[segmentLength]);
+        return DpduCodec.Encode(link.ShortFamily
+            ? new Ed3DataAck(h, default, 0, 0, acks, segment, true)
+            : new DataAck(h, default, 0, 0, 0, acks, segment, true)).Length;
+    }
 
-    private int AckOnlySize(uint dst, int ackBytes) =>
-        DpduCodec.Encode(new AckOnly(Header(0, 0, dst), 0, 0, 0, new Octets(new byte[ackBytes]), null)).Length;
+    private int AckOnlySize(ArqLink link, int ackBytes) =>
+        DpduCodec.Encode(AckOnlyPdu(link, Header(0, 0, link.Peer), new AckUnit(0, 0, 0, new byte[ackBytes]))).Length;
+
+    /// <summary>
+    /// The ACK-ONLY of one acknowledgement unit: type 10 with its encoding, offset and Ack Data on a
+    /// 16-bit link (C-0195, C-0222 to C-0233); type 1 with the SELECTIVE ACKS bitmap on an 8-bit link
+    /// (C-0194, C-0200, C-0201, C-0730), whose units are always bitmaps at offset 0.
+    /// </summary>
+    private static Dpdu AckOnlyPdu(ArqLink link, DpduHeader header, AckUnit u) => link.ShortFamily
+        ? new Ed3AckOnly(header, u.RxLwe, new Octets(u.Data))
+        : new AckOnly(header, u.RxLwe, u.Encoding, u.Offset, new Octets(u.Data), null);
 
     /// <summary>
     /// The EOW for the next D_PDU to an address: the one owed to that individual peer, used once, or
@@ -1489,7 +1528,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>A D_PDU of the fill (C-1154): a copy of an ACK-ONLY of this transmission, or PADDING when <see cref="Unit"/> is null.</summary>
-    private sealed record FillItem(uint Dst, AckUnit? Unit, int Size);
+    private sealed record FillItem(uint Dst, AckUnit? Unit, int Size)
+    {
+        /// <summary>The link whose acknowledgement an ACK-ONLY copy repeats, for its family; null for PADDING.</summary>
+        public ArqLink? Link { get; init; }
+    }
 
     /// <summary>
     /// One C_PDU ID space (C-0326, C-0328): the next ID, allocated in ascending order modulo 4096

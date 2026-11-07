@@ -36,6 +36,78 @@ public class ArqLinkTests
     }
 
     [Fact]
+    public void The_8_bit_family_has_modulus_256_and_a_window_of_128()
+    {
+        // C-0190, C-0558, C-0766, C-0771, C-0782.
+        var link = new ArqLink(1, shortFamily: true);
+        (link.Seq.Modulus, link.MaxWindowSize, link.TxLwe, link.TxUwe, link.RxLwe, link.RxUwe).Should().Be((256, 128, 0, 255, 0, 255));
+        link.WindowSize.Should().Be(0);
+        link.TxLwe = 255;
+        link.TxUwe = 254;
+        link.AllocateFsn().Should().Be(255);
+        link.AllocateFsn().Should().Be(0);
+        link.WindowSize.Should().Be(2);
+        link.Reset();
+        (link.TxLwe, link.TxUwe, link.RxUwe).Should().Be((0, 255, 255));   // C-0812, C-0822
+    }
+
+    [Fact]
+    public void An_8_bit_fsn_128_ahead_of_rx_lwe_is_not_accepted()
+    {
+        // C-0779: FSN 127 is the furthest a sender may be ahead of RX LWE 0; FSN 128 is outside the window.
+        var link = new ArqLink(1, shortFamily: true);
+        link.Receive(128, true, true, false, false, [1]).Should().BeEmpty();
+        (link.RxLwe, link.RxUwe).Should().Be((0, 255));
+        link.Receive(127, true, true, false, false, [1]).Should().ContainSingle();
+        link.RxUwe.Should().Be(127);
+        link.InSyncAsDestination(127, true, false).Should().BeTrue();    // Equation 1 with MAX WIN SIZE 128 (C-0794)
+        link.InSyncAsDestination(200, false, false).Should().BeFalse();  // Equation 3 (C-0798)
+    }
+
+    [Fact]
+    public void The_8_bit_acknowledgement_is_one_bitmap_of_the_whole_window()
+    {
+        // C-0194, C-0201, C-0207 to C-0211, interp C-1190: FSNs 1 and 127 held, RX LWE 0; 127 bits, 16 bytes,
+        // one unit at offset 0 with no run length choice.
+        var link = new ArqLink(1, shortFamily: true);
+        link.Receive(1, true, true, false, false, [1]);
+        link.Receive(127, true, true, false, false, [1]);
+        AckUnit u = link.Acknowledgement().Should().ContainSingle().Which;
+        (u.RxLwe, u.Encoding, u.Offset, u.Data.Length).Should().Be((0, 0, 0, 16));
+        u.Data[0].Should().Be(0x01);
+        u.Data[15].Should().Be(0x40);
+        u.Data.Skip(1).Take(14).Should().OnlyContain(b => b == 0);
+        link.DataAckLimit.Should().Be(16);
+    }
+
+    [Theory]
+    [InlineData(130)]
+    [InlineData(300)]
+    public void An_8_bit_cpdu_longer_than_the_window_or_the_modulus_is_reassembled(int segments)
+    {
+        // C-0510, C-0512, C-0516: nothing bounds the segments of a C_PDU by the window, and its FSNs
+        // wrap modulo 256 (C-0190). Sent in window-sized bursts as a sender must (C-0771), with a
+        // late segment arriving out of order in each.
+        var link = new ArqLink(1, shortFamily: true);
+        var got = new List<ReadOnlyMemory<byte>>();
+        for (int b = 0; b < segments; b += 100)
+        {
+            int end = Math.Min(segments, b + 100);
+            for (int i = end - 1; i >= b; i--)
+            {
+                got.AddRange(link.Receive(i % 256, i == 0, i == segments - 1, true, false, [(byte)i, (byte)(i >> 8)]));
+            }
+
+            link.RxLwe.Should().Be(end % 256);
+        }
+
+        got.Should().ContainSingle();
+        byte[] expected = Enumerable.Range(0, segments).SelectMany(i => new[] { (byte)i, (byte)(i >> 8) }).ToArray();
+        got[0].ToArray().Should().Equal(expected);
+        link.AckBits().Should().BeEmpty();
+    }
+
+    [Fact]
     public void Segments_received_out_of_order_are_joined_in_fsn_order()
     {
         var link = new ArqLink(1);
