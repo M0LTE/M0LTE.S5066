@@ -12,7 +12,41 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <param name="AddressSize">address_size: the size-of-address field the node sends, 1 to 7 (C-0133).</param>
 /// <param name="Csma">csma.*.</param>
 /// <param name="Modem">modem.*: the T2 modem fixture; the host ignores it.</param>
-public sealed record NodeConfig(uint LocalAddress, int AddressSize, CsmaConfig Csma, ModemFixture Modem);
+public sealed record NodeConfig(uint LocalAddress, int AddressSize, CsmaConfig Csma, ModemFixture Modem)
+{
+    /// <summary>
+    /// groups: the group addresses this node receives, as 28-bit values. Membership is
+    /// configuration, since no protocol joins a group (A-0119, A-0120). Default empty.
+    /// </summary>
+    public IReadOnlyList<uint> Groups { get; init; } = [];
+
+    /// <summary>time.*: the UTC instant of core time 0, for the TTD of DATA S_PDUs (A-0251).</summary>
+    public TimeConfig Time { get; init; } = new(2026, 1, 0);
+
+    /// <summary>sis.*: SIS settings.</summary>
+    public SisConfig Sis { get; init; } = new(SisConfig.MaxTtl);
+}
+
+/// <summary>
+/// time.* settings: the UTC year, day-of-year and seconds-of-day that correspond to core time 0.
+/// The core has no clock, so the host supplies these and the SIS adds the core time to them
+/// with integer calendar arithmetic (core-architecture.md 3.1; A-0161, A-0166, A-0251).
+/// </summary>
+/// <param name="EpochYear">time.epoch_year, the Gregorian year.</param>
+/// <param name="EpochDay">time.epoch_day, 1 to 365, or 366 in a leap year (A-0161).</param>
+/// <param name="EpochSecond">time.epoch_second, 0 to 86399 (A-0166).</param>
+public sealed record TimeConfig(int EpochYear, int EpochDay, int EpochSecond);
+
+/// <summary>sis.* settings.</summary>
+/// <param name="DefaultTtl">
+/// sis.default_ttl: the default maximum TTL in the 2-second units of the TTL field, used when a
+/// request gives TTL 0 (A-0087, A-0088, A-0089, A-0091). 1 to <see cref="MaxTtl"/>.
+/// </param>
+public sealed record SisConfig(int DefaultTtl)
+{
+    /// <summary>The largest TTL the field may carry, 648000 units of 2 s, about 15 days (S-0116, S-0121).</summary>
+    public const int MaxTtl = 648000;
+}
 
 /// <summary>The Annex K contention mode (decision D7; K-0107 ruling adds ed3).</summary>
 public enum CsmaMode

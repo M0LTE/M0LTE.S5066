@@ -79,11 +79,6 @@ public class CorpusHarnessTests
         string id = JsonNode.Parse(lines[0])!["scenario"]!.GetValue<string>();
         CorpusResults.Run(id, "t2", () =>
         {
-            if (AwaitingSis.Applies(scenario))
-            {
-                return CorpusResults.Skipped("needs the P3-1 SIS to queue data; CsmaScenarioTests runs it with a stand-in SIS until then");
-            }
-
             T2Result result = T2Runner.Run(scenario, lines, Corpus.T2Defaults);
             return result.Unsupported is null ? null : CorpusResults.Unsupported(result.Unsupported);
         });
