@@ -13,6 +13,9 @@ internal enum ControlClass
 
     /// <summary>RESET/WIN-RESYNC (type 3 or 12) D_PDUs, after WARNING and ahead of client data, oldest first (C-1174).</summary>
     Reset,
+
+    /// <summary>EXPEDITED-ACK-ONLY (type 5) D_PDUs, after RESET/WIN-RESYNC and ahead of all client data, expedited included (C-0288, C-1211).</summary>
+    ExpeditedAck,
 }
 
 /// <summary>
@@ -88,4 +91,20 @@ internal sealed class ResetItem(uint dst, ResetFlags flags, int newRxLwe, int fr
     public override Dpdu Build(DpduHeader header) => ShortFamily
         ? new Ed3ResetWinResync(header, Flags, NewRxLwe, FrameId)
         : new ResetWinResync(header, Flags, NewRxLwe, FrameId);
+}
+
+/// <summary>
+/// An EXPEDITED-ACK-ONLY (type 5; C-0277, C-0290): the layout of an ED3-ACK-ONLY with type 5 (C-0289,
+/// C-0291), RX LWE and the SELECTIVE ACKS bitmap of the peer's expedited receive state. Its content
+/// is read when the planner builds it, so one queued item always carries the latest state (C-1210).
+/// </summary>
+internal sealed class ExpeditedAckItem(uint dst, Func<(int RxLwe, byte[] Bitmap)> state) : ControlItem(dst)
+{
+    public override ControlClass Class => ControlClass.ExpeditedAck;
+
+    public override Dpdu Build(DpduHeader header)
+    {
+        (int rxLwe, byte[] bitmap) = state();
+        return new ExpeditedAckOnly(header, rxLwe, new Octets(bitmap));
+    }
 }

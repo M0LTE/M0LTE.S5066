@@ -87,6 +87,11 @@ internal sealed class DtsSublayer : IDtsSublayer
         switch (primitive)
         {
             case DUnidataRequest { Arq: false } r:
+                if (!r.DstIsGroup)
+                {
+                    _peers.OnNonArqRequest(r.Dst);   // C-0655
+                }
+
                 _tx.Add(r);
                 break;
             case DUnidataRequest r when _peers.IsConnected(r.Dst):
