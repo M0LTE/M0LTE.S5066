@@ -33,20 +33,22 @@ internal enum DtsPeerState
 /// MANAGEMENT, EXTENSION, PADDING and WARNING as there.
 /// </para>
 /// <para>
-/// ARQ (P4-2, 16-bit family): DATA-ONLY, ACK-ONLY and DATA-ACK (types 9, 10 and 11) from a peer
-/// whose connection uses the 16-bit family are processed in every CONNECTED state, as Tables C-18,
+/// ARQ (P4-2, P4-5): DATA-ONLY, ACK-ONLY and DATA-ACK of the link's family, types 9, 10 and 11 on a
+/// 16-bit link or types 0, 1 and 2 on an 8-bit link (C-0730, C-0762), are processed in every CONNECTED state, as Tables C-18,
 /// C-20, C-22 and C-24 say: the data part is reassembled, delivered with D_UNIDATA_INDICATION and
 /// owes an acknowledgement (C-0658, C-0660, C-0678, C-0680, C-0698, C-0700, C-0718, C-0720; C-1129), and the
 /// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
 /// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
-/// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). Still discarded
-/// with no response: the 8-bit family and the 16-bit types on an 8-bit link (P4-5), EXPEDITED-DATA
-/// and EXPEDITED-ACK (P4-6).
+/// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). A regular ARQ
+/// D_PDU of the other family (types 0 to 3 on a 16-bit link, 9 to 12 on an 8-bit link) is not used
+/// and draws WARNING reason 3, since the families are never mixed on a link (C-0763, C-0391, interp
+/// C-1192); from a peer recorded Ed3, types 9 to 12 are undefined and draw reason 0 (C-0388). Still
+/// discarded with no response: EXPEDITED-DATA and EXPEDITED-ACK (P4-6).
 /// </para>
 /// <para>
 /// Synchronisation and reset (P4-4): every DATA-ONLY, ACK-ONLY and DATA-ACK first passes Tests 1 to
 /// 5 (C-0793 to C-0801, C-1180); one that fails is not used at all and starts a FULL RESET as
-/// initiator (C-0791, C-0792, C-1170). RESET/WIN-RESYNC (type 12) is handled in every CONNECTED
+/// initiator (C-0791, C-0792, C-1170). RESET/WIN-RESYNC (type 12, or type 3 on an 8-bit link) is handled in every CONNECTED
 /// state (C-0661, C-0681, C-0701, C-0721): the FULL RESET in both roles (C-0804 to C-0826), the
 /// answer to RESET TX WIN RQST (C-0261, C-1177) and RESET RX WIN CMND as C-0274 settles it (C-1178).
 /// A command of ours is stop-and-wait: it is repeated at each <c>dts.reset_wait/&lt;peer&gt;</c>
@@ -162,7 +164,8 @@ internal sealed class DtsPeers
             return;   // C-0566; no other type has a group form (C-0122)
         }
 
-        if (pdu is DataAck { SegmentCrcOk: false, Flags.DropCPdu: false } && _tx.LinkOf(h.Src) is null)
+        if (pdu is DataAck { SegmentCrcOk: false, Flags.DropCPdu: false } or Ed3DataAck { SegmentCrcOk: false, Flags.DropCPdu: false }
+            && _tx.LinkOf(h.Src) is null)
         {
             return;   // a failed data CRC with no ARQ machine to take the acknowledgement: discarded (C-0836, C-0839)
         }
@@ -170,17 +173,26 @@ internal sealed class DtsPeers
         OweEowIfUnrecognised(h, true);
         switch (pdu)
         {
-            case DataOnly or AckOnly or DataAck when _tx.LinkOf(h.Src) is ArqLink link:
+            case DataOnly or AckOnly or DataAck or Ed3DataOnly or Ed3AckOnly or Ed3DataAck
+                when _tx.LinkOf(h.Src) is ArqLink link && OfFamily(pdu, link):
                 OnArq(PeerOf(h.Src), link, pdu);
                 break;
-            case ResetWinResync r when _tx.LinkOf(h.Src) is ArqLink link:
-                OnReset(PeerOf(h.Src), link, r);
+            case ResetWinResync or Ed3ResetWinResync when _tx.LinkOf(h.Src) is ArqLink link && OfFamily(pdu, link):
+                OnReset(PeerOf(h.Src), link, pdu);
                 break;
             case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
                 or DataOnly or AckOnly or DataAck or ResetWinResync:
                 if (PeerOf(h.Src).Connected)
                 {
-                    break;   // the 8-bit family (P4-5), expedited ARQ (P4-6)
+                    if (pdu is not (ExpeditedDataOnly or ExpeditedAckOnly))
+                    {
+                        // A regular ARQ D_PDU of the family the link does not use: the families are
+                        // never mixed (C-0763), so it is not allowed here and is not used (C-0391,
+                        // interp C-1192); no state change.
+                        Warn(h.Src, pdu.Type, 3);
+                    }
+
+                    break;   // expedited ARQ (P4-6)
                 }
 
                 // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
@@ -216,7 +228,7 @@ internal sealed class DtsPeers
     /// <summary>
     /// D_CONNECTION_MADE (C-0571, C-0591, C-0611, C-0631): ARQ state starts afresh, IDLE(CONNECTED),
     /// or MANAGEMENT(CONNECTED) from MANAGEMENT(UNCONNECTED). Ignored when already connected (C-0651,
-    /// C-0671, C-0691, C-0711). The negotiated family is kept for P4-2 and P4-5.
+    /// C-0671, C-0691, C-0711). The ARQ machine of the negotiated family starts (C-0762, C-0782).
     /// </summary>
     public void OnConnectionMade(DConnectionMade c)
     {
@@ -234,10 +246,7 @@ internal sealed class DtsPeers
         peer.PeerIsEd4 = c.PeerIsEd4;
         peer.ShortFamily = c.ShortFamily;
         peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
-        if (!c.ShortFamily)
-        {
-            _tx.OpenLink(c.Peer);   // the ARQ machine starts from the initial window edges (C-0782, C-0787)
-        }
+        _tx.OpenLink(c.Peer, c.ShortFamily);   // the ARQ machine starts from the initial window edges of its family (C-0782, C-0787)
     }
 
     /// <summary>An ARQ D_UNIDATA_REQUEST for a connected peer: IDLE(CONNECTED) goes to DATA(CONNECTED) (C-0653); DATA stays (C-0673).</summary>
@@ -267,7 +276,7 @@ internal sealed class DtsPeers
         if (peer.State == DtsPeerState.IdleConnected)
         {
             peer.State = DtsPeerState.DataConnected;   // C-0658, C-0659, C-0660
-            if (pdu is AckOnly)
+            if (pdu is AckOnly or Ed3AckOnly)
             {
                 Warn(h.Src, pdu.Type, 3);   // C-0659: nothing of ours to acknowledge yet
                 return;
@@ -286,6 +295,8 @@ internal sealed class DtsPeers
         {
             DataOnly d => (d.Flags, d.TxFsn, d.Segment),
             DataAck d when d.SegmentCrcOk || d.Flags.DropCPdu => (d.Flags, d.TxFsn, d.Segment),
+            Ed3DataOnly d => (d.Flags, d.TxFsn, d.Segment),
+            Ed3DataAck d when d.SegmentCrcOk || d.Flags.DropCPdu => (d.Flags, d.TxFsn, d.Segment),
             _ => null,   // an ACK-ONLY, or a DATA-ACK whose data CRC failed: acknowledgement part only (C-1133)
         };
         if (data is var (f, txFsn, seg))
@@ -306,8 +317,20 @@ internal sealed class DtsPeers
             case DataAck d:
                 _tx.OnAck(h.Src, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span);   // offset 0 (C-0250)
                 break;
+            case Ed3AckOnly a:
+                _tx.OnAck(h.Src, a.RxLwe, AckData.BitmapEncoding, 0, a.SelectiveAcks.Span);   // a bitmap from RX LWE + 1 (C-0201, C-0207)
+                break;
+            case Ed3DataAck d:
+                _tx.OnAck(h.Src, d.RxLwe, AckData.BitmapEncoding, 0, d.SelectiveAcks.Span);   // C-0245
+                break;
         }
     }
+
+    /// <summary>
+    /// Whether a regular ARQ D_PDU belongs to the link's family: types 0 to 3 on an 8-bit link, 9 to
+    /// 12 on a 16-bit link (C-0730, C-0762, C-0763).
+    /// </summary>
+    private static bool OfFamily(Dpdu pdu, ArqLink link) => (pdu.Type <= 3) == link.ShortFamily;
 
     /// <summary>
     /// D_CONNECTION_TERMINATED: a connected peer goes to IDLE(UNCONNECTED) and its held ARQ C_PDUs
@@ -340,6 +363,10 @@ internal sealed class DtsPeers
         DataAck d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe)
             && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link.Seq, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span)),
         AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link.Seq, a.RxLwe, a.Encoding, a.Offset, a.AckData.Span)),
+        Ed3DataOnly d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe),
+        Ed3DataAck d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe)
+            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link.Seq, d.RxLwe, AckData.BitmapEncoding, 0, d.SelectiveAcks.Span)),
+        Ed3AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link.Seq, a.RxLwe, AckData.BitmapEncoding, 0, a.SelectiveAcks.Span)),
         _ => true,
     };
 
@@ -376,12 +403,12 @@ internal sealed class DtsPeers
             return;
         }
 
-        BeginExchange(address, peer, link, new ResetItem(address, new ResetFlags(true, false, false, false), 0, peer.TxResetFrameId));
+        BeginExchange(address, peer, link, new ResetItem(address, new ResetFlags(true, false, false, false), 0, peer.TxResetFrameId, link.ShortFamily));
     }
 
     private void BeginExchange(uint address, Peer peer, ArqLink link, ResetItem command)
     {
-        var item = new ResetItem(address, command.Flags, command.NewRxLwe, command.FrameId) { Placed = () => peer.ResetSent = true };
+        var item = new ResetItem(address, command.Flags, command.NewRxLwe, command.FrameId, command.ShortFamily) { Placed = () => peer.ResetSent = true };
         peer.Exchange = item;
         link.Suspended = true;
         _tx.AddControl(item);
@@ -409,8 +436,8 @@ internal sealed class DtsPeers
     }
 
     /// <summary>
-    /// A RESET/WIN-RESYNC (type 12) from a peer with a 16-bit ARQ machine (C-0661, C-0681, C-0701,
-    /// C-0721; C-0730). In MANAGEMENT(CONNECTED) it draws WARNING reason 3 and nothing else (C-0721).
+    /// A RESET/WIN-RESYNC of the link's family, type 12, or type 3 on an 8-bit link (C-0661, C-0681,
+    /// C-0701, C-0721; C-0251, C-0252, C-0730); our answers are of the same family. In MANAGEMENT(CONNECTED) it draws WARNING reason 3 and nothing else (C-0721).
     /// Otherwise, in this order (C-1179):
     /// <list type="number">
     /// <item>RESET ACK set: the acknowledgement of our pending command (C-0264, C-0267). The exchange
@@ -433,16 +460,21 @@ internal sealed class DtsPeers
     /// FULL RESET CMD (C-0681, C-0701), then to DATA(CONNECTED) if ARQ C_PDUs are still queued for the
     /// peer (C-1176); EXPEDITED-DATA(CONNECTED) goes to DATA(CONNECTED) otherwise (C-0701, C-0736).
     /// </summary>
-    private void OnReset(Peer peer, ArqLink link, ResetWinResync r)
+    private void OnReset(Peer peer, ArqLink link, Dpdu pdu)
     {
-        uint src = r.Header.Src;
+        (ResetFlags flags, int newRxLwe, int resetFrameId) = pdu switch
+        {
+            ResetWinResync x => (x.Flags, x.NewRxLwe, x.ResetFrameId),
+            Ed3ResetWinResync x => (x.Flags, x.NewRxLwe, x.ResetFrameId),
+            _ => throw new InvalidOperationException("not a RESET/WIN-RESYNC"),
+        };
+        uint src = pdu.Header.Src;
         if (peer.State == DtsPeerState.ManagementConnected)
         {
-            Warn(src, r.Type, 3);   // C-0721
+            Warn(src, pdu.Type, 3);   // C-0721
             return;
         }
 
-        ResetFlags flags = r.Flags;
         if (flags.ResetAck && peer.Exchange is ResetItem pending)
         {
             EndExchange(src, peer);
@@ -455,7 +487,7 @@ internal sealed class DtsPeers
 
         if (flags.FullResetCmnd)
         {
-            OnFullResetCmd(peer, link, src, r.ResetFrameId);
+            OnFullResetCmd(peer, link, src, resetFrameId);
             return;
         }
 
@@ -469,13 +501,13 @@ internal sealed class DtsPeers
             return;   // C-1175; or an acknowledgement only, or no flag at all (C-1179)
         }
 
-        bool copy = r.ResetFrameId == peer.RxResetFrameId;
-        peer.RxResetFrameId = r.ResetFrameId;
+        bool copy = resetFrameId == peer.RxResetFrameId;
+        peer.RxResetFrameId = resetFrameId;
         if (flags.ResetRxWinCmnd && !copy)
         {
-            foreach (ReadOnlyMemory<byte> cpdu in link.ResyncReceive(r.NewRxLwe))   // C-0265, C-0274, C-1178
+            foreach (ReadOnlyMemory<byte> cpdu in link.ResyncReceive(newRxLwe))   // C-0265, C-0274, C-1178
             {
-                _context.Enqueue(new DUnidataIndication(src, r.Header.Dst, false, true, cpdu));
+                _context.Enqueue(new DUnidataIndication(src, pdu.Header.Dst, false, true, cpdu));
             }
         }
 
@@ -484,7 +516,7 @@ internal sealed class DtsPeers
             if (!copy)
             {
                 // C-0261, C-0263, C-0268, C-1177: acknowledge the request and force the resynchronisation in one D_PDU.
-                BeginExchange(src, peer, link, new ResetItem(src, new ResetFlags(false, false, true, true), link.TxLwe, peer.TxResetFrameId));
+                BeginExchange(src, peer, link, new ResetItem(src, new ResetFlags(false, false, true, true), link.TxLwe, peer.TxResetFrameId, link.ShortFamily));
             }
 
             return;
@@ -527,7 +559,7 @@ internal sealed class DtsPeers
         var ackFlags = new ResetFlags(false, false, false, true);
         if (!_tx.PendingControl.Any(c => c is ResetItem a && a.Dst == dst && a.Flags == ackFlags))
         {
-            _tx.AddControl(new ResetItem(dst, ackFlags, 0, 0));
+            _tx.AddControl(new ResetItem(dst, ackFlags, 0, 0, _tx.LinkOf(dst)?.ShortFamily ?? false));
         }
     }
 
@@ -663,7 +695,7 @@ internal sealed class DtsPeers
         /// <summary>From D_CONNECTION_MADE: the link was negotiated Ed4 (for P4-2 and P4-3).</summary>
         public bool PeerIsEd4 { get; set; }
 
-        /// <summary>From D_CONNECTION_MADE: the 8-bit FSN family is in force (for P4-5).</summary>
+        /// <summary>From D_CONNECTION_MADE: the 8-bit FSN family is in force (B-0141, B-0232).</summary>
         public bool ShortFamily { get; set; }
 
         /// <summary>Our RESET/WIN-RESYNC command awaiting its RESET ACK, or null (C-0255, C-0264).</summary>

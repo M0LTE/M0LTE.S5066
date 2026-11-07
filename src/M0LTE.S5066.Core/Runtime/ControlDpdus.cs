@@ -11,7 +11,7 @@ internal enum ControlClass
     /// <summary>WARNING (type 15) D_PDUs, oldest first.</summary>
     Warning,
 
-    /// <summary>RESET/WIN-RESYNC (type 12) D_PDUs, after WARNING and ahead of client data, oldest first (C-1174).</summary>
+    /// <summary>RESET/WIN-RESYNC (type 3 or 12) D_PDUs, after WARNING and ahead of client data, oldest first (C-1174).</summary>
     Reset,
 }
 
@@ -66,12 +66,13 @@ internal sealed class WarningItem(uint dst, int receivedFrameType, int reason) :
 }
 
 /// <summary>
-/// A RESET/WIN-RESYNC D_PDU of the 16-bit family (type 12; C-0258, C-0730): its four flags, NEW
-/// RECEIVE LWE and RESET FRAME ID NUMBER, fixed when it is queued. A command (FULL RESET CMD, or
+/// A RESET/WIN-RESYNC D_PDU of the link's family, type 12, or type 3 on an 8-bit link (C-0251,
+/// C-0252, C-0258, C-0730, C-0763): its four flags, NEW RECEIVE LWE and RESET FRAME ID NUMBER, fixed
+/// when it is queued. A command (FULL RESET CMD, or
 /// RESET RX WIN CMND) is sent again unchanged at each <c>dts.reset_wait</c> expiry (C-0255, C-0272,
 /// C-1172); an acknowledgement is sent once per command received (C-0256, C-1173).
 /// </summary>
-internal sealed class ResetItem(uint dst, ResetFlags flags, int newRxLwe, int frameId) : ControlItem(dst)
+internal sealed class ResetItem(uint dst, ResetFlags flags, int newRxLwe, int frameId, bool shortFamily = false) : ControlItem(dst)
 {
     public override ControlClass Class => ControlClass.Reset;
 
@@ -81,5 +82,10 @@ internal sealed class ResetItem(uint dst, ResetFlags flags, int newRxLwe, int fr
 
     public int FrameId { get; } = frameId;
 
-    public override Dpdu Build(DpduHeader header) => new ResetWinResync(header, Flags, NewRxLwe, FrameId);
+    /// <summary>The link uses the 8-bit family, so this is a type 3 (C-0251, C-0730).</summary>
+    public bool ShortFamily { get; } = shortFamily;
+
+    public override Dpdu Build(DpduHeader header) => ShortFamily
+        ? new Ed3ResetWinResync(header, Flags, NewRxLwe, FrameId)
+        : new ResetWinResync(header, Flags, NewRxLwe, FrameId);
 }

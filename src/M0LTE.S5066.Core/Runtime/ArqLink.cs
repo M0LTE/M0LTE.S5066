@@ -3,58 +3,97 @@ using M0LTE.S5066.Core.Dts;
 namespace M0LTE.S5066.Core.Runtime;
 
 /// <summary>
-/// The ARQ machine of one connection with the 16-bit FSN family (types 9, 10 and 11): the transmit
-/// and receive flow-control windows of [Ed4 C.7.2, pp.C-97 to C-100] (C-0765) and the receive-side
-/// reassembly of [Ed4 C.5.1, pp.C-59 to C-60]. The transmit queue (<see cref="TransmitQueue"/>)
-/// owns the C_PDUs being sent and drives the transmit half; the per-peer receive machine
-/// (<see cref="DtsPeers"/>) drives the receive half. One exists for each peer with a connection
-/// negotiated with the 16-bit family, created at D_CONNECTION_MADE and dropped at
+/// The ARQ machine of one connection: the transmit and receive flow-control windows of
+/// [Ed4 C.7.2, pp.C-97 to C-100] (C-0765) and the receive-side reassembly of [Ed4 C.5.1, pp.C-59 to
+/// C-60]. The transmit queue (<see cref="TransmitQueue"/>) owns the C_PDUs being sent and drives the
+/// transmit half; the per-peer receive machine (<see cref="DtsPeers"/>) drives the receive half. One
+/// exists for each peer with a connection, created at D_CONNECTION_MADE and dropped at
 /// D_CONNECTION_TERMINATED, so a new link starts from the initial window edges (C-0782, C-0787).
 /// </summary>
 /// <remarks>
+/// <para>
+/// The family is fixed by CAS-1 negotiation and never changes on the link (C-0762, C-0763): the
+/// 16-bit family (types 9 to 12) with modulus 65536 and maximum window 32768, or the 8-bit family
+/// (types 0 to 3) with modulus 256 and maximum window 128 (C-0190, C-0199, C-0558, C-0766, C-0771,
+/// C-0782). The window logic is the same for both (C-0762); only the modulus, the maximum window
+/// and the acknowledgement formats differ.
+/// </para>
+/// <para>
 /// All sequence arithmetic goes through <see cref="SeqSpace"/> (core-architecture.md 6 rule 2).
 /// The receive window a sender may use is never sent over the air, so the receiver judges every
-/// FSN against the maximum window size, 32768 (C-0771, C-0779).
+/// FSN against the maximum window size of the family (C-0771, C-0779, C-0796).
+/// </para>
 /// </remarks>
 internal sealed class ArqLink
 {
-    /// <summary>The maximum window size of the 16-bit family (C-0771), which the receiver always assumes (C-0779).</summary>
-    public const int MaxWindowSize = 32768;
+    /// <summary>The maximum window size of the 16-bit family (C-0771).</summary>
+    public const int MaxWindowSize16 = 32768;
+
+    /// <summary>The maximum window size of the 8-bit family (C-0771).</summary>
+    public const int MaxWindowSize8 = 128;
 
     /// <summary>
-    /// The largest Ack Data this node puts in one ACK-ONLY. The field allows 255 bytes (C-0223), but
-    /// ACK-ONLY D_PDUs are kept small (C-0213) and the offset mechanism lets the Ack Data stay within
+    /// The largest Ack Data this node puts in one type 10 ACK-ONLY. The field allows 255 bytes (C-0223),
+    /// but ACK-ONLY D_PDUs are kept small (C-0213) and the offset mechanism lets the Ack Data stay within
     /// 32 bytes [Ed4 C.4.5.5, p.C-31], one 256-FSN unit as a bitmap; a wider acknowledgement is split
     /// by offset (C-0222, C-1151).
     /// </summary>
     public const int MaxAckBytes = 32;
 
-    /// <summary>The largest Selective Acks field of a DATA-ACK (C-0248).</summary>
+    /// <summary>The largest Selective Acks field of a type 11 DATA-ACK (C-0248).</summary>
     public const int MaxDataAckBytes = 18;
+
+    /// <summary>
+    /// The largest SELECTIVE ACKS field of the 8-bit family, types 1 and 2 (C-0194, C-0236). The 127
+    /// FSNs from RX LWE + 1 to the furthest a peer may send, RX LWE + 127 (C-0779, C-0798), take at
+    /// most 16 bytes, so the whole window always fits one ACK-ONLY or one DATA-ACK.
+    /// </summary>
+    public const int MaxSelectiveAckBytes8 = 16;
 
     private readonly Dictionary<int, InFrame> _received = new();   // looked up by FSN only, never enumerated (core-architecture.md 6 rule 3)
     private readonly List<CPduRun> _pendingInOrder = [];
     private IReadOnlyList<AckUnit>? _acknowledgement;   // cached until the receive window next changes
 
-    public ArqLink(uint peer) => Peer = peer;
+    /// <summary>A new ARQ machine with the initial window edges of its family (C-0782, C-0787).</summary>
+    /// <param name="peer">The peer's address.</param>
+    /// <param name="shortFamily">The 8-bit family (types 0 to 3) is in force, from D_CONNECTION_MADE (B-0141, B-0232).</param>
+    public ArqLink(uint peer, bool shortFamily = false)
+    {
+        Peer = peer;
+        ShortFamily = shortFamily;
+        Seq = shortFamily ? SeqSpace.Mod256 : SeqSpace.Mod65536;
+        MaxWindowSize = shortFamily ? MaxWindowSize8 : MaxWindowSize16;
+        TxUwe = Seq.Modulus - 1;
+        RxUwe = Seq.Modulus - 1;
+    }
 
     public uint Peer { get; }
 
-    public SeqSpace Seq => SeqSpace.Mod65536;
+    /// <summary>The 8-bit family (types 0 to 3, modulus 256) rather than the 16-bit family (types 9 to 12, modulus 65536) (C-0763).</summary>
+    public bool ShortFamily { get; }
+
+    /// <summary>Modulus 256 or 65536 (C-0190, C-0199, C-0558, C-0766).</summary>
+    public SeqSpace Seq { get; }
+
+    /// <summary>The maximum window size, 128 or 32768 (C-0771), which the receiver always assumes (C-0779, C-0796).</summary>
+    public int MaxWindowSize { get; }
+
+    /// <summary>The largest acknowledgement field a DATA-ACK can carry: 16 bytes of SELECTIVE ACKS in type 2 (C-0236), 18 in type 11 (C-0248).</summary>
+    public int DataAckLimit => ShortFamily ? MaxSelectiveAckBytes8 : MaxDataAckBytes;
 
     // ---- transmit window (C-0766 to C-0775) ----
 
     /// <summary>TX LWE: the lowest outstanding unacknowledged FSN (C-0768); 0 at the start (C-0782).</summary>
     public int TxLwe { get; set; }
 
-    /// <summary>TX UWE: the FSN of the last new D_PDU sent (C-0769); 65535 at the start (C-0782).</summary>
-    public int TxUwe { get; set; } = 65535;
+    /// <summary>TX UWE: the FSN of the last new D_PDU sent (C-0769); 255 or 65535 at the start (C-0782).</summary>
+    public int TxUwe { get; set; }
 
     /// <summary>The D_PDUs sent and not yet acknowledged, in FSN order from TX LWE (C-0767).</summary>
     public List<ArqFrame> Outstanding { get; } = [];
 
     /// <summary>
-    /// The current transmitter window size, (TX UWE - (TX LWE - 1)) mod 65536, which is 0 at the
+    /// The current transmitter window size, (TX UWE - (TX LWE - 1)) mod 256 or 65536, which is 0 at the
     /// initial values and counts the FSNs in use (C-0770, C-0785).
     /// </summary>
     public int WindowSize => Seq.Distance(TxLwe, Seq.Add(TxUwe, 1));
@@ -64,8 +103,8 @@ internal sealed class ArqLink
     /// <summary>RX LWE: the oldest FSN not yet received (C-0776); 0 at the start (C-0782).</summary>
     public int RxLwe { get; private set; }
 
-    /// <summary>RX UWE: the newest FSN received, the one furthest from RX LWE (C-0778); 65535 at the start (C-0782).</summary>
-    public int RxUwe { get; private set; } = 65535;
+    /// <summary>RX UWE: the newest FSN received, the one furthest from RX LWE (C-0778); 255 or 65535 at the start (C-0782).</summary>
+    public int RxUwe { get; private set; }
 
     /// <summary>A DATA-ONLY or DATA-ACK from the peer has been processed and no acknowledgement has gone since (C-0174, C-0242; C-1128).</summary>
     public bool AckOwed { get; set; }
@@ -73,7 +112,7 @@ internal sealed class ArqLink
     /// <summary>A regular ARQ D_PDU has been sent or received on this connection (C-0738).</summary>
     public bool ArqUsed { get; set; }
 
-    /// <summary>Allocates the next FSN for a new D_PDU, ascending modulo 65536 (C-0189, C-0191, C-0766), and moves TX UWE to it (C-0769).</summary>
+    /// <summary>Allocates the next FSN for a new D_PDU, ascending modulo 256 or 65536 (C-0189, C-0190, C-0191, C-0766), and moves TX UWE to it (C-0769).</summary>
     public int AllocateFsn()
     {
         TxUwe = Seq.Add(TxUwe, 1);
@@ -149,7 +188,7 @@ internal sealed class ArqLink
         // An in-order C_PDU goes once every D_PDU before it has been received (RX LWE has passed
         // its last segment), oldest first (C-0178, C-1123).
         // Held runs lie within the maximum window behind or ahead of RX LWE, so measuring each from
-        // RX LWE - 32768 puts them in FSN order even when some are still ahead of RX LWE.
+        // RX LWE - the maximum window puts them in FSN order even when some are still ahead of RX LWE.
         int origin = Seq.Add(RxLwe, -MaxWindowSize);
         _pendingInOrder.Sort((a, b) => Seq.Distance(origin, a.First).CompareTo(Seq.Distance(origin, b.First)));
         while (_pendingInOrder.Count > 0 && Behind(_pendingInOrder[0].Last))
@@ -202,6 +241,14 @@ internal sealed class ArqLink
     private List<AckUnit> BuildAcknowledgement()
     {
         List<bool> bits = AckBits();
+        if (ShortFamily)
+        {
+            // Types 1 and 2 carry a bitmap only, with no encoding bit, offset or length field: the
+            // SELECTIVE ACKS from RX LWE + 1 to RX UWE (C-0194, C-0200, C-0201, C-0207 to C-0211), at
+            // most 16 bytes, so one D_PDU acknowledges the whole window (C-0215).
+            return [new AckUnit(RxLwe, AckData.BitmapEncoding, 0, AckData.Bitmap(bits, 0, bits.Count))];
+        }
+
         var units = new List<AckUnit>();
         int pos = 0;
         int offset = 0;
@@ -264,7 +311,7 @@ internal sealed class ArqLink
     /// </summary>
     public bool InSyncAsDestination(int fsn, bool txWinUwe, bool txWinLwe)
     {
-        const int span = MaxWindowSize - 1;
+        int span = MaxWindowSize - 1;
         if (txWinUwe && !Seq.InArc(fsn, RxUwe, Seq.Add(RxLwe, span)))
         {
             return false;   // Equation 1 (C-0794)
@@ -313,9 +360,9 @@ internal sealed class ArqLink
     public void Reset()
     {
         TxLwe = 0;
-        TxUwe = 65535;
+        TxUwe = Seq.Modulus - 1;
         RxLwe = 0;
-        RxUwe = 65535;
+        RxUwe = Seq.Modulus - 1;
         Outstanding.Clear();
         _received.Clear();
         _pendingInOrder.Clear();
