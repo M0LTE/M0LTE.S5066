@@ -25,11 +25,10 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- P1a (#10) is merged. The conformance corpus is tagged v0.1.0 and the submodule is pinned to it.
-- P1b (#11) D_PDU codecs, P1c (#12) C_PDU and S_PDU codecs, and P1d (#13) Annex S codec are running in parallel (Sonnet). Each opens a PR in s5066-conformance (its vectors) and one in M0LTE.S5066 (its code, with the submodule on its branch). Merge order: the conformance PR first, then repin the submodule to conformance main, then merge the code PR. Each needs an Opus reviewer first.
-- P2 design: draft PR M0LTE/M0LTE.Ms110d#19, under Opus review. After merge, the design's work items 1 to 7 are the phase-2 implementation (C# and C++ level), at version 0.5.0. Consumers do not change until they choose to.
+- Phase 1 is done. The corpus is at v0.2.0, and the submodule is on conformance main.
+- P2: modem 0.5.0 (design items 1 to 3) on M0LTE.Ms110d branch feat/5066-timing-plan. A Sonnet agent is finishing it (API snapshot, version, consumer builds, PR). Next comes an Opus review, then merge and NuGet publish (check that repo's publish.yml), then the SNR estimator (0.6.0, Opus or Fable).
+- Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
 
 ## Next
 
-- After P1a merges, run P1b (#11), P1c (#12) and P1d (#13) in parallel (Sonnet implementers, Opus reviewer each). Each adds T1 vectors to s5066-conformance first, citing matrix row ids.
 - Then phase 3 (DTS non-ARQ). It needs the T2 scenario runner, and Opus implementers.
