@@ -40,8 +40,18 @@ internal enum DtsPeerState
 /// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
 /// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
 /// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). Still discarded
-/// with no response: RESET/WIN-RESYNC (P4-4), the 8-bit family and the 16-bit types on an 8-bit
-/// link (P4-5), EXPEDITED-DATA and EXPEDITED-ACK (P4-6).
+/// with no response: the 8-bit family and the 16-bit types on an 8-bit link (P4-5), EXPEDITED-DATA
+/// and EXPEDITED-ACK (P4-6).
+/// </para>
+/// <para>
+/// Synchronisation and reset (P4-4): every DATA-ONLY, ACK-ONLY and DATA-ACK first passes Tests 1 to
+/// 5 (C-0793 to C-0801, C-1180); one that fails is not used at all and starts a FULL RESET as
+/// initiator (C-0791, C-0792, C-1170). RESET/WIN-RESYNC (type 12) is handled in every CONNECTED
+/// state (C-0661, C-0681, C-0701, C-0721): the FULL RESET in both roles (C-0804 to C-0826), the
+/// answer to RESET TX WIN RQST (C-0261, C-1177) and RESET RX WIN CMND as C-0274 settles it (C-1178).
+/// A command of ours is stop-and-wait: it is repeated at each <c>dts.reset_wait/&lt;peer&gt;</c>
+/// expiry until its RESET ACK comes, and meanwhile no regular data goes to the peer and none from
+/// it is used (C-0255, C-0257, C-1172, C-1175).
 /// </para>
 /// <para>
 /// State is kept per remote node (C-0565, C-0568) and driven only by D_PDUs addressed to this node,
@@ -163,11 +173,14 @@ internal sealed class DtsPeers
             case DataOnly or AckOnly or DataAck when _tx.LinkOf(h.Src) is ArqLink link:
                 OnArq(PeerOf(h.Src), link, pdu);
                 break;
+            case ResetWinResync r when _tx.LinkOf(h.Src) is ArqLink link:
+                OnReset(PeerOf(h.Src), link, r);
+                break;
             case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
                 or DataOnly or AckOnly or DataAck or ResetWinResync:
                 if (PeerOf(h.Src).Connected)
                 {
-                    break;   // RESET (P4-4), the 8-bit family (P4-5), expedited ARQ (P4-6)
+                    break;   // the 8-bit family (P4-5), expedited ARQ (P4-6)
                 }
 
                 // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
@@ -214,6 +227,10 @@ internal sealed class DtsPeers
         }
 
         peer.Connected = true;
+        peer.Exchange = null;
+        peer.ResetSent = false;
+        peer.RxResetFrameId = NoFrameId;   // C-1173: each connection starts its RESET FRAME ID sequences afresh
+        peer.TxResetFrameId = 0;
         peer.PeerIsEd4 = c.PeerIsEd4;
         peer.ShortFamily = c.ShortFamily;
         peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
@@ -242,6 +259,11 @@ internal sealed class DtsPeers
     private void OnArq(Peer peer, ArqLink link, Dpdu pdu)
     {
         DpduHeader h = pdu.Header;
+        if (peer.Exchange is not null)
+        {
+            return;   // C-1175: discarded while we wait for the peer's RESET ACK
+        }
+
         if (peer.State == DtsPeerState.IdleConnected)
         {
             peer.State = DtsPeerState.DataConnected;   // C-0658, C-0659, C-0660
@@ -250,6 +272,14 @@ internal sealed class DtsPeers
                 Warn(h.Src, pdu.Type, 3);   // C-0659: nothing of ours to acknowledge yet
                 return;
             }
+        }
+
+        if (!InSync(link, pdu))
+        {
+            // C-0791, C-0792, C-1170: out of synchronisation. Nothing in the D_PDU is used, its data is
+            // neither stored nor acknowledged (issue #49 (c)), and a FULL RESET starts.
+            StartFullReset(h.Src, peer, link);
+            return;
         }
 
         (DataFlags flags, int fsn, Octets segment)? data = pdu switch
@@ -293,7 +323,239 @@ internal sealed class DtsPeers
 
         peer.Connected = false;
         peer.State = DtsPeerState.IdleUnconnected;
+        EndExchange(peerAddress, peer);
+        _tx.RemoveControl(c => c is ResetItem && c.Dst == peerAddress);
         _tx.RejectArq(peerAddress);
+    }
+
+    /// <summary>
+    /// Tests 1 to 5 on a regular-data D_PDU from the peer (C-0793, C-0799, C-1180): the destination
+    /// tests on a DATA-ONLY or DATA-ACK, the originating tests on an ACK-ONLY or DATA-ACK. Equation 5
+    /// covers the FSNs a bitmap acknowledges (encoding 0, from RX LWE + 1 + 256 x offset, C-0233,
+    /// C-0250); run length encoded acknowledgements are P4-3's, so only their RX LWE is tested here.
+    /// </summary>
+    private static bool InSync(ArqLink link, Dpdu pdu) => pdu switch
+    {
+        DataOnly d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe),
+        DataAck d => link.InSyncAsDestination(d.TxFsn, d.Flags.TxWinUwe, d.Flags.TxWinLwe)
+            && link.InSyncAsOriginator(d.RxLwe, Acknowledged(link.Seq, d.RxLwe, d.Encoding, 0, d.SelectiveAcks.Span)),
+        AckOnly a => link.InSyncAsOriginator(a.RxLwe, Acknowledged(link.Seq, a.RxLwe, a.Encoding, a.Offset, a.AckData.Span)),
+        _ => true,
+    };
+
+    private static List<int> Acknowledged(SeqSpace seq, int rxLwe, int encoding, int offset, ReadOnlySpan<byte> bits)
+    {
+        var fsns = new List<int>();
+        if (encoding != 0)
+        {
+            return fsns;
+        }
+
+        for (int i = 0; i < bits.Length * 8; i++)
+        {
+            if ((bits[i / 8] & (1 << (i % 8))) != 0)
+            {
+                fsns.Add(seq.Add(rxLwe, (offset * 256) + 1 + i));
+            }
+        }
+
+        return fsns;
+    }
+
+    /// <summary>
+    /// Starts a FULL RESET as its initiator (C-0791, C-0792, C-0804): a FULL RESET CMD, FULL RESET
+    /// CMD flag 1, the next RESET FRAME ID NUMBER of our sequence, NEW RECEIVE LWE 0 and the two
+    /// window flags 0 (C-0805 to C-0809, C-1173), queued ahead of client data (C-1174); regular data
+    /// to the peer is suspended until the FULL RESET ACK comes (C-0257). Nothing more while an
+    /// exchange of ours is already pending (C-1170).
+    /// </summary>
+    private void StartFullReset(uint address, Peer peer, ArqLink link)
+    {
+        if (peer.Exchange is not null)
+        {
+            return;
+        }
+
+        BeginExchange(address, peer, link, new ResetItem(address, new ResetFlags(true, false, false, false), 0, peer.TxResetFrameId));
+    }
+
+    private void BeginExchange(uint address, Peer peer, ArqLink link, ResetItem command)
+    {
+        var item = new ResetItem(address, command.Flags, command.NewRxLwe, command.FrameId) { Placed = () => peer.ResetSent = true };
+        peer.Exchange = item;
+        link.Suspended = true;
+        _tx.AddControl(item);
+        _tx.SuspensionChanged();
+    }
+
+    /// <summary>Ends any exchange of ours with the peer: <c>dts.reset_wait</c> stops, a command not yet sent again is withdrawn, and regular data may flow (C-0257).</summary>
+    private void EndExchange(uint address, Peer peer)
+    {
+        if (peer.Exchange is not ResetItem item)
+        {
+            return;
+        }
+
+        peer.Exchange = null;
+        peer.ResetSent = false;
+        _context.Timers.Cancel(TimerName.ForPeer(TimerKind.DtsResetWait, address));
+        _tx.RemoveControl(c => ReferenceEquals(c, item));
+        if (_tx.LinkOf(address) is ArqLink link)
+        {
+            link.Suspended = false;
+        }
+
+        _tx.SuspensionChanged();
+    }
+
+    /// <summary>
+    /// A RESET/WIN-RESYNC (type 12) from a peer with a 16-bit ARQ machine (C-0661, C-0681, C-0701,
+    /// C-0721; C-0730). In MANAGEMENT(CONNECTED) it draws WARNING reason 3 and nothing else (C-0721).
+    /// Otherwise, in this order (C-1179):
+    /// <list type="number">
+    /// <item>RESET ACK set: the acknowledgement of our pending command (C-0264, C-0267). The exchange
+    /// ends (C-0257); if it was a FULL RESET CMD the initiator now resets (C-0821 to C-0824). With no
+    /// command of ours pending it is ignored.</item>
+    /// <item>FULL RESET CMD set: the responder's procedure (C-0811 to C-0820), whatever the other
+    /// flags; a copy, recognised by its RESET FRAME ID NUMBER, is acknowledged again but not acted on
+    /// again (C-0271, C-1173).</item>
+    /// <item>While a command of ours is still pending, RESET RX WIN CMND and RESET TX WIN RQST are
+    /// neither acted on nor acknowledged (C-1175).</item>
+    /// <item>RESET TX WIN RQST set: answered with one D_PDU that acknowledges it and forces the
+    /// resynchronisation, RESET ACK and RESET RX WIN CMND both set, NEW RECEIVE LWE our TX LWE (C-0261,
+    /// C-0263, C-0268, C-1177); it is a command of ours, so we wait for its RESET ACK (C-0264).</item>
+    /// <item>RESET RX WIN CMND set: RX LWE becomes NEW RECEIVE LWE (C-0265 as C-0274 settles it,
+    /// C-1178), then a RESET ACK (C-0266).</item>
+    /// </list>
+    /// An acknowledgement carries RESET ACK only and RESET FRAME ID NUMBER 0 (C-0816 to C-0818, C-1173),
+    /// and is never itself acknowledged (C-0820). NEW RECEIVE LWE is read only with RESET RX WIN CMND
+    /// (C-0269, C-0270). DATA(CONNECTED) and EXPEDITED-DATA(CONNECTED) go to IDLE(CONNECTED) on a new
+    /// FULL RESET CMD (C-0681, C-0701), then to DATA(CONNECTED) if ARQ C_PDUs are still queued for the
+    /// peer (C-1176); EXPEDITED-DATA(CONNECTED) goes to DATA(CONNECTED) otherwise (C-0701, C-0736).
+    /// </summary>
+    private void OnReset(Peer peer, ArqLink link, ResetWinResync r)
+    {
+        uint src = r.Header.Src;
+        if (peer.State == DtsPeerState.ManagementConnected)
+        {
+            Warn(src, r.Type, 3);   // C-0721
+            return;
+        }
+
+        ResetFlags flags = r.Flags;
+        if (flags.ResetAck && peer.Exchange is ResetItem pending)
+        {
+            EndExchange(src, peer);
+            peer.TxResetFrameId = (peer.TxResetFrameId + 1) % 256;   // acknowledged, so the next command takes the next ID (C-0272, C-0273)
+            if (pending.Flags.FullResetCmnd)
+            {
+                _tx.ResetArq(src);   // C-0822 to C-0824, C-0825
+            }
+        }
+
+        if (flags.FullResetCmnd)
+        {
+            OnFullResetCmd(peer, link, src, r.ResetFrameId);
+            return;
+        }
+
+        if (peer.State == DtsPeerState.ExpeditedDataConnected)
+        {
+            peer.State = DtsPeerState.DataConnected;   // C-0701, C-0736
+        }
+
+        if (peer.Exchange is not null || !(flags.ResetTxWinRqst || flags.ResetRxWinCmnd))
+        {
+            return;   // C-1175; or an acknowledgement only, or no flag at all (C-1179)
+        }
+
+        bool copy = r.ResetFrameId == peer.RxResetFrameId;
+        peer.RxResetFrameId = r.ResetFrameId;
+        if (flags.ResetRxWinCmnd && !copy)
+        {
+            foreach (ReadOnlyMemory<byte> cpdu in link.ResyncReceive(r.NewRxLwe))   // C-0265, C-0274, C-1178
+            {
+                _context.Enqueue(new DUnidataIndication(src, r.Header.Dst, false, true, cpdu));
+            }
+        }
+
+        if (flags.ResetTxWinRqst)
+        {
+            if (!copy)
+            {
+                // C-0261, C-0263, C-0268, C-1177: acknowledge the request and force the resynchronisation in one D_PDU.
+                BeginExchange(src, peer, link, new ResetItem(src, new ResetFlags(false, false, true, true), link.TxLwe, peer.TxResetFrameId));
+            }
+
+            return;
+        }
+
+        QueueResetAck(src);   // C-0266, for a copy too (C-0271)
+    }
+
+    /// <summary>
+    /// The responder's FULL RESET (C-0811 to C-0820). A new command (its RESET FRAME ID NUMBER differs
+    /// from the last one received, C-0271, C-1173): any RESET RX WIN CMND exchange of ours is dropped,
+    /// its NEW RECEIVE LWE now stale (C-1175); the ARQ machine resets, partly completed C_PDUs are
+    /// rejected and the receive buffers flushed (C-0812 to C-0814, C-0826, C-1176); the state goes to
+    /// IDLE(CONNECTED) (C-0661, C-0681, C-0701), or DATA(CONNECTED) when ARQ C_PDUs remain queued
+    /// (C-1176). A pending FULL RESET of our own stays pending. Every copy is acknowledged (C-0815).
+    /// </summary>
+    private void OnFullResetCmd(Peer peer, ArqLink link, uint src, int frameId)
+    {
+        if (frameId != peer.RxResetFrameId)
+        {
+            peer.RxResetFrameId = frameId;
+            if (peer.Exchange is ResetItem { Flags.FullResetCmnd: false })
+            {
+                EndExchange(src, peer);
+            }
+
+            _tx.ResetArq(src);
+            peer.State = _tx.HasArqFor(src) ? DtsPeerState.DataConnected : DtsPeerState.IdleConnected;
+        }
+
+        QueueResetAck(src);
+    }
+
+    /// <summary>
+    /// Queues a RESET ACK (C-0816 to C-0818; C-1173 for the RX WIN CMND acknowledgement), unless one to
+    /// the peer is already queued and unsent: a second copy acknowledges nothing more.
+    /// </summary>
+    private void QueueResetAck(uint dst)
+    {
+        var ackFlags = new ResetFlags(false, false, false, true);
+        if (!_tx.PendingControl.Any(c => c is ResetItem a && a.Dst == dst && a.Flags == ackFlags))
+        {
+            _tx.AddControl(new ResetItem(dst, ackFlags, 0, 0));
+        }
+    }
+
+    /// <summary>
+    /// Our transmission has ended: <c>dts.reset_wait/&lt;peer&gt;</c> starts for each peer it carried a
+    /// RESET/WIN-RESYNC command to, in ascending address order, with the time allowed for an answer
+    /// (C-0255, C-0264, C-1172).
+    /// </summary>
+    public void OnTransmitDone()
+    {
+        foreach ((uint address, Peer peer) in _peers)
+        {
+            if (peer.ResetSent && peer.Exchange is not null)
+            {
+                _context.Timers.Start(TimerName.ForPeer(TimerKind.DtsResetWait, address), _tx.AnswerWaitMs());
+            }
+
+            peer.ResetSent = false;
+        }
+    }
+
+    /// <summary><c>dts.reset_wait/&lt;peer&gt;</c> expired with no RESET ACK: the same command goes again, same RESET FRAME ID NUMBER (C-0255, C-0272, C-1172).</summary>
+    public void OnResetWaitTimer(uint address)
+    {
+        if (_peers.TryGetValue(address, out Peer? peer) && peer.Exchange is ResetItem item && !_tx.PendingControl.Contains(item))
+        {
+            _tx.AddControl(item);
+        }
     }
 
     /// <summary>The <c>dts.reception_window</c> expiry (C-0336).</summary>
@@ -403,5 +665,17 @@ internal sealed class DtsPeers
 
         /// <summary>From D_CONNECTION_MADE: the 8-bit FSN family is in force (for P4-5).</summary>
         public bool ShortFamily { get; set; }
+
+        /// <summary>Our RESET/WIN-RESYNC command awaiting its RESET ACK, or null (C-0255, C-0264).</summary>
+        public ResetItem? Exchange { get; set; }
+
+        /// <summary>The pending command went into the transmission now in flight (C-1172).</summary>
+        public bool ResetSent { get; set; }
+
+        /// <summary>The RESET FRAME ID NUMBER of the last command received, or above 255 when none (C-0271, C-1173).</summary>
+        public int RxResetFrameId { get; set; } = NoFrameId;
+
+        /// <summary>The RESET FRAME ID NUMBER our next command takes, modulo 256 (C-0272, C-0273, C-1173).</summary>
+        public int TxResetFrameId { get; set; }
     }
 }

@@ -329,8 +329,8 @@ public class TransmitQueueTests
     [Fact]
     public void An_acknowledgement_of_several_ack_onlys_is_not_merged_into_a_data_ack()
     {
-        // C-1151, C-1152: FSN 1 and every eighth FSN to 2048 need two ACK-ONLYs, so data to the peer goes as
-        // DATA-ONLY after them; the fill then repeats them in turn.
+        // C-1151, C-1152: FSN 1 and every eighth FSN to 2048 need eight ACK-ONLYs of one 32-byte bitmap
+        // each, so data to the peer goes as DATA-ONLY after them; the fill then repeats them in turn.
         var q = new Rig(blockBytes: 400);
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         ArqLink link = q.Tx.OpenLink(X);
@@ -343,8 +343,9 @@ public class TransmitQueueTests
         q.Tx.AckOwed();
         q.Tx.AddArq(Arq(X, 4));
         List<Dpdu> pdus = q.Decode(q.Tx.Build());
-        pdus.Select(p => p.Type).Take(3).Should().Equal(10, 10, 9);
-        pdus.OfType<AckOnly>().Take(2).Select(a => a.Offset).Should().Equal(0, 7);
+        pdus.Select(p => p.Type).Take(9).Should().Equal(10, 10, 10, 10, 10, 10, 10, 10, 9);
+        pdus.OfType<AckOnly>().Take(8).Select(a => a.Offset).Should().Equal(Enumerable.Range(0, 8));
+        pdus.OfType<AckOnly>().Take(8).Should().OnlyContain(a => a.AckData.Length == 32);
         link.AckOwed.Should().BeFalse();
     }
 

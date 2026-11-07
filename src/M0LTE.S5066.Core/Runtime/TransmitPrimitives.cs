@@ -13,6 +13,9 @@ internal enum DReason
 
     /// <summary>The C_PDU's TTL expired before it was sent (C-0859, C-1050).</summary>
     TtlExpired,
+
+    /// <summary>A FULL RESET discarded the C_PDU part way through (C-0813, C-0823, C-0826, C-1176): a local reason (C-0866).</summary>
+    Reset,
 }
 
 /// <summary>Why the CAS refused a C_UNIDATA_REQUEST (Table B-1, B-0018). The values are ours.</summary>

@@ -10,6 +10,9 @@ internal enum ControlClass
 
     /// <summary>WARNING (type 15) D_PDUs, oldest first.</summary>
     Warning,
+
+    /// <summary>RESET/WIN-RESYNC (type 12) D_PDUs, after WARNING and ahead of client data, oldest first (C-1174).</summary>
+    Reset,
 }
 
 /// <summary>
@@ -60,4 +63,23 @@ internal sealed class WarningItem(uint dst, int receivedFrameType, int reason) :
     public int Reason { get; } = reason;
 
     public override Dpdu Build(DpduHeader header) => new Warning(header, ReceivedFrameType, Reason);
+}
+
+/// <summary>
+/// A RESET/WIN-RESYNC D_PDU of the 16-bit family (type 12; C-0258, C-0730): its four flags, NEW
+/// RECEIVE LWE and RESET FRAME ID NUMBER, fixed when it is queued. A command (FULL RESET CMD, or
+/// RESET RX WIN CMND) is sent again unchanged at each <c>dts.reset_wait</c> expiry (C-0255, C-0272,
+/// C-1172); an acknowledgement is sent once per command received (C-0256, C-1173).
+/// </summary>
+internal sealed class ResetItem(uint dst, ResetFlags flags, int newRxLwe, int frameId) : ControlItem(dst)
+{
+    public override ControlClass Class => ControlClass.Reset;
+
+    public ResetFlags Flags { get; } = flags;
+
+    public int NewRxLwe { get; } = newRxLwe;
+
+    public int FrameId { get; } = frameId;
+
+    public override Dpdu Build(DpduHeader header) => new ResetWinResync(header, Flags, NewRxLwe, FrameId);
 }

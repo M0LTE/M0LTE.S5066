@@ -70,11 +70,15 @@ internal interface ITransmissionSource
 /// <para>
 /// Acknowledgement encodings, fill and block alignment (P4-3): an acknowledgement carries the more
 /// compact of the bitmap and run length encoding, and is split into ACK-ONLY D_PDUs with offsets when
-/// neither fits 255 bytes (C-0222 to C-0233, C-1150, C-1151); it merges into a DATA-ACK only as one
+/// neither fits 32 bytes, so each ACK-ONLY stays small (C-0213, C-0222 to C-0233, C-1150, C-1151); it merges into a DATA-ACK only as one
 /// ACK-ONLY of at most 18 bytes (C-1152). The spare bytes of a transmission's last block are filled
 /// with copies of its acknowledgements, then PADDING when every addressee is known Ed4 (C-0367,
 /// C-0882, C-0886, C-1154). Towards a peer known Ed4, ARQ segments are cut short so D_PDUs end at block
-/// boundaries and fill the capacity (C-0553, C-0872, C-1155). Not here yet: the 8-bit family (P4-5).
+/// boundaries and fill the capacity (C-0553, C-0872, C-1155).
+/// RESET/WIN-RESYNC D_PDUs (P4-4) are control items after WARNING (C-1174); while a reset exchange
+/// with a peer is pending its regular data is held back (C-0257), and a FULL RESET discards its
+/// partly completed C_PDUs (<see cref="ResetArq"/>).
+/// Not here yet: the 8-bit family (P4-5).
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -125,6 +129,13 @@ internal sealed class TransmitQueue : ITransmissionSource
         item.Seq = _nextSeq++;
         _control.Add(item);
         _mac.QueueState(true);
+    }
+
+    /// <summary>Removes queued, unsent DTS-generated D_PDUs that match (RESET/WIN-RESYNC items a reset or a connection end makes stale, C-1175).</summary>
+    public void RemoveControl(Predicate<ControlItem> match)
+    {
+        _control.RemoveAll(match);
+        _mac.QueueState(Placeable());
     }
 
     /// <summary>
@@ -223,6 +234,44 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>
+    /// The FULL RESET of the peer's ARQ machine, in either role (C-0812 to C-0814, C-0822 to C-0824):
+    /// the window edges go back to their initial values and the receive buffers are flushed
+    /// (<see cref="ArqLink.Reset"/>); every ARQ C_PDU to the peer that is partly completed, at least
+    /// one segment given an FSN and not yet confirmed, is discarded and rejected to the CAS, oldest
+    /// first, unless already rejected for its TTD (C-0813, C-0823, C-0826, C-1176); C_PDUs not yet
+    /// started stay queued, to be cut afresh from the reset window. <c>dts.ack_wait/&lt;peer&gt;</c>
+    /// stops, since nothing awaits an acknowledgement any more.
+    /// </summary>
+    public void ResetArq(uint peer)
+    {
+        if (!_links.TryGetValue(peer, out ArqLink? link))
+        {
+            return;
+        }
+
+        link.Reset();
+        _context.Timers.Cancel(AckWaitTimer(peer));
+        List<ArqCPdu> gone = _arq.Where(a => a.Peer == peer && a.Placed).ToList();
+        _arq.RemoveAll(a => a.Peer == peer && a.Placed);
+        foreach (ArqCPdu a in gone)
+        {
+            if (!a.Dropped)
+            {
+                _context.Enqueue(new DUnidataRequestRejected(a.Request.Handle, DReason.Reset));
+            }
+        }
+
+        _mac.QueueState(Placeable());
+        ReconcileTimer();
+    }
+
+    /// <summary>Whether ARQ C_PDUs are still held for the peer (C-1176).</summary>
+    public bool HasArqFor(uint peer) => _arq.Any(a => a.Peer == peer && !a.Dropped);
+
+    /// <summary>A reset exchange with the peer started or ended (C-0257): what can be placed may have changed.</summary>
+    public void SuspensionChanged() => _mac.QueueState(Placeable());
+
+    /// <summary>
     /// Our transmission has ended (core-architecture.md 5.7): <c>dts.ack_wait/&lt;peer&gt;</c> starts,
     /// or restarts, for each peer that had ARQ data D_PDUs in it and still has some awaiting an
     /// acknowledgement, in ascending address order (C-1120). Its value is <c>dts.ack_wait_ms</c>, or
@@ -263,7 +312,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <list type="number">
     /// <item>An RX LWE beyond TX LWE (and no further than TX UWE + 1) acknowledges every FSN from TX
     /// LWE up to it, and TX LWE moves to it (C-0780, C-0781). One outside that range says nothing
-    /// usable here; the synchronisation tests that catch it are P4-4's, so the D_PDU is ignored.</item>
+    /// usable here; the receive side applies Test 4 first (C-0800, C-1170), so it never arrives.</item>
     /// <item>The Ack Data, bitmap or run length encoded (C-0226 to C-0232), marks each FSN it covers,
     /// from RX LWE + 1 + 256 x offset (C-0233, C-0250): a set bit acknowledges it (C-0202), a clear bit
     /// means it failed (C-0205, C-0907, C-0908). Bits reaching beyond the maximum window ahead of RX
@@ -286,7 +335,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         SeqSpace seq = link.Seq;
         if (!seq.InArc(rxLwe, link.TxLwe, seq.Add(link.TxUwe, 1)))
         {
-            return;   // Test 4 territory (C-0800), P4-4
+            return;   // cannot happen: the receive side has applied Test 4 (C-0800, C-1170)
         }
 
         foreach (ArqFrame f in link.Outstanding.Where(f => seq.Distance(link.TxLwe, f.Fsn) < seq.Distance(link.TxLwe, rxLwe)).ToList())
@@ -473,7 +522,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (ArqLink link in _links.Values)
         {
-            if (link.AckOwed)
+            if (link.AckOwed && !link.Suspended)   // C-0257
             {
                 return link.Acknowledgement().Sum(u => AckOnlySize(link.Peer, u.Data.Length));
             }
@@ -503,9 +552,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
 
             var a = (ArqCPdu)c;
-            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link)
+            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended)
             {
-                continue;
+                continue;   // C-0257: no regular data while a reset exchange is pending
             }
 
             if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
@@ -693,9 +742,9 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (ArqLink link in _links.Values)
         {
-            if (!link.AckOwed)
+            if (!link.AckOwed || link.Suspended)
             {
-                continue;
+                continue;   // C-0257
             }
 
             // Every ACK-ONLY of the peer's acknowledgement goes, or none: together they acknowledge
@@ -742,9 +791,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             else
             {
                 var a = (ArqCPdu)c;
-                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link)
+                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended)
                 {
-                    continue;   // fully sent, or its connection does not use the 16-bit family (P4-5)
+                    continue;   // fully sent, its connection does not use the 16-bit family (P4-5), or a reset exchange is pending (C-0257)
                 }
 
                 bool started = a.Partial;
@@ -824,7 +873,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         var failed = new List<ArqFrame>();
         foreach (ArqLink link in _links.Values)
         {
-            if (!HeldBehindExpedited(link.Peer, false))
+            if (!HeldBehindExpedited(link.Peer, false) && !link.Suspended)   // C-0257
             {
                 failed.AddRange(link.Outstanding.Where(f => f.State == ArqFrameState.Failed));
             }
@@ -846,7 +895,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     {
         var list = new List<(object Item, bool Partial, int Priority, long Seq)>();
         list.AddRange(Normal().Select(e => ((object)e, false, e.Priority, e.Seq)));
-        list.AddRange(_arq.Select(a => ((object)a, a.Partial && _links.ContainsKey(a.Peer), a.Priority, a.Seq)));
+        list.AddRange(_arq.Select(a => ((object)a, a.Partial && _links.TryGetValue(a.Peer, out ArqLink? l) && !l.Suspended, a.Priority, a.Seq)));
         list.Sort((x, y) =>
             x.Partial != y.Partial ? y.Partial.CompareTo(x.Partial)
             : x.Priority != y.Priority ? y.Priority.CompareTo(x.Priority)
@@ -1224,6 +1273,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// contention wait (K-0080), then a transmission of the configured length, by whose end a peer
     /// that heard us and shares our settings has answered unless it chose to send elsewhere.
     /// </summary>
+    /// <summary>The time allowed for the peer to answer: <c>dts.ack_wait_ms</c>, or when unset <see cref="DerivedAckWaitMs"/> (C-1120); also the RESET/WIN-RESYNC wait (C-1172).</summary>
+    public long AnswerWaitMs() => _context.Config.Dts.AckWaitMs ?? DerivedAckWaitMs();
+
     private long DerivedAckWaitMs()
     {
         CsmaConfig csma = _context.Config.Csma;

@@ -86,7 +86,8 @@ public class ArqLinkTests
     [Fact]
     public void The_acknowledgement_is_split_by_offset_when_it_does_not_fit()
     {
-        // C-0222, C-0223, C-0233, C-1151: FSN 3 and every third FSN to 3000; no single field of 255 bytes holds it.
+        // C-0213, C-0222, C-0233, C-1151: FSN 3 and every third FSN to 3000. Each 256-FSN unit needs a
+        // 32-byte bitmap (its run length encoding is longer), so each ACK-ONLY covers one unit.
         var link = new ArqLink(1);
         for (int f = 3; f <= 3000; f += 3)
         {
@@ -94,13 +95,34 @@ public class ArqLinkTests
         }
 
         IReadOnlyList<AckUnit> units = link.Acknowledgement();
-        units.Select(u => u.Offset).Should().Equal(0, 7);
+        units.Select(u => u.Offset).Should().Equal(Enumerable.Range(0, 12));
         units.Should().OnlyContain(u => u.RxLwe == 0 && u.Encoding == 0 && u.Data.Length <= ArqLink.MaxAckBytes);
-        units[0].Data.Length.Should().Be(224);                  // seven 256-FSN units as a bitmap
-        units[1].Data.Length.Should().Be((3000 - 1792 + 7) / 8);  // the rest, FSN 1793 to 3000
-        var bits = units.SelectMany(u => AckData.Decode(u.Encoding, u.Data).Take(u == units[0] ? 1792 : 3000 - 1792)).ToList();
+        units.Take(11).Should().OnlyContain(u => u.Data.Length == 32);   // one 256-FSN unit as a bitmap
+        units[11].Data.Length.Should().Be((3000 - 2816 + 7) / 8);       // the rest, FSN 2817 to 3000
+        var bits = units.SelectMany(u => AckData.Decode(u.Encoding, u.Data).Take(u.Offset < 11 ? 256 : 3000 - 2816)).ToList();
         bits.Should().HaveCount(3000);
         bits.Select((b, i) => (b, i)).Should().OnlyContain(x => x.b == ((x.i + 2) % 3 == 1));
+    }
+
+    [Fact]
+    public void A_compact_run_length_encoding_covers_several_offset_units_in_one_ack_only()
+    {
+        // C-1150, C-1151: FSN 1 to 1000 held, then every second FSN to 1299. Four units (FSN 1 to 1024)
+        // run length encode in 25 bytes (a two-byte code for the run FSN 1 to 1001, then 23 one-byte
+        // codes); a fifth would not fit 32 bytes. The rest, 275 bits, needs a 35-byte bitmap, so it is split again at Offset 5.
+        var link = new ArqLink(1);
+        for (int f = 1; f <= 1000; f++)
+        {
+            link.Receive(f, false, false, false, false, [9]);
+        }
+
+        for (int f = 1001; f <= 1300; f += 2)
+        {
+            link.Receive(f, false, false, false, false, [9]);
+        }
+
+        IReadOnlyList<AckUnit> units = link.Acknowledgement();
+        units.Select(u => (u.Offset, u.Encoding, u.Data.Length)).Should().Equal((0, 1, 25), (4, 0, 32), (5, 0, 3));
     }
 
     [Fact]
@@ -137,4 +159,92 @@ public class ArqLinkTests
         link.RxLwe.Should().Be(3);
         link.Receive(3, true, true, false, false, [0xD]).Select(m => m.ToArray()[0]).Should().Equal(0xD, 0xC);
     }
+
+    [Fact]
+    public void Equations_1_to_3_are_arcs_from_the_receive_edges()
+    {
+        var link = new ArqLink(1);
+        // Initial edges (C-0786): Equation 1 accepts 65535 forward to 32767, Equation 2 32768 forward to 0.
+        link.InSyncAsDestination(0, true, true).Should().BeTrue();
+        link.InSyncAsDestination(32767, true, false).Should().BeTrue();
+        link.InSyncAsDestination(32768, true, false).Should().BeFalse();   // C-0794
+        link.InSyncAsDestination(1, false, true).Should().BeFalse();       // C-0797: TX LWE beyond RX LWE
+        link.InSyncAsDestination(40000, false, false).Should().BeTrue();   // Equation 3 holds every FSN while nothing is held
+
+        link.Receive(0, true, true, false, false, NoData.Span);
+        link.Receive(2, true, true, false, false, NoData.Span);   // RX LWE 1, RX UWE 2
+        link.InSyncAsDestination(32768, false, false).Should().BeTrue();
+        link.InSyncAsDestination(32769, false, false).Should().BeFalse();  // C-0798: the gap Equation 3 leaves
+        link.InSyncAsDestination(32770, false, false).Should().BeFalse();
+        link.InSyncAsDestination(32771, false, false).Should().BeTrue();   // a copy behind RX LWE (C-1126)
+        link.InSyncAsDestination(0, true, false).Should().BeFalse();       // TX UWE behind RX UWE
+    }
+
+    [Fact]
+    public void Equations_4_and_5_are_arcs_from_the_transmit_edges()
+    {
+        var link = new ArqLink(1);
+        link.InSyncAsOriginator(0, []).Should().BeTrue();
+        link.InSyncAsOriginator(1, []).Should().BeFalse();       // C-0800: beyond TX UWE + 1 = 0
+        link.InSyncAsOriginator(0, [1]).Should().BeFalse();      // C-0786: nothing outstanding
+        link.AllocateFsn();
+        link.AllocateFsn();
+        link.AllocateFsn();                                      // FSNs 0 to 2 outstanding
+        link.InSyncAsOriginator(3, []).Should().BeTrue();
+        link.InSyncAsOriginator(0, [2]).Should().BeTrue();
+        link.InSyncAsOriginator(0, [0]).Should().BeFalse();      // C-0801: TX LWE itself is excluded
+        link.InSyncAsOriginator(0, [3]).Should().BeFalse();      // beyond TX UWE
+        link.InSyncAsOriginator(65535, []).Should().BeFalse();   // behind TX LWE
+    }
+
+    [Fact]
+    public void A_receive_resync_keeps_what_lies_in_the_new_window_and_releases_in_order_data()
+    {
+        var link = new ArqLink(1);
+        link.Receive(2, true, true, true, false, new byte[] { 2 }).Should().BeEmpty();   // in order: waits for 0 and 1
+        link.Receive(5, true, false, false, false, new byte[] { 5 }).Should().BeEmpty(); // a C_PDU start
+        var got = link.ResyncReceive(3);   // C-1178: the peer commands RX LWE 3, its TX LWE
+        got.Should().BeEmpty("FSN 2 is behind the new RX LWE and is discarded");
+        link.RxLwe.Should().Be(3);
+        link.RxUwe.Should().Be(5);
+        link.Receive(6, false, true, false, false, new byte[] { 6 }).Single().ToArray().Should().Equal(5, 6);
+
+        var other = new ArqLink(1);
+        other.Receive(1, true, true, true, false, new byte[] { 1 }).Should().BeEmpty();
+        other.ResyncReceive(1).Single().ToArray().Should().Equal(1);   // RX LWE passes FSN 1, so it goes
+        other.RxLwe.Should().Be(2);
+    }
+
+    [Fact]
+    public void A_receive_resync_never_moves_rx_lwe_back_over_delivered_data()
+    {
+        var link = new ArqLink(1);
+        for (int f = 0; f < 10; f++)
+        {
+            link.Receive(f, true, true, false, false, new byte[] { (byte)f }).Should().ContainSingle();
+        }
+
+        // The peer's TX LWE 3 lags our RX LWE 10 (its acknowledgements were lost): that passes
+        // Equation 2, so nothing moves, and its retransmissions of FSNs 3 to 9 stay copies (C-1178).
+        link.ResyncReceive(3).Should().BeEmpty();
+        link.RxLwe.Should().Be(10);
+        link.RxUwe.Should().Be(9);
+        link.Receive(5, true, true, false, false, new byte[] { 5 }).Should().BeEmpty("FSN 5 was delivered already");
+    }
+
+    [Fact]
+    public void A_full_reset_returns_to_the_initial_edges()
+    {
+        var link = new ArqLink(1);
+        link.AllocateFsn();
+        link.Receive(0, true, false, false, false, new byte[] { 1 });
+        link.Reset();   // C-0812, C-0814
+        link.TxLwe.Should().Be(0);
+        link.TxUwe.Should().Be(65535);
+        link.RxLwe.Should().Be(0);
+        link.RxUwe.Should().Be(65535);
+        link.AckOwed.Should().BeFalse();
+        link.Receive(0, true, true, false, false, new byte[] { 9 }).Single().ToArray().Should().Equal(9);
+    }
 }
+
