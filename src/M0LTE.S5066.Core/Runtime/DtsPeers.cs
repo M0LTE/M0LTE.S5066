@@ -108,7 +108,7 @@ internal sealed class DtsPeers
     /// <summary>The state kept for a peer, for tests; IDLE(UNCONNECTED) for a peer never heard.</summary>
     internal DtsPeerState StateOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.State : DtsPeerState.IdleUnconnected;
 
-    /// <summary>A whole D_PDU with good CRCs, whoever it is addressed to (C-0838).</summary>
+    /// <summary>A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), or a DATA-ACK whose data CRC alone failed (C-1133).</summary>
     public void OnDpdu(Dpdu pdu)
     {
         NodeConfig config = _context.Config;
@@ -150,6 +150,11 @@ internal sealed class DtsPeers
         if (!toUs)
         {
             return;   // C-0566; no other type has a group form (C-0122)
+        }
+
+        if (pdu is DataAck { SegmentCrcOk: false, Flags.DropCPdu: false } && _tx.LinkOf(h.Src) is null)
+        {
+            return;   // a failed data CRC with no ARQ machine to take the acknowledgement: discarded (C-0836, C-0839)
         }
 
         OweEowIfUnrecognised(h, true);
@@ -229,7 +234,8 @@ internal sealed class DtsPeers
     }
 
     /// <summary>
-    /// A DATA-ONLY, ACK-ONLY or DATA-ACK from a peer with a 16-bit ARQ machine. The data part first:
+    /// A DATA-ONLY, ACK-ONLY or DATA-ACK from a peer with a 16-bit ARQ machine (a DATA-ACK whose data
+    /// CRC failed brings its acknowledgement part only, which is neither stored nor acknowledged, C-1133). The data part first:
     /// each C_PDU it lets be delivered goes to the CAS with D_UNIDATA_INDICATION (C-0514, C-0517);
     /// then the acknowledgement part, which may confirm C_PDUs to the CAS (C-0680).
     /// </summary>
@@ -249,8 +255,8 @@ internal sealed class DtsPeers
         (DataFlags flags, int fsn, Octets segment)? data = pdu switch
         {
             DataOnly d => (d.Flags, d.TxFsn, d.Segment),
-            DataAck d => (d.Flags, d.TxFsn, d.Segment),
-            _ => null,
+            DataAck d when d.SegmentCrcOk || d.Flags.DropCPdu => (d.Flags, d.TxFsn, d.Segment),
+            _ => null,   // an ACK-ONLY, or a DATA-ACK whose data CRC failed: acknowledgement part only (C-1133)
         };
         if (data is var (f, txFsn, seg))
         {

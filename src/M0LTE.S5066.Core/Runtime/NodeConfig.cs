@@ -81,16 +81,15 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
 /// </param>
 /// <param name="AckWaitMs">
 /// dts.ack_wait_ms: how long after the end of a transmission carrying ARQ data to a peer the DTS
-/// waits for an acknowledgement before it treats the unacknowledged D_PDUs as failed; no default
-/// (C-0911, C-1120). Null until configured; read when <c>dts.ack_wait</c> starts.
+/// waits for an acknowledgement before it treats the unacknowledged D_PDUs as failed (C-0911,
+/// C-1120). The standard gives no value. When null the wait is derived: the configured transmission
+/// length plus the LBT wait after an own transmission plus the longest contention wait, the same
+/// allowance per later transmission as a reception window (C-1051). Read when <c>dts.ack_wait</c> starts.
 /// </param>
 public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs, int MaxWindow = DtsConfig.MaxWindowLimit, int? AckWaitMs = null)
 {
     /// <summary>The maximum window size of the 16-bit family (C-0771).</summary>
     public const int MaxWindowLimit = 32768;
-
-    /// <summary>dts.ack_wait_ms, or throws when unset.</summary>
-    public int RequireAckWaitMs() => AckWaitMs ?? throw new MissingSettingException("dts.ack_wait_ms");
 
     /// <summary>The largest segment size the standard allows (C-0503, C-0523).</summary>
     public const int MaxSegmentSizeLimit = 1023;

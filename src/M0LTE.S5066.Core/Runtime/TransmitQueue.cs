@@ -218,8 +218,11 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>
     /// Our transmission has ended (core-architecture.md 5.7): <c>dts.ack_wait/&lt;peer&gt;</c> starts,
-    /// or restarts, with <c>dts.ack_wait_ms</c> for each peer that had ARQ data D_PDUs in it and
-    /// still has some awaiting an acknowledgement, in ascending address order (C-1120).
+    /// or restarts, for each peer that had ARQ data D_PDUs in it and still has some awaiting an
+    /// acknowledgement, in ascending address order (C-1120). Its value is <c>dts.ack_wait_ms</c>, or
+    /// when that is unset the time allowed for one later transmission (<see cref="LaterTransmissionMs"/>):
+    /// the peer's turnaround (LBT wait and the longest contention wait) plus a transmission of the
+    /// configured length, by which time a peer that heard us has normally answered (C-1120).
     /// </summary>
     public void OnTransmitDone()
     {
@@ -227,7 +230,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (_links.TryGetValue(peer, out ArqLink? link) && link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
             {
-                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.RequireAckWaitMs());
+                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.AckWaitMs ?? LaterTransmissionMs());
             }
         }
 

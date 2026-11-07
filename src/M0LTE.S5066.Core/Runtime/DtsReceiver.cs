@@ -223,8 +223,10 @@ internal sealed class DtsReceiver
     /// <summary>
     /// A whole D_PDU. A failed data CRC means discard (C-0836): we run no non-ARQ with errors
     /// service, so this applies to every type that carries one (C-0839), except a DROP PDU, which
-    /// carries no data and is acknowledged whatever its data CRC (C-0204, C-0217, C-1125). The rest
-    /// go to the state machine (C-0838).
+    /// carries no data and is acknowledged whatever its data CRC (C-0204, C-0217, C-1125). A DATA-ACK
+    /// (type 11) with a failed data CRC is counted as one, but still goes to the state machine, whose
+    /// acknowledgement part rides in the checked header (C-0141, C-1133). The rest go to the state
+    /// machine (C-0838).
     /// </summary>
     private void Deliver(Dpdu pdu)
     {
@@ -246,7 +248,10 @@ internal sealed class DtsReceiver
             uint src = pdu.Header.Src;
             (long headers, long dataCrc) = _countsThisBurst[src];
             _countsThisBurst[src] = (headers, dataCrc + 1);
-            return;
+            if (pdu is not DataAck)
+            {
+                return;
+            }
         }
 
         _toStateMachine(pdu);
