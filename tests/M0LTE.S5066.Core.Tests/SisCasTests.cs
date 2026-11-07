@@ -41,7 +41,7 @@ public class SisCasTests
         SpduData s = SpduCodec.Decode(c.SPdu.Span).Value.Should().BeOfType<SpduData>().Subject;
         s.Should().Be(new SpduData(9, 5, 7, false, new SpduTtd(1, 30), new byte[] { 0xAA, 0xBB }));   // day 1, 61 s -> 30 (A-0163)
         rig.MacLog.Should().Equal("QueueState:True");
-        rig.Outputs.Should().BeEmpty();
+        rig.Outputs.Should().Equal(new TimerStart(TimerName.Of(TimerKind.DtsTtd), 30 * 2000));   // C-1050
     }
 
     [Fact]

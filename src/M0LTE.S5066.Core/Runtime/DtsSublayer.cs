@@ -37,6 +37,9 @@ internal sealed class DtsSublayer : IDtsSublayer
     {
         switch (name.Kind)
         {
+            case TimerKind.DtsTtd:
+                _tx.OnTtdTimer();   // C-0857, C-0864, C-1050
+                break;
             case TimerKind.DtsReceptionWindow:
                 _peers.OnReceptionWindowTimer();
                 break;

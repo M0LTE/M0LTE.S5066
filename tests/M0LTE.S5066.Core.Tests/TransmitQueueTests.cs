@@ -74,29 +74,108 @@ public class TransmitQueueTests
     [Fact]
     public void C_pdu_ids_wrap_modulo_4096()
     {
-        // C-0326, C-0329.
+        // C-0326, C-0329. Each build is a minute after the last, so every earlier window has ended (C-0327).
         var q = new Rig();
         for (int i = 0; i < 4096; i++)
         {
-            q.Tx.Add(Normal(X, 0, [1]));
+            q.Context.Now = i * 60_000L;
+            q.Tx.Add(Normal(X, 0, [1]) with { Ttd = long.MaxValue });
             q.Tx.Build();
         }
 
-        q.Tx.Add(Normal(X, 0, [1]));
+        q.Context.Now = 4096 * 60_000L;
+        q.Tx.Add(Normal(X, 0, [1]) with { Ttd = long.MaxValue });
         Id(q.Decode(q.Tx.Build()).Single()).Should().Be(0);
     }
 
     [Fact]
-    public void Requests_needing_p3_5_are_queued_and_refused_only_at_build()
+    public void An_id_is_not_reused_inside_its_window_and_dts_ttd_wakes_the_queue_when_it_is_freed()
     {
-        var q = new Rig();
-        q.Tx.Add(Normal(X, 0, new byte[1024]));
-        q.Tx.Count.Should().Be(1);
-        FluentBuild(q).Should().Throw<NotSupportedException>();
+        // C-0327, C-1053: 4097 one-byte C_PDUs fit one huge block, but the 4097th would need ID 0,
+        // whose window runs to the end of this transmission. It waits; dts.ttd runs to the window end.
+        var q = new Rig(blockBytes: 200_000, blockMs: 10_000);
+        for (int i = 0; i < 4097; i++)
+        {
+            q.Tx.Add(Normal(X, 0, [1]) with { Ttd = 10_000_000 });
+        }
 
-        var r = new Rig();
-        r.Tx.Add(Normal(X, 0, [1]) with { MinRetransmissions = 1 });
-        FluentBuild(r).Should().Throw<NotSupportedException>();
+        List<Dpdu> first = q.Decode(q.Tx.Build());
+        first.Should().HaveCount(4096);
+        Id(first[^1]).Should().Be(4095);
+        q.Tx.Count.Should().Be(1);
+        q.Observer.Log.Last().Should().Be("QueueState:False");
+
+        // One 10 s block plus preamble 720: EOT and window ceil(10000 / 500) = 20 for every D_PDU, so ID 0 is held to 720 + 10000.
+        TimerName ttd = TimerName.Of(TimerKind.DtsTtd);
+        q.Context.Timers.Deadline(ttd).Should().Be(10_720);
+        q.Context.Now = 10_720;
+        q.Context.Timers.Expire(ttd, 10_720);
+        q.Tx.OnTtdTimer();
+        q.Observer.Log.Last().Should().Be("QueueState:True");
+        q.Context.Timers.Deadline(ttd).Should().Be(10_000_000);   // back to the earliest TTD (C-1050)
+        Id(q.Decode(q.Tx.Build()).Single()).Should().Be(0);
+    }
+
+    [Fact]
+    public void A_request_whose_ttd_has_passed_is_rejected_at_once()
+    {
+        // C-0857, C-0859, C-1050; zero-duration rule (core-architecture.md 3.2).
+        var q = new Rig();
+        q.Context.Now = 5000;
+        q.Tx.Add(Normal(X, 0, [1]) with { Ttd = 5000, Handle = 9 });
+        q.Tx.Count.Should().Be(0);
+        q.Context.TryDequeue(out InternalPrimitive p).Should().BeTrue();
+        p.Should().Be(new DUnidataRequestRejected(9, DReason.TtlExpired));
+        q.Observer.Log.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Expired_requests_are_rejected_in_ttd_order_on_entry_to_linking()
+    {
+        // C-0857, C-0864, C-1050: ExpireDue drops everything at or before now, earliest TTD first.
+        var q = new Rig();
+        q.Tx.Add(Normal(X, 0, [1]) with { Ttd = 3000, Handle = 1 });
+        q.Tx.Add(Normal(X, 0, [2]) with { Ttd = 2000, Handle = 2 });
+        q.Tx.Add(Normal(X, 0, [3]) with { Ttd = 9000, Handle = 3 });
+        q.Context.Now = 3000;
+        q.Tx.ExpireDue();
+        q.Context.TryDequeue(out InternalPrimitive a).Should().BeTrue();
+        a.Should().Be(new DUnidataRequestRejected(2, DReason.TtlExpired));
+        q.Context.TryDequeue(out InternalPrimitive b).Should().BeTrue();
+        b.Should().Be(new DUnidataRequestRejected(1, DReason.TtlExpired));
+        q.Tx.Count.Should().Be(1);
+        q.Context.Timers.Deadline(TimerName.Of(TimerKind.DtsTtd)).Should().Be(9000);
+    }
+
+    [Fact]
+    public void A_segmented_expedited_cpdu_keeps_one_id_and_sends_once()
+    {
+        // C-0359 to C-0361 (type 8 like type 7), C-0527 to C-0529; expedited carries no repeat count.
+        var q = new Rig(maxSegment: 4);
+        q.Tx.AddExpedited(Expedited(Y, [1, 2, 3, 4, 5, 6]));
+        List<Dpdu> pdus = q.Decode(q.Tx.Build());
+        pdus.Select(p => ((ExpeditedNonArqData)p).Fields.SegmentOffset).Should().Equal(0, 4);
+        pdus.Select(Id).Should().Equal(0, 0);
+        q.Tx.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public void Segments_that_do_not_fit_wait_and_keep_their_id_and_cut()
+    {
+        // C-0549 (cut once, at first placement), C-0542, C-0880: a 96-byte block holds three
+        // 30-byte D_PDUs; the fourth segment goes next time with the same ID, cut as before even
+        // though dts.max_segment_size changed (core-architecture.md 7.3).
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 5);
+        q.Tx.Add(Normal(X, 0, new byte[20]));
+        List<Dpdu> a = q.Decode(q.Tx.Build());
+        a.Select(p => ((NonArqData)p).Fields.SegmentOffset).Should().Equal(0, 5, 10);
+        q.Context.Config = q.Context.Config with { Dts = q.Context.Config.Dts with { MaxSegmentSize = 1023 } };
+        q.Context.Now = 6000;
+        List<Dpdu> b = q.Decode(q.Tx.Build());
+        b.Should().ContainSingle();
+        ((NonArqData)b[0]).Fields.SegmentOffset.Should().Be(15);
+        ((NonArqData)b[0]).Segment.Length.Should().Be(5);
+        Id(b[0]).Should().Be(0);
     }
 
     [Fact]
@@ -160,8 +239,6 @@ public class TransmitQueueTests
         badIl.Should().Throw<ConfigException>();
     }
 
-    private static Func<Transmit> FluentBuild(Rig q) => () => q.Tx.Build();
-
     private static int Id(Dpdu p) => p switch
     {
         NonArqData d => d.Fields.CPduId,
@@ -176,16 +253,18 @@ public class TransmitQueueTests
 
     private sealed class Rig
     {
-        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800)
+        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800, int maxSegment = 1023)
         {
             NodeConfig config = TestConfig.Basic(CsmaMode.Jitter) with
             {
                 Modem = new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, blockBytes, blockMs)]),
-                Dts = new DtsConfig(1023, maxTransmissionMs),
+                Dts = new DtsConfig(maxSegment, maxTransmissionMs),
             };
-            var context = new CoreContext(config, new FixtureModem(config.Modem));
-            Tx = new TransmitQueue(context, Observer);
+            Context = new CoreContext(config, new FixtureModem(config.Modem));
+            Tx = new TransmitQueue(Context, Observer);
         }
+
+        public CoreContext Context { get; }
 
         public ObserverLog Observer { get; } = new();
 
