@@ -27,6 +27,7 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 - Phase 3 has started. Its design is docs/core-architecture.md (merged as PR #19); the work items are in its section 9, with issues #18 (P3-0) and #20 to #26 (P3-1 to P3-7). P3-0 (runtime, T2 runner) is with an Opus implementer.
 - P2: modem 0.5.0 is M0LTE/M0LTE.Ms110d PR #20, under Opus review for binary compatibility. After it passes: merge, publish to NuGet (check that repo's publish.yml), then the SNR estimator (0.6.0).
+- Lesson: in the main checkout, run `git submodule update` before any `git add -A`. A coordinator commit once moved the submodule back to an old corpus and turned main CI red.
 - Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
 
 ## Next
