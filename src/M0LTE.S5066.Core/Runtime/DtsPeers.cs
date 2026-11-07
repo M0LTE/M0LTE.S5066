@@ -40,8 +40,18 @@ internal enum DtsPeerState
 /// acknowledgement part moves the transmit window (C-0679, C-0680, C-0699, C-0719). IDLE(CONNECTED)
 /// moves to DATA(CONNECTED) on DATA-ONLY or DATA-ACK; an ACK-ONLY there acknowledges nothing we
 /// sent and draws WARNING reason 3 instead, with D_WARNING_TRANSMITTED (C-0659). Still discarded
-/// with no response: the 8-bit family and the 16-bit types on an 8-bit link (P4-5), EXPEDITED-DATA
-/// and EXPEDITED-ACK (P4-6).
+/// with no response: the 8-bit family and the 16-bit types on an 8-bit link (P4-5).
+/// </para>
+/// <para>
+/// Expedited ARQ and MANAGEMENT in the CONNECTED states (P4-6): EXPEDITED-DATA-ONLY (type 4) from a
+/// connected peer, whatever its family, is reassembled by <see cref="ExpeditedReceiver"/> and
+/// acknowledged with EXPEDITED-ACK-ONLY (type 5) (C-0277, C-0662, C-0682, C-0702, C-0722; C-1210,
+/// C-1211); a type 5 received acknowledges nothing, since we never send type 4 (C-0663, C-0683,
+/// C-0703, C-0723). EXPEDITED-DATA(CONNECTED) and MANAGEMENT(CONNECTED) are left when their exchange
+/// is over (C-0738, C-1212, C-1213), and other exits delete a partial type 4 C_PDU (C-0761, C-1214).
+/// While either exchange is open the planner holds the D_PDU types the state may not send, and
+/// releases them, with any queued request, once the D_PDU that ends the exchange is placed (C-0737,
+/// C-0740 to C-0748, C-1215).
 /// </para>
 /// <para>
 /// Synchronisation and reset (P4-4): every DATA-ONLY, ACK-ONLY and DATA-ACK first passes Tests 1 to
@@ -106,6 +116,7 @@ internal sealed class DtsPeers
         _context = context;
         _tx = tx;
         _reassembler = new NonArqReassembler(context);
+        _tx.HoldsPartialExpedited = p => _peers.TryGetValue(p, out Peer? peer) && peer.Connected && peer.Expedited.Partial;
     }
 
     /// <summary>The non-ARQ reassembly, for tests and the <c>dts.reception_window</c> expiry.</summary>
@@ -154,6 +165,11 @@ internal sealed class DtsPeers
 
             Octets segment = pdu is NonArqData d2 ? d2.Segment : ((ExpeditedNonArqData)pdu).Segment;
             _reassembler.OnSegment(h.Src, h.Dst, f.GroupAddress, expedited, f, segment.Span);
+            if (peer.Connected)
+            {
+                LeaveExpeditedIfDone(h.Src, peer);   // a type 8 owes no acknowledgement and holds no state (C-0738, C-1212)
+            }
+
             return;
         }
 
@@ -176,11 +192,17 @@ internal sealed class DtsPeers
             case ResetWinResync r when _tx.LinkOf(h.Src) is ArqLink link:
                 OnReset(PeerOf(h.Src), link, r);
                 break;
+            case ExpeditedDataOnly x when PeerOf(h.Src).Connected:
+                OnExpeditedData(PeerOf(h.Src), x);
+                break;
+            case ExpeditedAckOnly when PeerOf(h.Src).Connected:
+                OnExpeditedAck(PeerOf(h.Src), pdu);
+                break;
             case Ed3DataOnly or Ed3AckOnly or Ed3DataAck or Ed3ResetWinResync or ExpeditedDataOnly or ExpeditedAckOnly
                 or DataOnly or AckOnly or DataAck or ResetWinResync:
                 if (PeerOf(h.Src).Connected)
                 {
-                    break;   // the 8-bit family (P4-5), expedited ARQ (P4-6)
+                    break;   // the 8-bit family (P4-5)
                 }
 
                 // Connection-related D_PDU while unconnected: no state change, WARNING reason 1
@@ -231,6 +253,7 @@ internal sealed class DtsPeers
         peer.ResetSent = false;
         peer.RxResetFrameId = NoFrameId;   // C-1173: each connection starts its RESET FRAME ID sequences afresh
         peer.TxResetFrameId = 0;
+        peer.Expedited.Reset();   // C-0755
         peer.PeerIsEd4 = c.PeerIsEd4;
         peer.ShortFamily = c.ShortFamily;
         peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
@@ -240,11 +263,29 @@ internal sealed class DtsPeers
         }
     }
 
-    /// <summary>An ARQ D_UNIDATA_REQUEST for a connected peer: IDLE(CONNECTED) goes to DATA(CONNECTED) (C-0653); DATA stays (C-0673).</summary>
+    /// <summary>
+    /// An ARQ D_UNIDATA_REQUEST for a connected peer: IDLE(CONNECTED) goes to DATA(CONNECTED) (C-0653);
+    /// DATA stays (C-0673). In EXPEDITED-DATA(CONNECTED) and MANAGEMENT(CONNECTED) the request is queued
+    /// and the state stays (C-0693, C-0713): the planner holds the C_PDU until the expedited exchange or
+    /// the management exchange is over, and the state then goes to DATA(CONNECTED) (C-0737, C-1212, C-1215).
+    /// </summary>
     public void OnArqRequest(uint peerAddress)
     {
         Peer peer = PeerOf(peerAddress);
         if (peer.State == DtsPeerState.IdleConnected)
+        {
+            peer.State = DtsPeerState.DataConnected;
+        }
+    }
+
+    /// <summary>
+    /// A non-ARQ D_UNIDATA_REQUEST to a connected peer's individual address: IDLE(CONNECTED) goes to
+    /// DATA(CONNECTED) (C-0655); DATA stays (C-0675); in EXPEDITED-DATA(CONNECTED) and
+    /// MANAGEMENT(CONNECTED) it is queued and the state stays (C-0695, C-0715, C-1215).
+    /// </summary>
+    public void OnNonArqRequest(uint peerAddress)
+    {
+        if (_peers.TryGetValue(peerAddress, out Peer? peer) && peer.State == DtsPeerState.IdleConnected)
         {
             peer.State = DtsPeerState.DataConnected;
         }
@@ -324,7 +365,8 @@ internal sealed class DtsPeers
         peer.Connected = false;
         peer.State = DtsPeerState.IdleUnconnected;
         EndExchange(peerAddress, peer);
-        _tx.RemoveControl(c => c is ResetItem && c.Dst == peerAddress);
+        peer.Expedited.Reset();
+        _tx.RemoveControl(c => c is ResetItem or ExpeditedAckItem && c.Dst == peerAddress);
         _tx.RejectArq(peerAddress);
     }
 
@@ -443,6 +485,7 @@ internal sealed class DtsPeers
         }
 
         ResetFlags flags = r.Flags;
+        bool wasExpedited = peer.State == DtsPeerState.ExpeditedDataConnected;
         if (flags.ResetAck && peer.Exchange is ResetItem pending)
         {
             EndExchange(src, peer);
@@ -456,12 +499,18 @@ internal sealed class DtsPeers
         if (flags.FullResetCmnd)
         {
             OnFullResetCmd(peer, link, src, r.ResetFrameId);
+            if (wasExpedited && peer.State != DtsPeerState.ExpeditedDataConnected)
+            {
+                AbandonExpedited(src, peer);   // C-0761, C-1214
+            }
+
             return;
         }
 
         if (peer.State == DtsPeerState.ExpeditedDataConnected)
         {
             peer.State = DtsPeerState.DataConnected;   // C-0701, C-0736
+            AbandonExpedited(src, peer);   // C-0761, C-1214
         }
 
         if (peer.Exchange is not null || !(flags.ResetTxWinRqst || flags.ResetRxWinCmnd))
@@ -570,7 +619,13 @@ internal sealed class DtsPeers
         }
 
         // C-0584, C-0604, C-0624, C-0644: go to (or stay in) MANAGEMENT(UNCONNECTED); connected,
-        // MANAGEMENT(CONNECTED) (C-0664, C-0684, C-0704, C-0724).
+        // MANAGEMENT(CONNECTED) (C-0664, C-0684, C-0704, C-0724). Leaving EXPEDITED-DATA(CONNECTED)
+        // deletes a partly reassembled type 4 C_PDU (C-0761); a type 5 owed is deferred (C-0722, C-1213).
+        if (peer.State == DtsPeerState.ExpeditedDataConnected)
+        {
+            peer.Expedited.DeletePartial();
+        }
+
         peer.State = peer.Connected ? DtsPeerState.ManagementConnected : DtsPeerState.ManagementUnconnected;
         bool isNew = m.ManagementFrameId != peer.RxFrameId;   // C-0314 to C-0316
         if (isNew)
@@ -598,7 +653,9 @@ internal sealed class DtsPeers
     /// The acknowledgement went into a transmission: when it was the last one owed, the management
     /// exchange with this peer is finished (C-1070) and the peer leaves MANAGEMENT(UNCONNECTED) for
     /// IDLE(UNCONNECTED) (C-0738: no non-ARQ data is pending in a state that would hold it), or
-    /// MANAGEMENT(CONNECTED) for DATA(CONNECTED) or IDLE(CONNECTED) (C-0738).
+    /// MANAGEMENT(CONNECTED) for EXPEDITED-DATA(CONNECTED) when a type 5 is owed or a type 4 C_PDU is
+    /// partly received (C-1213), else DATA(CONNECTED) or IDLE(CONNECTED) (C-0738, C-1212). D_PDUs held
+    /// back by the management exchange may follow in the same transmission (C-1070, C-1129, C-1215).
     /// </summary>
     private void AckPlaced(uint address, Peer peer)
     {
@@ -609,8 +666,100 @@ internal sealed class DtsPeers
         }
         else if (peer.AcksOutstanding == 0 && peer.State == DtsPeerState.ManagementConnected)
         {
-            // C-0738: DATA(CONNECTED) once regular ARQ D_PDUs have flowed on this connection, else IDLE(CONNECTED).
-            peer.State = _tx.LinkOf(address)?.ArqUsed == true ? DtsPeerState.DataConnected : DtsPeerState.IdleConnected;
+            peer.State = ExpeditedPending(address, peer) ? DtsPeerState.ExpeditedDataConnected : AfterExchange(address);
+        }
+    }
+
+    /// <summary>
+    /// The CONNECTED state a finished expedited or management exchange returns to (C-0738, C-1212):
+    /// DATA(CONNECTED) once regular ARQ D_PDUs have flowed on this connection, or while ARQ or type 7
+    /// C_PDUs are queued for the peer, which the end of the exchange releases as if just requested
+    /// (C-0737, C-0693, C-0695, C-0713, C-0715); otherwise IDLE(CONNECTED).
+    /// </summary>
+    private DtsPeerState AfterExchange(uint address) =>
+        _tx.LinkOf(address)?.ArqUsed == true || _tx.HasArqFor(address) || _tx.HasNonArqFor(address)
+            ? DtsPeerState.DataConnected
+            : DtsPeerState.IdleConnected;
+
+    /// <summary>The expedited receive exchange with the peer is not over: a type 5 is owed and unsent, or a type 4 C_PDU is partly received (C-1212).</summary>
+    private bool ExpeditedPending(uint address, Peer peer) =>
+        peer.Expedited.Partial || _tx.PendingControl.Any(c => c is ExpeditedAckItem && c.Dst == address);
+
+    /// <summary>
+    /// EXPEDITED-DATA(CONNECTED) is left once the expedited exchange is over (C-0738, C-1212), for
+    /// DATA(CONNECTED) or IDLE(CONNECTED) as <see cref="AfterExchange"/> says.
+    /// </summary>
+    private void LeaveExpeditedIfDone(uint address, Peer peer)
+    {
+        if (peer.State == DtsPeerState.ExpeditedDataConnected && !ExpeditedPending(address, peer))
+        {
+            peer.State = AfterExchange(address);
+            _tx.SuspensionChanged();
+        }
+    }
+
+    /// <summary>
+    /// EXPEDITED-DATA(CONNECTED) left by a RESET/WIN-RESYNC (C-0701, C-0736): a partly reassembled type 4
+    /// C_PDU is deleted (C-0761) and an unsent type 5 is dropped, since neither DATA(CONNECTED) nor
+    /// IDLE(CONNECTED) sends one (C-0745, C-0746, C-1214).
+    /// </summary>
+    private void AbandonExpedited(uint address, Peer peer)
+    {
+        peer.Expedited.DeletePartial();
+        _tx.RemoveControl(c => c is ExpeditedAckItem && c.Dst == address);
+    }
+
+    /// <summary>
+    /// An EXPEDITED-DATA-ONLY (type 4) from a connected peer (C-0662, C-0682, C-0702, C-0722): IDLE and
+    /// DATA(CONNECTED) go to EXPEDITED-DATA(CONNECTED), EXPEDITED-DATA and MANAGEMENT(CONNECTED) stay.
+    /// The segment is reassembled (C-1210) and a complete C_PDU delivered with
+    /// D_EXPEDITED_UNIDATA_INDICATION; a type 5 is owed, one queued per peer and built when it is
+    /// placed (C-0277, C-1210, C-1211). In MANAGEMENT(CONNECTED) it waits until the management
+    /// exchange is over (C-0722, C-1215).
+    /// </summary>
+    private void OnExpeditedData(Peer peer, ExpeditedDataOnly x)
+    {
+        uint src = x.Header.Src;
+        if (peer.State is DtsPeerState.IdleConnected or DtsPeerState.DataConnected)
+        {
+            peer.State = DtsPeerState.ExpeditedDataConnected;
+        }
+
+        if (peer.Expedited.Receive(x.CPduId, x.TxFsn, x.CPduStart, x.CPduEnd, x.Segment.Span) is byte[] cpdu)
+        {
+            _context.Enqueue(new DExpeditedUnidataIndication(src, x.Header.Dst, false, true, cpdu));
+        }
+
+        if (!_tx.PendingControl.Any(c => c is ExpeditedAckItem && c.Dst == src))
+        {
+            ExpeditedReceiver rx = peer.Expedited;
+            _tx.AddControl(new ExpeditedAckItem(src, rx.Acknowledgement) { Placed = () => ExpeditedAckPlaced(src, peer) });
+        }
+    }
+
+    /// <summary>The type 5 went into a transmission: EXPEDITED-DATA(CONNECTED) may now be over (C-0738, C-1212).</summary>
+    private void ExpeditedAckPlaced(uint address, Peer peer) => LeaveExpeditedIfDone(address, peer);
+
+    /// <summary>
+    /// An EXPEDITED-ACK-ONLY (type 5) from a connected peer. This node never sends type 4 (C-0276), so
+    /// it acknowledges nothing: IDLE and DATA(CONNECTED) go to EXPEDITED-DATA(CONNECTED) and send
+    /// WARNING reason 3 (C-0663, C-0683), and with no expedited exchange open the state is left again
+    /// at once (C-1212); MANAGEMENT(CONNECTED) sends WARNING reason 3 (C-0723); in
+    /// EXPEDITED-DATA(CONNECTED) there is nothing to process (C-0703, C-1212).
+    /// </summary>
+    private void OnExpeditedAck(Peer peer, Dpdu pdu)
+    {
+        uint src = pdu.Header.Src;
+        switch (peer.State)
+        {
+            case DtsPeerState.IdleConnected or DtsPeerState.DataConnected:
+                peer.State = DtsPeerState.ExpeditedDataConnected;
+                Warn(src, pdu.Type, 3);
+                LeaveExpeditedIfDone(src, peer);
+                break;
+            case DtsPeerState.ManagementConnected:
+                Warn(src, pdu.Type, 3);
+                break;
         }
     }
 
@@ -677,5 +826,8 @@ internal sealed class DtsPeers
 
         /// <summary>The RESET FRAME ID NUMBER our next command takes, modulo 256 (C-0272, C-0273, C-1173).</summary>
         public int TxResetFrameId { get; set; }
+
+        /// <summary>The receive side of the expedited ARQ service (C-0282, C-1210).</summary>
+        public ExpeditedReceiver Expedited { get; } = new();
     }
 }

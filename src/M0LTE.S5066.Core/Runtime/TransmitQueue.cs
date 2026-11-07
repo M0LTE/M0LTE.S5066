@@ -78,6 +78,8 @@ internal interface ITransmissionSource
 /// RESET/WIN-RESYNC D_PDUs (P4-4) are control items after WARNING (C-1174); while a reset exchange
 /// with a peer is pending its regular data is held back (C-0257), and a FULL RESET discards its
 /// partly completed C_PDUs (<see cref="ResetArq"/>).
+/// EXPEDITED-ACK-ONLY (type 5, P4-6) is a control item after RESET/WIN-RESYNC (C-1211); D_PDU types a
+/// peer's state may not be sent are held per peer until the exchange that holds them ends (C-1215).
 /// Not here yet: the 8-bit family (P4-5).
 /// </para>
 /// </remarks>
@@ -267,6 +269,32 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>Whether ARQ C_PDUs are still held for the peer (C-1176).</summary>
     public bool HasArqFor(uint peer) => _arq.Any(a => a.Peer == peer && !a.Dropped);
+
+    /// <summary>Whether a type 7 C_PDU to the peer's individual address still has segments to place (C-0695, C-0715, C-1212).</summary>
+    public bool HasNonArqFor(uint peer) => _entries.Any(e => !e.Expedited && !e.DstIsGroup && e.Dst == peer && e.HasUnplacedSegment);
+
+    /// <summary>Set by the receive side: the peer is part way through sending us a type 4 C_PDU, so it is in EXPEDITED-DATA(CONNECTED) (C-1212, C-1215).</summary>
+    public Func<uint, bool> HoldsPartialExpedited { get; set; } = _ => false;
+
+    /// <summary>
+    /// The allowed-type lists of C.7.1.2 towards one peer (C-0740, C-0747, C-0748; interp C-1215), given
+    /// the control D_PDUs this transmission already carries. While a MANAGEMENT acknowledgement to the
+    /// peer is unplaced its management exchange is open, so MANAGEMENT(CONNECTED) or (UNCONNECTED) holds
+    /// types 5, 7, 9, 10 and 11 (C-0744, C-0748). While a type 4 C_PDU from the peer is partly received,
+    /// or a type 5 to it is unplaced, EXPEDITED-DATA(CONNECTED) holds types 7, 9 and 11 (C-0747). Once
+    /// the D_PDUs that end those exchanges are placed, ahead in class order, the rest may follow in the
+    /// same transmission (C-1070, C-1129). RESET/WIN-RESYNC is never held (C-0751).
+    /// </summary>
+    private bool Held(uint peer, int type, IReadOnlyCollection<ControlItem> placed)
+    {
+        bool Open<T>() where T : ControlItem => _control.Any(c => c is T && c.Dst == peer && !placed.Contains(c));
+        if (type is 5 or 7 or 9 or 10 or 11 && Open<ManagementAck>())
+        {
+            return true;
+        }
+
+        return type is 7 or 9 or 11 && (HoldsPartialExpedited(peer) || Open<ExpeditedAckItem>());
+    }
 
     /// <summary>A reset exchange with the peer started or ended (C-0257): what can be placed may have changed.</summary>
     public void SuspensionChanged() => _mac.QueueState(Placeable());
@@ -528,7 +556,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        foreach (ArqFrame f in FailedFrames())
+        foreach (ArqFrame f in FailedFrames(_control))
         {
             return DataOnlySize(f.Owner.Peer, FrameLength(f));
         }
@@ -538,7 +566,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (c is Entry e)
             {
-                if (!e.HasUnplacedSegment || HeldBehindExpedited(e.Dst, e.DstIsGroup))
+                if (!e.HasUnplacedSegment || HeldBehindExpedited(e.Dst, e.DstIsGroup) || (!e.DstIsGroup && Held(e.Dst, 7, _control)))
                 {
                     continue;
                 }
@@ -552,9 +580,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
 
             var a = (ArqCPdu)c;
-            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended)
+            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, _control))
             {
-                continue;   // C-0257: no regular data while a reset exchange is pending
+                continue;   // C-0257: no regular data while a reset exchange is pending; C-1215
             }
 
             if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow)
@@ -572,7 +600,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (Entry e in Normal())
         {
-            if (e.OwedRepeat() is int seg)
+            if (e.OwedRepeat() is int seg && (e.DstIsGroup || !Held(e.Dst, 7, _control)))
             {
                 return SizeOf(e.Segments![seg].Length, false, e.Dst);
             }
@@ -712,6 +740,11 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (ControlItem c in SortedControl())
         {
+            if (c is ExpeditedAckItem && Held(c.Dst, 5, chosenControl))
+            {
+                continue;   // deferred until the management exchange is over (C-0722, C-1215)
+            }
+
             // A misfit is skipped and the next one tried (core-architecture.md 5.3).
             if (Fits(c.Size))
             {
@@ -742,9 +775,9 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (ArqLink link in _links.Values)
         {
-            if (!link.AckOwed || link.Suspended)
+            if (!link.AckOwed || link.Suspended || Held(link.Peer, 10, chosenControl))
             {
-                continue;   // C-0257
+                continue;   // C-0257; deferred until the management exchange is over (C-0718, C-0720, C-1215)
             }
 
             // Every ACK-ONLY of the peer's acknowledgement goes, or none: together they acknowledge
@@ -759,7 +792,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        foreach (ArqFrame f in FailedFrames())
+        foreach (ArqFrame f in FailedFrames(chosenControl))
         {
             TakeArq(_links[f.Owner.Peer], f, null);   // a misfit is skipped
         }
@@ -770,9 +803,9 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (c is Entry e)
             {
-                if (HeldBehindExpedited(e.Dst, e.DstIsGroup))
+                if (HeldBehindExpedited(e.Dst, e.DstIsGroup) || (!e.DstIsGroup && Held(e.Dst, 7, chosenControl)))
                 {
-                    continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044)
+                    continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044), or by the peer's state (C-1215)
                 }
 
                 while (e.HasUnplacedSegment)
@@ -791,9 +824,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             else
             {
                 var a = (ArqCPdu)c;
-                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended)
+                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, chosenControl))
                 {
-                    continue;   // fully sent, its connection does not use the 16-bit family (P4-5), or a reset exchange is pending (C-0257)
+                    continue;   // fully sent, its connection does not use the 16-bit family (P4-5), a reset exchange is pending (C-0257), or the peer's state holds it (C-0693, C-0713, C-1215)
                 }
 
                 bool started = a.Partial;
@@ -825,6 +858,11 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (Entry e in Normal())
         {
+            if (!e.DstIsGroup && Held(e.Dst, 7, chosenControl))
+            {
+                continue;   // C-1215
+            }
+
             while (e.OwedRepeat() is int seg)
             {
                 int size = SizeOf(e.Segments![seg].Length, false, e.Dst);
@@ -868,12 +906,12 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// FSN order (C-0852, C-0853, C-0905, C-1132). Those to a peer with unsent expedited data wait
     /// for it (C-1131).
     /// </summary>
-    private List<ArqFrame> FailedFrames()
+    private List<ArqFrame> FailedFrames(IReadOnlyCollection<ControlItem> placed)
     {
         var failed = new List<ArqFrame>();
         foreach (ArqLink link in _links.Values)
         {
-            if (!HeldBehindExpedited(link.Peer, false) && !link.Suspended)   // C-0257
+            if (!HeldBehindExpedited(link.Peer, false) && !link.Suspended && !Held(link.Peer, 9, placed))   // C-0257, C-1215
             {
                 failed.AddRange(link.Outstanding.Where(f => f.State == ArqFrameState.Failed));
             }

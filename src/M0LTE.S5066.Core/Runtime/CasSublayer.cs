@@ -98,16 +98,7 @@ internal sealed class CasSublayer : ICasSublayer
                 OnLinkMake(m.Peer);
                 break;
             case DUnidataIndication d:
-                if (d.Arq && _links.TryGetValue(d.Src, out Link? link) && link.AwaitingFirstData)
-                {
-                    // B-0215, B-0403: a DATA C_PDU received by ARQ is the first data on the link.
-                    if (CpduCodec.Decode(d.CPdu.Span).Value is CpduData)
-                    {
-                        link.AwaitingFirstData = false;
-                        _context.Timers.Cancel(FirstDataTimer(d.Src));
-                    }
-                }
-
+                FirstDataIfArq(d.Src, d.Arq, d.CPdu);
                 OnDataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
                 break;
             case DExpeditedUnidataIndication d:
@@ -271,11 +262,25 @@ internal sealed class CasSublayer : ICasSublayer
     /// (B-0410); types 4 to 6 are the break procedure's (P5-1) and are discarded until then, as are
     /// the ALE-only and undefined types (B-0305).
     /// </summary>
+    /// <summary>
+    /// B-0215, B-0403: a DATA C_PDU received by ARQ is the first data on the link and stops
+    /// <c>cas.first_data</c>, whether it came by the regular or the expedited ARQ service (C-1216).
+    /// </summary>
+    private void FirstDataIfArq(uint src, bool arq, ReadOnlyMemory<byte> cpdu)
+    {
+        if (arq && _links.TryGetValue(src, out Link? link) && link.AwaitingFirstData && CpduCodec.Decode(cpdu.Span).Value is CpduData)
+        {
+            link.AwaitingFirstData = false;
+            _context.Timers.Cancel(FirstDataTimer(src));
+        }
+    }
+
     private void OnExpeditedIndication(DExpeditedUnidataIndication d)
     {
         CPdu? c = CpduCodec.Decode(d.CPdu.Span).Value;
         if (c is CpduData)
         {
+            FirstDataIfArq(d.Src, d.Arq, d.CPdu);
             OnDataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
             return;
         }
