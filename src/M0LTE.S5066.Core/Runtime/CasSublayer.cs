@@ -40,6 +40,12 @@ namespace M0LTE.S5066.Core.Runtime;
 /// clean close is awaited, <c>breaking</c> once type 4 is under way, <c>unlinked</c> when broken.
 /// </para>
 /// <para>
+/// Soft link closes (P5-2): C_PHYSICAL_LINK_MADE tells the SIS whether this node is the called node
+/// (A-0325). The reason the SIS gave for a close is kept for the peer after the link is broken, so the
+/// ARQ C_PDUs the DTS rejects when the connection ends go up with it (A-0207, A-0324). A
+/// C_PHYSICAL_LINK_BREAK during a close the peer asked for joins that close (B-0450).
+/// </para>
+/// <para>
 /// B-0089 (Address Not Known) never applies: no station list is configured (B-0404). Reject reason
 /// 1 is never sent: the node is never broadcast-only (A-0007).
 /// </para>

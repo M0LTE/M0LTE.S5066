@@ -325,7 +325,7 @@ public class CasLinkTests
         /// <summary>Outputs since the last check; each read of the list in an assertion should be followed by a new action.</summary>
         public List<CoreOutput> Outputs { get; } = [];
 
-        public void ArqRequest(uint dst, byte confirm = 0, uint ttl = 0)
+        public void ArqRequest(uint dst, byte confirm = 0, uint ttl = 0, byte priority = 0)
         {
             if (!_bound)
             {
@@ -335,7 +335,7 @@ public class CasLinkTests
                 _bound = true;
             }
 
-            Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(0, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
+            Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(priority, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
         }
 
         /// <summary>The DTS reports our pending link C_PDU to the peer sent (C-1100).</summary>
@@ -344,6 +344,9 @@ public class CasLinkTests
             int? h = Cas.PendingHandleOf(peer);
             Deliver(new DExpeditedUnidataRequestConfirm(h ?? 9999));
         }
+
+        /// <summary>The client disconnects.</summary>
+        public void Disconnect() => Run(new SisDisconnect(Context.Now, 1));
 
         public void Deliver(ToCas primitive)
         {
