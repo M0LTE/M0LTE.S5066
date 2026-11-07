@@ -100,11 +100,43 @@ public class MacTests
     }
 
     [Fact]
-    public void The_external_busy_input_is_ignored_until_p5_4()
+    public void The_external_busy_input_keeps_a_queued_node_in_sense_until_it_clears()
     {
+        // K-0006, K-0066: ORed into DCD; its clear is a DCD-determined idle, so rule 2 (K-0070).
         var rig = new MacRig(CsmaMode.Jitter);
         rig.Handle(new ChannelBusy(0, true)).Should().BeEmpty();
-        rig.Queue(1000).Should().Equal(new TimerStart(Lbt, 30000));
+        rig.Queue(1000).Should().BeEmpty();
+        rig.Mac.State.Should().Be(MacState.Sense);
+        rig.Handle(new ChannelBusy(2000, false)).Should().Equal(new TimerStart(Lbt, 30000));
+    }
+
+    [Fact]
+    public void A_repeated_external_busy_value_changes_nothing()
+    {
+        // K-0006: only a change of the input is a busy indication or an idle.
+        var rig = new MacRig(CsmaMode.Jitter);
+        rig.Queue(0).Should().Equal(new TimerStart(Lbt, 30000));
+        rig.Handle(new ChannelBusy(1000, false)).Should().BeEmpty();
+        rig.Handle(new ChannelBusy(2000, true)).Should().Equal(new TimerCancel(Lbt));
+        rig.Handle(new ChannelBusy(3000, true)).Should().BeEmpty();
+        rig.Handle(new ChannelBusy(4000, false)).Should().Equal(new TimerStart(Lbt, 30000));
+        rig.Handle(new ChannelBusy(5000, false)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void An_external_busy_period_still_set_when_our_transmission_ends_makes_it_someone_elses()
+    {
+        // K-0006, K-0086: the busy period goes on after our transmission ended, so the idle it delays
+        // is DCD-determined (rule 2, not K-0074's VDCD value) and slotted contention uses position - 1.
+        var rig = new MacRig(CsmaMode.Slotted, position: 2);
+        rig.Queue(0);
+        rig.Handle(new TimerExpired(30000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
+        rig.Handle(new TimerExpired(33000, Cont)).Should().Equal(FakeTransmitter.Tx);
+        rig.Handle(new ChannelBusy(36000, true)).Should().BeEmpty();
+        rig.Handle(new TransmitDone(38000)).Should().BeEmpty();
+        rig.Mac.LastTransmissionOwn.Should().BeFalse();
+        rig.Handle(new ChannelBusy(39000, false)).Should().Equal(new TimerStart(Lbt, 30000));
+        rig.Handle(new TimerExpired(69000, Lbt)).Should().Equal(new TimerStart(Cont, 3000));
     }
 
     [Fact]
