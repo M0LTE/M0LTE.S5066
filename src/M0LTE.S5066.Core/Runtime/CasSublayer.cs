@@ -33,7 +33,15 @@ internal sealed class CasSublayer : ICasSublayer
                 OnUnidataRequest(r);
                 break;
             case DUnidataIndication d:
-                OnUnidataIndication(d);
+                OnUnidataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
+                break;
+            case DExpeditedUnidataIndication d:
+                // CAS-1 link C_PDUs travel here (B-0191); they are handled from P4-1 and discarded
+                // until then. A DATA C_PDU is delivered as from the normal service (B-0298).
+                OnUnidataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
+                break;
+            case DWarningReceived or DWarningTransmitted:
+                // Nothing in the CAS acts on a WARNING before CAS-1 linking (P4-1: Ed3 fallback).
                 break;
             case DUnidataRequestRejected { Reason: DReason.TtlExpired } j:
                 // A C_PDU the DTS dropped for TTL (C-0859, C-1050): the request fails upward with
@@ -63,12 +71,12 @@ internal sealed class CasSublayer : ICasSublayer
     /// of octet 0 is ignored; anything else is discarded (B-0325). The CAS-1 link C_PDUs (types 1
     /// to 6) are discarded here until P4-1 and P5-1 handle them.
     /// </summary>
-    private void OnUnidataIndication(DUnidataIndication d)
+    private void OnUnidataIndication(uint src, uint dst, bool dstIsGroup, bool arq, ReadOnlyMemory<byte> cpdu)
     {
-        CodecResult<CPdu> decoded = CpduCodec.Decode(d.CPdu.Span);
+        CodecResult<CPdu> decoded = CpduCodec.Decode(cpdu.Span);
         if (decoded.Value is CpduData data && !data.SPdu.IsEmpty)
         {
-            _context.Enqueue(new CUnidataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, data.SPdu));
+            _context.Enqueue(new CUnidataIndication(src, dst, dstIsGroup, arq, data.SPdu));
         }
     }
 }

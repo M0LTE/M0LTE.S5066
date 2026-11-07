@@ -12,6 +12,7 @@ internal sealed class DtsSublayer : IDtsSublayer
     private readonly IMacObserver _mac;
     private readonly DtsReceiver _receiver;
     private readonly TransmitQueue _tx;
+    private readonly UnconnectedPeers _peers;
 
     public DtsSublayer(CoreContext context, IMacObserver mac)
     {
@@ -19,7 +20,11 @@ internal sealed class DtsSublayer : IDtsSublayer
         _mac = mac;
         _receiver = new DtsReceiver(context, mac, OnDpduReceived);
         _tx = new TransmitQueue(context, mac);
+        _peers = new UnconnectedPeers(context, _tx);
     }
+
+    /// <summary>The unconnected-state receive machine (P3-6), for tests.</summary>
+    internal UnconnectedPeers Peers => _peers;
 
     /// <summary>The D_PDU stream receiver, for tests.</summary>
     internal DtsReceiver Receiver => _receiver;
@@ -35,6 +40,9 @@ internal sealed class DtsSublayer : IDtsSublayer
             case TimerKind.DtsTtd:
                 _tx.OnTtdTimer();   // C-0857, C-0864, C-1050
                 break;
+            case TimerKind.DtsReceptionWindow:
+                _peers.OnReceptionWindowTimer();
+                break;
             default:
                 throw new InvalidOperationException($"DTS timer {name} expired, but the DTS does not start it (now {_context.Now})");
         }
@@ -47,13 +55,11 @@ internal sealed class DtsSublayer : IDtsSublayer
     public void OnBurstEnded(BurstEnded burst) => _receiver.OnBurstEnded(burst);
 
     /// <summary>
-    /// A whole D_PDU with good CRCs, whoever it is addressed to (C-0838). The per-peer state
-    /// machines that act on the ones addressed to this node or its groups (C-0566), including
-    /// WARNING generation (C-0735), arrive with P3-6 and phase 4; until then they are not acted on.
+    /// A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), to the per-peer state
+    /// machine, which acts only on the ones addressed to this node or its groups (C-0566). Before
+    /// CAS-1 linking (P4-1) every peer is unconnected (P3-6).
     /// </summary>
-    private void OnDpduReceived(Dts.Dpdu pdu)
-    {
-    }
+    private void OnDpduReceived(Dts.Dpdu pdu) => _peers.OnDpdu(pdu);
 
     public void OnTransmitDone()
     {
