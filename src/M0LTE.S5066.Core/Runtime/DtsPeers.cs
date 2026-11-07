@@ -111,6 +111,12 @@ internal sealed class DtsPeers
     /// <summary>RX MANAGEMENT FRAME ID NUMBER before any MANAGEMENT D_PDU is received: above 255 (C-0310).</summary>
     private const int NoFrameId = 256;
 
+    /// <summary>
+    /// Answer waits (<c>dts.ack_wait</c> or <c>dts.reset_wait</c>) that may expire in a row, with no
+    /// answer from the peer between, before the DTS declares the connection lost (C-0739; interp C-1250).
+    /// </summary>
+    public const int MaxUnansweredWaits = 16;
+
     private readonly CoreContext _context;
     private readonly TransmitQueue _tx;
     private readonly NonArqReassembler _reassembler;
@@ -266,6 +272,7 @@ internal sealed class DtsPeers
         }
 
         peer.Connected = true;
+        peer.Unanswered = 0;
         peer.Exchange = null;
         peer.ResetSent = false;
         peer.RxResetFrameId = NoFrameId;   // C-1173: each connection starts its RESET FRAME ID sequences afresh
@@ -342,6 +349,7 @@ internal sealed class DtsPeers
             return;
         }
 
+        Answered(peer);   // C-1250
         if (peer.State == DtsPeerState.IdleConnected)
         {
             peer.State = DtsPeerState.DataConnected;   // C-0658, C-0660
@@ -400,12 +408,17 @@ internal sealed class DtsPeers
             return;
         }
 
+        Terminate(peerAddress, peer, DReason.NoConnection);
+    }
+
+    private void Terminate(uint peerAddress, Peer peer, DReason reason)
+    {
         peer.Connected = false;
         peer.State = DtsPeerState.IdleUnconnected;
         EndExchange(peerAddress, peer);
         peer.Expedited.Reset();
         _tx.RemoveControl(c => c is ResetItem or ExpeditedAckItem && c.Dst == peerAddress);
-        _tx.RejectArq(peerAddress);
+        _tx.RejectArq(peerAddress, reason);
     }
 
     /// <summary>
@@ -533,6 +546,11 @@ internal sealed class DtsPeers
             return;
         }
 
+        if ((flags.ResetAck && peer.Exchange is not null) || flags.FullResetCmnd || (peer.Exchange is null && (flags.ResetTxWinRqst || flags.ResetRxWinCmnd)))
+        {
+            Answered(peer);   // a RESET/WIN-RESYNC acted on (C-1250)
+        }
+
         bool wasExpedited = peer.State == DtsPeerState.ExpeditedDataConnected;
         if (flags.ResetAck && peer.Exchange is ResetItem pending)
         {
@@ -646,14 +664,107 @@ internal sealed class DtsPeers
         }
     }
 
-    /// <summary><c>dts.reset_wait/&lt;peer&gt;</c> expired with no RESET ACK: the same command goes again, same RESET FRAME ID NUMBER (C-0255, C-0272, C-1172).</summary>
+    /// <summary>
+    /// <c>dts.reset_wait/&lt;peer&gt;</c> expired with no RESET ACK: the same command goes again, same
+    /// RESET FRAME ID NUMBER (C-0255, C-0272, C-1172), unless this was the last unanswered wait the
+    /// connection allows, when the connection is lost instead (C-1172 note, C-1250).
+    /// </summary>
     public void OnResetWaitTimer(uint address)
     {
-        if (_peers.TryGetValue(address, out Peer? peer) && peer.Exchange is ResetItem item && !_tx.PendingControl.Contains(item))
+        if (!_peers.TryGetValue(address, out Peer? peer) || !peer.Connected || Unanswered(address, peer))
+        {
+            return;
+        }
+
+        if (peer.Exchange is ResetItem item && !_tx.PendingControl.Contains(item))
         {
             _tx.AddControl(item);
         }
     }
+
+    /// <summary>
+    /// <c>dts.ack_wait/&lt;peer&gt;</c> expired with no acknowledgement. Returns true when this was
+    /// the last unanswered wait the connection allows and the connection has been lost (C-1250); the
+    /// caller then does not retransmit (C-1120).
+    /// </summary>
+    public bool OnAckWaitExpired(uint address) =>
+        _peers.TryGetValue(address, out Peer? peer) && peer.Connected && Unanswered(address, peer);
+
+    /// <summary>
+    /// Counts an answer wait that expired (C-1250): at the <see cref="MaxUnansweredWaits"/>th in a row
+    /// with no answer from the peer between, the connection is lost. Returns true when it was.
+    /// </summary>
+    private bool Unanswered(uint address, Peer peer)
+    {
+        peer.Unanswered++;
+        if (peer.Unanswered < MaxUnansweredWaits)
+        {
+            return false;
+        }
+
+        LoseConnection(address, peer);
+        return true;
+    }
+
+    /// <summary>The peer answered: a D_PDU from it that its ARQ machine acted on (C-1250). The count starts again.</summary>
+    private static void Answered(Peer peer) => peer.Unanswered = 0;
+
+    /// <summary>
+    /// The DTS abandons the connection itself (C-0739): D_CONNECTION_LOST to the CAS, then, as for
+    /// D_CONNECTION_TERMINATED, ARQ processing stops, its variables reset, the peer goes to
+    /// IDLE(UNCONNECTED) and every ARQ C_PDU not fully processed is rejected with a local reason
+    /// (C-0866, C-1251).
+    /// </summary>
+    private void LoseConnection(uint address, Peer peer)
+    {
+        _context.Enqueue(new DConnectionLost(address));
+        Terminate(address, peer, DReason.ConnectionLost);
+    }
+
+    /// <summary>
+    /// The CAS asked for clean close with the peer (<see cref="DCloseRequest"/>, interp B-0421): the
+    /// transmit queue takes the policy and, if the link is not clean, the PHYSICAL LINK BREAK REQUEST;
+    /// the answer goes back at once (<see cref="DLinkCleanState"/>).
+    /// </summary>
+    public void OnCloseRequest(DCloseRequest r)
+    {
+        if (!IsConnected(r.Peer))
+        {
+            return;   // the link has already ended; the CAS learns of it by its own primitives
+        }
+
+        bool clean = _tx.RequestClose(r.Peer, r.Policy, r.BreakRequest, r.Handle, ReceiveClean(r.Peer));
+        _context.Enqueue(new DLinkCleanState(r.Peer, clean));
+    }
+
+    /// <summary>
+    /// The DTS's turn to judge clean close state (B-0237; interp B-0422): after a received burst
+    /// ends, after our own transmission ends, and after <c>dts.ttd</c>. Each connected peer whose link
+    /// is closing and has just become clean is reported once, in ascending address order.
+    /// </summary>
+    public void CheckClean()
+    {
+        foreach ((uint address, Peer peer) in _peers)
+        {
+            if (peer.Connected && _tx.LinkOf(address) is { Close: not null, CleanReported: false } link
+                && ReceiveClean(address) && _tx.IsClean(address))
+            {
+                link.CleanReported = true;
+                _context.Enqueue(new DLinkCleanState(address, true));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The receive side of clean close state (B-0236 (a); interp B-0422): no RESET/WIN-RESYNC
+    /// exchange of ours pending, no type 4 C_PDU from the peer partly received and no type 5, RESET
+    /// acknowledgement or MANAGEMENT acknowledgement owed to it.
+    /// </summary>
+    private bool ReceiveClean(uint address) =>
+        _peers.TryGetValue(address, out Peer? peer)
+        && peer.Exchange is null
+        && !peer.Expedited.Partial
+        && !_tx.PendingControl.Any(c => c.Dst == address && c is ExpeditedAckItem or ResetItem or ManagementAck);
 
     /// <summary>The <c>dts.reception_window</c> expiry (C-0336).</summary>
     public void OnReceptionWindowTimer() => _reassembler.OnTimer();
@@ -768,6 +879,7 @@ internal sealed class DtsPeers
     private void OnExpeditedData(Peer peer, ExpeditedDataOnly x)
     {
         uint src = x.Header.Src;
+        Answered(peer);   // C-1250
         if (peer.State is DtsPeerState.IdleConnected or DtsPeerState.DataConnected)
         {
             peer.State = DtsPeerState.ExpeditedDataConnected;
@@ -875,6 +987,9 @@ internal sealed class DtsPeers
 
         /// <summary>The RESET FRAME ID NUMBER our next command takes, modulo 256 (C-0272, C-0273, C-1173).</summary>
         public int TxResetFrameId { get; set; }
+
+        /// <summary>Answer waits expired in a row with no answer from the peer (C-1250).</summary>
+        public int Unanswered { get; set; }
 
         /// <summary>The received transmission that carried the peer's last type 4 (C-1231).</summary>
         public long Type4Transmission { get; set; }

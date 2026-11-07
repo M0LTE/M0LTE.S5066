@@ -103,6 +103,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>The largest value of the 16-bit reception window field (C-0355).</summary>
     private const int MaxWindow = 65535;
 
+    /// <summary>The TTD of a C_PDU that never expires: the CAS's own PHYSICAL LINK BREAK REQUEST (interp B-0421).</summary>
+    public const long NoTtd = long.MaxValue;
+
     private static readonly TimerName TtdTimer = TimerName.Of(TimerKind.DtsTtd);
 
     private readonly CoreContext _context;
@@ -226,7 +229,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// C-0672), and every ARQ C_PDU not fully processed is rejected to the CAS, oldest first (C-0866);
     /// one already rejected for its TTD is not rejected again. <c>dts.ack_wait/&lt;peer&gt;</c> stops.
     /// </summary>
-    public void RejectArq(uint peer)
+    public void RejectArq(uint peer, DReason reason = DReason.NoConnection)
     {
         _links.Remove(peer);
         _context.Timers.Cancel(AckWaitTimer(peer));
@@ -236,7 +239,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (!a.Dropped)
             {
-                _context.Enqueue(new DUnidataRequestRejected(a.Request.Handle, DReason.NoConnection));
+                _context.Enqueue(new DUnidataRequestRejected(a.Request.Handle, reason));
             }
         }
 
@@ -282,6 +285,61 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>Whether a type 7 C_PDU to the peer's individual address still has segments to place (C-0695, C-0715, C-1212).</summary>
     public bool HasNonArqFor(uint peer) => _entries.Any(e => !e.Expedited && !e.DstIsGroup && e.Dst == peer && e.HasUnplacedSegment);
 
+    /// <summary>
+    /// A clean close of the link holds back a C_PDU that has not started transmission (B-0246, B-0247,
+    /// B-0252, B-0253; interp B-0421): every one when new data is stopped, those below the stated
+    /// priority on Higher Priority. The PHYSICAL LINK BREAK REQUEST of the close itself is exempt.
+    /// </summary>
+    private static bool HeldByClose(ArqLink link, ArqCPdu a) =>
+        !a.Placed && link.Close is ClosePolicy p && a.Request.Handle != link.CloseExemptHandle && p.Holds(a.Priority);
+
+    /// <summary>
+    /// A clean close of the link with the peer is asked for (interp B-0421): the policy is merged with
+    /// any already in force, and when the link is not clean (<see cref="IsClean"/>) the PHYSICAL LINK
+    /// BREAK REQUEST, if given, is queued as ARQ data with no TTD, exempt from the policy (B-0242,
+    /// B-0312, B-0317). <paramref name="receiveClean"/> is the receive side's part of clean state.
+    /// Returns whether the link is clean now, then reported; false with no link.
+    /// </summary>
+    public bool RequestClose(uint peer, ClosePolicy policy, ReadOnlyMemory<byte>? breakRequest, int handle, bool receiveClean)
+    {
+        if (!_links.TryGetValue(peer, out ArqLink? link))
+        {
+            return false;
+        }
+
+        link.Close = link.Close is ClosePolicy old ? old.Merge(policy) : policy;
+        if (receiveClean && IsClean(peer))
+        {
+            link.CleanReported = true;
+            _mac.QueueState(Placeable());
+            return true;
+        }
+
+        link.CleanReported = false;
+
+        if (breakRequest is ReadOnlyMemory<byte> cpdu)
+        {
+            link.CloseExemptHandle = handle;
+            _arq.Add(new ArqCPdu(_nextSeq++, new DUnidataRequest(peer, false, true, 0, NoTtd, false, 0, cpdu, handle)));
+        }
+
+        _mac.QueueState(Placeable());
+        return false;
+    }
+
+    /// <summary>
+    /// The transmit side of clean close state with the peer (B-0236): nothing sent awaits an
+    /// acknowledgement or a retransmission, no acknowledgement is owed to the peer, no C_PDU to it is
+    /// part way through or allowed to start, and no reset exchange is pending (interp B-0422). The
+    /// receive side adds its own conditions (<see cref="DtsPeers"/>).
+    /// </summary>
+    public bool IsClean(uint peer) =>
+        _links.TryGetValue(peer, out ArqLink? link)
+        && !link.Suspended
+        && !link.AckOwed
+        && link.Outstanding.Count == 0
+        && !_arq.Any(a => a.Peer == peer && (a.Placed || !HeldByClose(link, a)));
+
     /// <summary>Set by the receive side: the peer is part way through sending us a type 4 C_PDU, so it is in EXPEDITED-DATA(CONNECTED) (C-1212, C-1215).</summary>
     public Func<uint, bool> HoldsPartialExpedited { get; set; } = _ => false;
 
@@ -313,7 +371,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// Our transmission has ended (core-architecture.md 5.7): <c>dts.ack_wait/&lt;peer&gt;</c> starts,
     /// or restarts, for each peer that had ARQ data D_PDUs in it and still has some awaiting an
     /// acknowledgement, in ascending address order (C-1120). Its value is <c>dts.ack_wait_ms</c>, or
-    /// when that is unset <see cref="DerivedAckWaitMs"/>.
+    /// when that is unset the derived wait (<see cref="NodeConfig.DerivedAnswerWaitMs"/>).
     /// </summary>
     public void OnTransmitDone()
     {
@@ -321,7 +379,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (_links.TryGetValue(peer, out ArqLink? link) && link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
             {
-                _context.Timers.Start(AckWaitTimer(peer), _context.Config.Dts.AckWaitMs ?? DerivedAckWaitMs());
+                _context.Timers.Start(AckWaitTimer(peer), AnswerWaitMs());
             }
         }
 
@@ -590,9 +648,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
 
             var a = (ArqCPdu)c;
-            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, _control))
+            if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, _control) || HeldByClose(link, a))
             {
-                continue;   // C-0257: no regular data while a reset exchange is pending; C-1215
+                continue;   // C-0257: no regular data while a reset exchange is pending; C-1215; B-0246, B-0252
             }
 
             if (HeldBehindExpedited(a.Peer, false) || link.WindowSize >= MaxTxWindow(link))
@@ -834,9 +892,9 @@ internal sealed class TransmitQueue : ITransmissionSource
             else
             {
                 var a = (ArqCPdu)c;
-                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, chosenControl))
+                if (!a.HasUnplacedSegment || LinkOf(a.Peer) is not ArqLink link || link.Suspended || Held(a.Peer, 9, chosenControl) || HeldByClose(link, a))
                 {
-                    continue;   // fully sent, no connection, a reset exchange is pending (C-0257), or the peer's state holds it (C-0693, C-0713, C-1215)
+                    continue;   // fully sent, no connection, a reset exchange is pending (C-0257), the peer's state holds it (C-0693, C-0713, C-1215), or a clean close does (B-0246, B-0252)
                 }
 
                 bool started = a.Partial;
@@ -1344,20 +1402,8 @@ internal sealed class TransmitQueue : ITransmissionSource
         return count;
     }
 
-    /// <summary>
-    /// The acknowledgement wait when <c>dts.ack_wait_ms</c> is unset (C-1120): the longest the peer may
-    /// wait before it transmits after hearing us, the longer LBT wait (K-0067, K-0077) plus the longest
-    /// contention wait (K-0080), then a transmission of the configured length, by whose end a peer
-    /// that heard us and shares our settings has answered unless it chose to send elsewhere.
-    /// </summary>
-    /// <summary>The time allowed for the peer to answer: <c>dts.ack_wait_ms</c>, or when unset <see cref="DerivedAckWaitMs"/> (C-1120); also the RESET/WIN-RESYNC wait (C-1172).</summary>
-    public long AnswerWaitMs() => _context.Config.Dts.AckWaitMs ?? DerivedAckWaitMs();
-
-    private long DerivedAckWaitMs()
-    {
-        CsmaConfig csma = _context.Config.Csma;
-        return Budget + Math.Max(csma.LbtWaitDcdMs, csma.LbtWaitVdcdMs) + ((long)csma.NumContSlots * csma.ContSlotWidthMs);
-    }
+    /// <summary>The time allowed for the peer to answer: <c>dts.ack_wait_ms</c>, or when unset the derived wait (C-1120, <see cref="NodeConfig.DerivedAnswerWaitMs"/>); also the RESET/WIN-RESYNC wait (C-1172).</summary>
+    public long AnswerWaitMs() => _context.Config.AnswerWaitMs();
 
     /// <summary>
     /// The time allowed per later transmission in a reception window (C-1051; core-architecture.md
@@ -1416,7 +1462,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         long? next = null;
         foreach (ArqCPdu a in _arq)
         {
-            if (!a.Dropped)
+            if (!a.Dropped && a.Request.Ttd != NoTtd)
             {
                 next = next is long n ? Math.Min(n, a.Request.Ttd) : a.Request.Ttd;
             }

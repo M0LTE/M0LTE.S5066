@@ -39,9 +39,14 @@ internal sealed class DtsSublayer : IDtsSublayer
         {
             case TimerKind.DtsTtd:
                 _tx.OnTtdTimer();   // C-0857, C-0864, C-1050
+                _peers.CheckClean();   // a C_PDU dropped for its TTD may leave a closing link clean (B-0422)
                 break;
             case TimerKind.DtsAckWait:
-                _tx.OnAckWaitTimer(name.Peer!.Value);   // C-0911, C-1120
+                if (!_peers.OnAckWaitExpired(name.Peer!.Value))   // C-1250: or the connection is lost
+                {
+                    _tx.OnAckWaitTimer(name.Peer!.Value);   // C-0911, C-1120
+                }
+
                 break;
             case TimerKind.DtsReceptionWindow:
                 _peers.OnReceptionWindowTimer();
@@ -62,7 +67,12 @@ internal sealed class DtsSublayer : IDtsSublayer
 
     public void OnBytesReceived(ReadOnlyMemory<byte> bytes) => _receiver.OnBytesReceived(bytes.Span);
 
-    public void OnBurstEnded(BurstEnded burst) => _receiver.OnBurstEnded(burst);
+    /// <summary>The received burst ended: the turn to judge clean close state that usually follows a peer's transmission (B-0237, B-0422).</summary>
+    public void OnBurstEnded(BurstEnded burst)
+    {
+        _receiver.OnBurstEnded(burst);
+        _peers.CheckClean();
+    }
 
     /// <summary>
     /// A whole D_PDU with good CRCs, whoever it is addressed to (C-0838), to the per-peer state
@@ -74,7 +84,8 @@ internal sealed class DtsSublayer : IDtsSublayer
     /// Our transmission has ended: each expedited request whose last D_PDU it carried is confirmed
     /// to the CAS, in placement order (C-1100). First, the ARQ bookkeeping of core-architecture.md 5.7:
     /// <c>dts.ack_wait</c> for each peer the transmission carried ARQ data to (C-1120), then
-    /// <c>dts.reset_wait</c> for each peer it carried a RESET/WIN-RESYNC command to (C-1172).
+    /// <c>dts.reset_wait</c> for each peer it carried a RESET/WIN-RESYNC command to (C-1172). Last,
+    /// closing links that are now clean are reported (B-0422).
     /// </summary>
     public void OnTransmitDone()
     {
@@ -84,6 +95,8 @@ internal sealed class DtsSublayer : IDtsSublayer
         {
             _context.Enqueue(new DExpeditedUnidataRequestConfirm(handle));
         }
+
+        _peers.CheckClean();   // B-0237, B-0422: after the confirms
     }
 
     public void On(ToDts primitive)
@@ -111,6 +124,9 @@ internal sealed class DtsSublayer : IDtsSublayer
                 break;
             case DConnectionTerminated t:
                 _peers.OnConnectionTerminated(t.Peer);
+                break;
+            case DCloseRequest c:
+                _peers.OnCloseRequest(c);   // B-0246, interp B-0421
                 break;
             case DExpeditedUnidataRequest { Arq: false } r:
                 _tx.AddExpedited(r);

@@ -34,20 +34,52 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
     /// <summary>drc.*: data rate settings.</summary>
     public DrcConfig Drc { get; init; } = new(new Speed(2, Interleaver.Long));
 
-    /// <summary>cas.*: CAS-1 linking settings, none with a default.</summary>
+    /// <summary>cas.*: CAS-1 link settings. The timers are derived when unset (<see cref="AnswerWaitMs"/>).</summary>
     public CasConfig Cas { get; init; } = CasConfig.Unset;
+
+    /// <summary>
+    /// The longest a peer that heard a transmission of ours and shares our settings takes to answer it
+    /// (C-1120): the longer LBT wait, since it may have heard only part of our transmission (K-0067,
+    /// K-0077), plus the longest contention wait (K-0080), then a transmission of the configured length
+    /// (K-0094), by whose end the answer has arrived. Every derived wait is built from it.
+    /// </summary>
+    public long DerivedAnswerWaitMs() =>
+        Math.Min(DtsConfig.MaxTransmissionLimitMs, Dts.MaxTransmissionMs)
+        + Math.Max(Csma.LbtWaitDcdMs, Csma.LbtWaitVdcdMs) + ((long)Csma.NumContSlots * Csma.ContSlotWidthMs);
+
+    /// <summary>
+    /// The time allowed for the peer to answer one transmission: <c>dts.ack_wait_ms</c>, or when unset
+    /// <see cref="DerivedAnswerWaitMs"/> (C-1120). Also the RESET/WIN-RESYNC wait (C-1172).
+    /// </summary>
+    public long AnswerWaitMs() => Dts.AckWaitMs ?? DerivedAnswerWaitMs();
+
+    /// <summary>cas.link_request_timeout_ms, or when unset one answer wait (issue #49; interp B-0420).</summary>
+    public long LinkRequestTimeoutMs() => Cas.LinkRequestTimeoutMs ?? AnswerWaitMs();
+
+    /// <summary>cas.first_data_timeout_ms, or when unset three answer waits (issue #49; interp B-0420).</summary>
+    public long FirstDataTimeoutMs() => Cas.FirstDataTimeoutMs ?? (3 * AnswerWaitMs());
+
+    /// <summary>cas.break_timeout_ms, or when unset one answer wait (B-0283; issue #49; interp B-0420).</summary>
+    public long BreakTimeoutMs() => Cas.BreakTimeoutMs ?? AnswerWaitMs();
+
+    /// <summary>cas.clean_close_timeout_ms, or when unset three answer waits (B-0322; interp B-0420).</summary>
+    public long CleanCloseTimeoutMs() => Cas.CleanCloseTimeoutMs ?? (3 * AnswerWaitMs());
 }
 
 /// <summary>
-/// cas.* settings for CAS-1 link establishment (P4-1). None has a default: the standard gives no
-/// values (core-architecture.md 10 item 11), so each is null until configured and throws
-/// <see cref="MissingSettingException"/> where the CAS needs it.
+/// cas.* settings for CAS-1 links (P4-1, P5-1). The counts and the link limit have no default and
+/// throw <see cref="MissingSettingException"/> where the CAS needs them. The timers, when null, are
+/// derived from the answer wait (<see cref="NodeConfig.AnswerWaitMs"/>; issue #49, interp B-0420).
 /// </summary>
 /// <param name="MaxLinks">cas.max_links: the active physical link limit, 1 or more (B-0193, B-0209, B-0313, B-0402).</param>
 /// <param name="LinkRequestTimeoutMs">cas.link_request_timeout_ms: the Caller's wait for an answer, from the end of the transmission carrying the request (B-0203, B-0204, B-0400).</param>
 /// <param name="LinkRequestRetries">cas.link_request_retries: repeats of an unanswered request, so 1 + retries sends (B-0222, B-0407).</param>
 /// <param name="FirstDataTimeoutMs">cas.first_data_timeout_ms: the Called node's wait for the first DATA C_PDU (B-0215, B-0216).</param>
-public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? LinkRequestRetries, int? FirstDataTimeoutMs)
+/// <param name="BreakTimeoutMs">cas.break_timeout_ms: the Initiator's wait for PHYSICAL LINK BREAK CONFIRM, from the end of the transmission carrying the break (B-0283, B-0400).</param>
+/// <param name="BreakRetries">cas.break_retries: repeats of an unanswered PHYSICAL LINK BREAK, so 1 + retries sends (B-0287, B-0288; interp B-0424).</param>
+/// <param name="CleanCloseTimeoutMs">cas.clean_close_timeout_ms: the longest a close this node asked for waits for clean close state (B-0322).</param>
+public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? LinkRequestRetries, int? FirstDataTimeoutMs,
+                               int? BreakTimeoutMs = null, int? BreakRetries = null, int? CleanCloseTimeoutMs = null)
 {
     /// <summary>Every setting null.</summary>
     public static CasConfig Unset { get; } = new(null, null, null, null);
@@ -55,14 +87,11 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
     /// <summary>cas.max_links, or throws when unset.</summary>
     public int RequireMaxLinks() => MaxLinks ?? throw new MissingSettingException("cas.max_links");
 
-    /// <summary>cas.link_request_timeout_ms, or throws when unset.</summary>
-    public int RequireLinkRequestTimeoutMs() => LinkRequestTimeoutMs ?? throw new MissingSettingException("cas.link_request_timeout_ms");
-
     /// <summary>cas.link_request_retries, or throws when unset.</summary>
     public int RequireLinkRequestRetries() => LinkRequestRetries ?? throw new MissingSettingException("cas.link_request_retries");
 
-    /// <summary>cas.first_data_timeout_ms, or throws when unset.</summary>
-    public int RequireFirstDataTimeoutMs() => FirstDataTimeoutMs ?? throw new MissingSettingException("cas.first_data_timeout_ms");
+    /// <summary>cas.break_retries, or throws when unset.</summary>
+    public int RequireBreakRetries() => BreakRetries ?? throw new MissingSettingException("cas.break_retries");
 }
 
 /// <summary>dts.* settings.</summary>
@@ -85,7 +114,9 @@ public sealed record CasConfig(int? MaxLinks, int? LinkRequestTimeoutMs, int? Li
 /// waits for an acknowledgement before it treats the unacknowledged D_PDUs as failed (C-0911,
 /// C-1120). The standard gives no value. When null the wait is derived: the configured transmission
 /// length plus the longer of the two LBT waits plus the longest contention wait, the longest a peer
-/// sharing our settings takes to answer. Read when <c>dts.ack_wait</c> starts.
+/// sharing our settings takes to answer. Read when <c>dts.ack_wait</c> starts. An explicit value
+/// below <c>csma.lbt_wait_dcd_ms</c> is refused at configuration load: a peer that heard only part of
+/// our transmission may not answer before that wait (issue #49 (b); interp C-1252).
 /// </param>
 public sealed record DtsConfig(int MaxSegmentSize, int MaxTransmissionMs, int MaxWindow = DtsConfig.MaxWindowLimit, int? AckWaitMs = null)
 {

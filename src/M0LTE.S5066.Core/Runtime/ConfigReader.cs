@@ -28,6 +28,7 @@ public static class ConfigReader
         "sis.default_ttl", "dts.max_segment_size", "dts.max_transmission_ms", "dts.max_window", "dts.ack_wait_ms",
         "drc.default_speed",
         "cas.max_links", "cas.link_request_timeout_ms", "cas.link_request_retries", "cas.first_data_timeout_ms",
+        "cas.break_timeout_ms", "cas.break_retries", "cas.clean_close_timeout_ms",
     ];
 
     /// <summary>
@@ -103,7 +104,7 @@ public static class ConfigReader
         }
 
         var fixture = new ModemFixture(Int(modem, "preamble_ms", "modem."), Int(modem, "flush_ms", "modem."), waveforms);
-        return new NodeConfig(local, csmaConfig, fixture)
+        var result = new NodeConfig(local, csmaConfig, fixture)
         {
             Groups = ReadGroups(config),
             Time = ReadTime(config),
@@ -112,11 +113,21 @@ public static class ConfigReader
             Drc = ReadDrc(config),
             Cas = ReadCas(config),
         };
+
+        // Issue #49 (b), interp C-1252: an acknowledgement wait shorter than the LBT wait of a peer
+        // that heard only part of our transmission retransmits before that peer may answer.
+        if (result.Dts.AckWaitMs is int ackWait && ackWait < result.Csma.LbtWaitDcdMs)
+        {
+            throw new ConfigException("dts.ack_wait_ms", $"{ackWait} is shorter than csma.lbt_wait_dcd_ms ({result.Csma.LbtWaitDcdMs}), the least time a peer needs to answer");
+        }
+
+        return result;
     }
 
     /// <summary>
-    /// cas.*: all four have no default (core-architecture.md 10 item 11); a null stays null and
-    /// throws where the CAS needs it. Limits: B-0193, B-0204, B-0216, B-0222, B-0407.
+    /// cas.*: a null stays null. The counts and the link limit throw where the CAS needs them; the
+    /// timers are then derived (issue #49, interp B-0420). Limits: B-0193, B-0204, B-0216, B-0222,
+    /// B-0283, B-0288, B-0322, B-0407.
     /// </summary>
     private static CasConfig ReadCas(JsonObject config)
     {
@@ -130,7 +141,10 @@ public static class ConfigReader
             AtLeast(cas, "max_links", 1),
             AtLeast(cas, "link_request_timeout_ms", 1),
             AtLeast(cas, "link_request_retries", 0),
-            AtLeast(cas, "first_data_timeout_ms", 1));
+            AtLeast(cas, "first_data_timeout_ms", 1),
+            AtLeast(cas, "break_timeout_ms", 1),
+            AtLeast(cas, "break_retries", 0),
+            AtLeast(cas, "clean_close_timeout_ms", 1));
 
         static int? AtLeast(JsonObject cas, string key, int min)
         {
