@@ -1,0 +1,31 @@
+namespace M0LTE.S5066.Core.Runtime;
+
+// The CAS-to-DTS request primitives for expedited delivery and the DTS's refusals of requests
+// (Table C-1; core-architecture.md 4.1), added by P3-4 with the unconnected request tables
+// C-9, C-11, C-13 and C-15. Like the P3-1 records they carry the group flag beside the destination
+// (C-0122) and the dispatcher's request handle (section 10 item 10).
+
+/// <summary>Why the DTS refused a request. The reason values are NOT STATED (C-0731).</summary>
+internal enum DReason
+{
+    /// <summary>An ARQ request with no connection to the peer (C-0573, C-0593, C-0613, C-0633; C-0731).</summary>
+    NoConnection,
+}
+
+/// <summary>D_EXPEDITED_UNIDATA_REQUEST, CAS to DTS: one C_PDU for a peer with expedited delivery (C-0025, C-0029).</summary>
+/// <param name="Dst">Destination node address.</param>
+/// <param name="DstIsGroup">True when <paramref name="Dst"/> is a group address (non-ARQ only).</param>
+/// <param name="Arq">True for ARQ delivery (type 4), false for non-ARQ (type 8).</param>
+/// <param name="CPdu">The encoded C_PDU.</param>
+/// <param name="Handle">The request handle.</param>
+internal sealed record DExpeditedUnidataRequest(uint Dst, bool DstIsGroup, bool Arq, ReadOnlyMemory<byte> CPdu, int Handle) : ToDts;
+
+/// <summary>D_UNIDATA_REQUEST_REJECTED, DTS to CAS: the request named by the handle was refused (Table C-1; C-0731).</summary>
+/// <param name="Handle">The request handle.</param>
+/// <param name="Reason">Why.</param>
+internal sealed record DUnidataRequestRejected(int Handle, DReason Reason) : ToCas;
+
+/// <summary>D_EXPEDITED_UNIDATA_REQUEST_REJECTED, DTS to CAS (Table C-1; C-0731).</summary>
+/// <param name="Handle">The request handle.</param>
+/// <param name="Reason">Why.</param>
+internal sealed record DExpeditedUnidataRequestRejected(int Handle, DReason Reason) : ToCas;

@@ -10,14 +10,15 @@ internal sealed class DtsSublayer : IDtsSublayer
 {
     private readonly CoreContext _context;
     private readonly IMacObserver _mac;
-    private readonly List<DUnidataRequest> _pendingNonArq = [];
     private readonly DtsReceiver _receiver;
+    private readonly TransmitQueue _tx;
 
     public DtsSublayer(CoreContext context, IMacObserver mac)
     {
         _context = context;
         _mac = mac;
         _receiver = new DtsReceiver(context, mac, OnDpduReceived);
+        _tx = new TransmitQueue(context, mac);
     }
 
     /// <summary>The D_PDU stream receiver, for tests.</summary>
@@ -54,24 +55,28 @@ internal sealed class DtsSublayer : IDtsSublayer
         switch (primitive)
         {
             case DUnidataRequest { Arq: false } r:
-                OnNonArqRequest(r);
+                _tx.Add(r);
+                break;
+            case DUnidataRequest r:
+                // No ARQ connection exists before CAS-1 linking (P4-1): every peer is in an
+                // UNCONNECTED state, which rejects ARQ requests (C-0573, C-0593, C-0613, C-0633; C-0731).
+                _context.Enqueue(new DUnidataRequestRejected(r.Handle, DReason.NoConnection));
+                break;
+            case DExpeditedUnidataRequest { Arq: false } r:
+                _tx.AddExpedited(r);
+                break;
+            case DExpeditedUnidataRequest r:
+                // C-0574, C-0594, C-0614, C-0634: never requested in our profile, rejected anyway.
+                _context.Enqueue(new DExpeditedUnidataRequestRejected(r.Handle, DReason.NoConnection));
                 break;
             default:
                 throw new InvalidOperationException($"the DTS does not handle {primitive.GetType().Name} yet");
         }
     }
 
-    /// <summary>The non-ARQ C_PDUs accepted for transmission, in arrival order (P3-1 placeholder; P3-4 builds the real queue).</summary>
-    internal IReadOnlyList<DUnidataRequest> PendingNonArq => _pendingNonArq;
+    /// <summary>The non-ARQ C_PDUs queued for normal delivery, in arrival order.</summary>
+    internal IReadOnlyList<DUnidataRequest> PendingNonArq => _tx.PendingNonArq;
 
-    /// <summary>
-    /// P3-1: a non-ARQ C_PDU is accepted into the transmit queue and the MAC is told the queue
-    /// holds something it may send (K-0096; core-architecture.md 4.1). Nothing is transmitted until
-    /// the planner (P3-4), which replaces this list with the queue of core-architecture.md 5.2.
-    /// </summary>
-    private void OnNonArqRequest(DUnidataRequest r)
-    {
-        _pendingNonArq.Add(r);
-        _mac.QueueState(true);
-    }
+    /// <summary>The transmit queue and planner, which the MAC asks for a transmission (core-architecture.md 5).</summary>
+    internal ITransmissionSource Transmitter => _tx;
 }

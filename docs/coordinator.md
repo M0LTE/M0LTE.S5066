@@ -34,4 +34,6 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## Next
 
+- Carry-overs for P4-1: the CAS must handle the DTS reject primitives (D_UNIDATA_REQUEST_REJECTED and the expedited one). Also record the unbind ruling (A-0260). C-1043 overestimates end time by up to one block; that is safe, and can be revisited for turnaround in phase 7.
+
 - Phase 3 items run in the order of core-architecture.md section 9, each with a conformance PR first, an Opus implementer for state machines, and a fresh Opus reviewer.

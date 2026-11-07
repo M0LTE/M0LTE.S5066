@@ -135,11 +135,8 @@ internal sealed class MacSublayer : IMacSublayer
     /// <summary>The number of PRNG draws made, for tests only.</summary>
     internal long PrngDraws => _prng.Draws;
 
-    /// <summary>
-    /// Set by tests to stand in for the planner, which arrives in P3-4. Called when the node wins
-    /// contention and enters LINKING (K-0090).
-    /// </summary>
-    internal Action? LinkingEntered { get; set; }
+    /// <summary>The DTS transmit queue and planner, asked for a transmission on entry to LINKING (core-architecture.md 5).</summary>
+    internal ITransmissionSource? Transmitter { get; set; }
 
     /// <summary>
     /// Busy for Annex K: DCD, or a predicted EOT end time still in the future (K-0063, K-0073,
@@ -348,8 +345,7 @@ internal sealed class MacSublayer : IMacSublayer
 
                 // Won the contention round with data still queued: LINKING, starting no timer (K-0090).
                 _contExpired = false;
-                EnterLinking();
-                return false;
+                return EnterLinking();
 
             default:
                 // LINKING: one visit is one transmission (K-0095); it ends at transmit_done (Table 5),
@@ -438,13 +434,26 @@ internal sealed class MacSublayer : IMacSublayer
         }
     }
 
-    private void EnterLinking()
+    /// <summary>
+    /// Entry to LINKING (core-architecture.md 3.5 rule 4): the DTS first rejects expired C_PDUs and
+    /// the FIFO is drained; if that emptied the queue the node goes back to SENSE (K-0091).
+    /// Otherwise one transmission is built and emitted (K-0093, K-0095); the node stays in LINKING
+    /// until transmit_done (Table 5). Returns true when the state must be examined again.
+    /// </summary>
+    private bool EnterLinking()
     {
-        State = MacState.Linking;
+        ITransmissionSource tx = Transmitter ?? throw new InvalidOperationException("the MAC has no transmission source");
+        tx.ExpireDue();
+        _context.DrainPrimitives();
+        if (!QueueNonEmpty)
+        {
+            State = MacState.Sense;
+            return true;
+        }
 
-        // The transmission planner (core-architecture.md 5; Dts.ExpireDue, then the build and the
-        // transmit output) arrives in P3-4.
-        (LinkingEntered ?? throw new NotSupportedException("LINKING needs the transmission planner, which arrives in P3-4")).Invoke();
+        State = MacState.Linking;
+        _context.Emit(tx.Build());
+        return false;
     }
 
     private static int SlotPosition(CsmaConfig csma)
