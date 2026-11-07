@@ -37,8 +37,10 @@ internal interface ITransmissionSource
 /// <para>
 /// Not here yet: segmentation into more than one D_PDU and non-ARQ repeats (P3-5), TTL expiry
 /// (P3-5, in <see cref="ExpireDue"/>), MANAGEMENT and WARNING D_PDUs (P3-6), ARQ (phase 4), block
-/// alignment, ACK-ONLY fill and PADDING (P4-3). A request that needs P3-5 is queued, and building a transmission
-/// that would hold it throws <see cref="NotSupportedException"/>, as the MAC refused LINKING before this item.
+/// alignment, ACK-ONLY fill and PADDING (P4-3). Interim until P3-5 (issue #24): a request that needs
+/// segmentation or repeats is accepted and queued, and every build while it is queued throws
+/// <see cref="NotSupportedException"/> (<see cref="RequireSupported"/>), as the MAC refused LINKING
+/// before this item. P3-5 removes that check and fills <see cref="ExpireDue"/>.
 /// </para>
 /// </remarks>
 internal sealed class TransmitQueue : ITransmissionSource
@@ -252,7 +254,8 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// One segment carries the whole C_PDU only if it is no larger than the maximum segment size
     /// in force when it is segmented (C-0523, C-0549, C-0555). Larger C_PDUs need segmentation,
     /// and a non-zero retransmission count needs repeats (A-0081, C-0848); both arrive in P3-5.
-    /// Checked at build time, so such a request is still accepted and queued.
+    /// Checked for every queued entry at the start of each build, so such a request is accepted and
+    /// queued, and the node cannot transmit until it is gone. Interim stopgap, removed by P3-5 (issue #24).
     /// </summary>
     private void RequireSupported(Entry e)
     {
