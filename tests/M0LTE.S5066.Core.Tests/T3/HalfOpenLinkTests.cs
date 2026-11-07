@@ -67,6 +67,7 @@ public class HalfOpenLinkTests(ITestOutputHelper output)
 
         // Node 1 gives the link up through the DTS's silence bound, long before its first-data wait (10 000 000 ms).
         (int Node, long T, uint Peer, LinkStateName State) lost = sim.LinkStates.First(l => l.Node == 1 && l.State == LinkStateName.Unlinked);
+        sim.LinkStates.Should().NotContain(l => l.Node == 0 && l.State == LinkStateName.Linked && l.T < lost.T, "node 0 never held the link node 1 made, so it was half-open\n" + trace);
         lost.T.Should().BeLessThan(first1.T + 2_000_000, trace);
         sim.Log.Should().NotContain(l => l.Contains("timer_expired cas.first_data", StringComparison.Ordinal));
         int expiries = sim.Log.Count(l => l.Contains(" n1 in timer_expired dts.ack_wait", StringComparison.Ordinal) && long.Parse(l.Split(' ')[0]) <= lost.T);
