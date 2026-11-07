@@ -6,7 +6,7 @@ namespace M0LTE.S5066.Core.Sis;
 /// <see cref="TryRead"/>. The result does not depend on how the bytes are chunked.
 /// </summary>
 /// <remarks>
-/// Rules (matrix S-0075, S-0076, interp rows; corpus-format.md section 3.5):
+/// Rules (matrix interp rows S-0075, S-0076 and S-0159; corpus-format.md section 3.5):
 /// bytes that are not at a 90 EB preamble give one <see cref="SisErrorKind.BadSync"/> for the whole
 /// run of junk, then the decoder scans forward byte by byte for the next preamble; a bad version or
 /// a zero size gives its error and rescans from the byte after the first preamble byte; a

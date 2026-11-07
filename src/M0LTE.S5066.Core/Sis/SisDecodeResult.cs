@@ -15,7 +15,7 @@ public enum SisErrorKind
     /// <summary>The size field is 0 (S-0069, S-0075).</summary>
     BadSize,
 
-    /// <summary>The type byte is not a primitive of the profile, deprecated or otherwise (S-0071, S-0077).</summary>
+    /// <summary>The type byte is not a primitive of the profile, deprecated or otherwise (S-0071, S-0159).</summary>
     UnknownType,
 
     /// <summary>A hard link (6 to 13) or expedited data (24 to 27) primitive: recognised, reported, not decoded (S-0155, S-0156, S-0157).</summary>
