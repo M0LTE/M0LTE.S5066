@@ -1,3 +1,5 @@
+using M0LTE.S5066.Core.Dts;
+
 namespace M0LTE.S5066.Core.Runtime;
 
 /// <summary>
@@ -19,14 +21,20 @@ internal sealed class ArqLink
     /// <summary>The maximum window size of the 16-bit family (C-0771), which the receiver always assumes (C-0779).</summary>
     public const int MaxWindowSize = 32768;
 
-    /// <summary>The largest Ack Data an ACK-ONLY carries (C-0223). Covering a wider window takes offsets, P4-3's.</summary>
-    public const int MaxAckBytes = 255;
+    /// <summary>
+    /// The largest Ack Data this node puts in one ACK-ONLY. The field allows 255 bytes (C-0223), but
+    /// ACK-ONLY D_PDUs are kept small (C-0213) and the offset mechanism lets the Ack Data stay within
+    /// 32 bytes [Ed4 C.4.5.5, p.C-31], one 256-FSN unit as a bitmap; a wider acknowledgement is split
+    /// by offset (C-0222, C-1151).
+    /// </summary>
+    public const int MaxAckBytes = 32;
 
     /// <summary>The largest Selective Acks field of a DATA-ACK (C-0248).</summary>
     public const int MaxDataAckBytes = 18;
 
     private readonly Dictionary<int, InFrame> _received = new();   // looked up by FSN only, never enumerated (core-architecture.md 6 rule 3)
     private readonly List<CPduRun> _pendingInOrder = [];
+    private IReadOnlyList<AckUnit>? _acknowledgement;   // cached until the receive window next changes
 
     public ArqLink(uint peer) => Peer = peer;
 
@@ -87,6 +95,7 @@ internal sealed class ArqLink
     {
         var deliver = new List<ReadOnlyMemory<byte>>();
         ArqUsed = true;
+        _acknowledgement = null;   // the receive window may change
         int ahead = Seq.Distance(RxLwe, fsn);
         if (ahead >= MaxWindowSize)
         {
@@ -154,28 +163,88 @@ internal sealed class ArqLink
     }
 
     /// <summary>
-    /// The SELECTIVE ACKS bitmap of the receive window: bit 0 of byte 0 for RX LWE + 1, then each
-    /// FSN in turn up to RX UWE, set for each D_PDU received, zero padded to a whole byte, and no
-    /// byte after the one holding RX UWE (C-0201, C-0202, C-0205, C-0207 to C-0211). Empty when
-    /// nothing beyond RX LWE has been received. Capped at <see cref="MaxAckBytes"/>: wider coverage
-    /// with offsets is P4-3's.
+    /// The status of the receive window from RX LWE + 1 to RX UWE, one entry per FSN, true for a D_PDU
+    /// received (C-0201, C-0202, C-0205, C-0207 to C-0209). Empty when nothing beyond RX LWE has been
+    /// received.
     /// </summary>
-    public byte[] AckBitmap()
+    public List<bool> AckBits()
     {
         int span = Seq.Distance(RxLwe, Seq.Add(RxUwe, 1));
-        int bits = span <= 1 ? 0 : span - 1;
-        int bytes = Math.Min(MaxAckBytes, (bits + 7) / 8);
-        bits = Math.Min(bits, bytes * 8);
-        var map = new byte[bytes];
-        for (int i = 0; i < bits; i++)
+        int count = span <= 1 ? 0 : span - 1;
+        var bits = new List<bool>(count);
+        for (int i = 0; i < count; i++)
         {
-            if (_received.ContainsKey(Seq.Add(RxLwe, 1 + i)))
-            {
-                map[i / 8] |= (byte)(1 << (i % 8));
-            }
+            bits.Add(_received.ContainsKey(Seq.Add(RxLwe, 1 + i)));
         }
 
-        return map;
+        return bits;
+    }
+
+    /// <summary>The SELECTIVE ACKS bitmap of the whole receive window (C-0207 to C-0211), for tests.</summary>
+    public byte[] AckBitmap()
+    {
+        List<bool> bits = AckBits();
+        return AckData.Bitmap(bits, 0, bits.Count);
+    }
+
+    /// <summary>
+    /// The acknowledgement of the receive window as it stands, as the ACK-ONLY D_PDUs that together
+    /// acknowledge every D_PDU received (C-0215), in offset order. The bits run from RX LWE + 1 to
+    /// RX UWE (C-0207 to C-0211, C-0233). Each D_PDU carries the more compact of the bitmap and the run
+    /// length encoding, the bitmap on a tie (C-0224, C-0225, interp C-1150). Each D_PDU's Ack Data is
+    /// kept to <see cref="MaxAckBytes"/> (C-0213): when neither encoding of the whole window fits, the
+    /// window is split at multiples of 256 FSNs (C-0222): each D_PDU covers the most whole 256-FSN units
+    /// from its offset whose more compact encoding fits, and the next starts where it ends (interp
+    /// C-1151). With nothing beyond RX LWE received there is one D_PDU with no Ack Data.
+    /// </summary>
+    public IReadOnlyList<AckUnit> Acknowledgement() => _acknowledgement ??= BuildAcknowledgement();
+
+    private List<AckUnit> BuildAcknowledgement()
+    {
+        List<bool> bits = AckBits();
+        var units = new List<AckUnit>();
+        int pos = 0;
+        int offset = 0;
+        do
+        {
+            int rest = bits.Count - pos;
+            (int enc, byte[] data) = Compact(bits, pos, rest);
+            if (data.Length <= MaxAckBytes)
+            {
+                units.Add(new AckUnit(RxLwe, enc, offset, data));
+                break;
+            }
+
+            (int Enc, byte[] Data, int Units)? best = null;
+            for (int k = 1; k * OffsetUnit < rest; k++)
+            {
+                (int e, byte[] d) = Compact(bits, pos, k * OffsetUnit);
+                if (d.Length > MaxAckBytes)
+                {
+                    break;   // both encodings only grow as the range grows
+                }
+
+                best = (e, d, k);
+            }
+
+            // A 32-byte bitmap covers one unit, so best is always set.
+            units.Add(new AckUnit(RxLwe, best!.Value.Enc, offset, best.Value.Data));
+            pos += best.Value.Units * OffsetUnit;
+            offset += best.Value.Units;
+        }
+        while (pos < bits.Count);
+
+        return units;
+    }
+
+    /// <summary>The FSNs one step of the Offset field moves the start of the Ack Data (C-0222).</summary>
+    public const int OffsetUnit = 256;
+
+    private static (int Encoding, byte[] Data) Compact(List<bool> bits, int start, int count)
+    {
+        byte[] map = AckData.Bitmap(bits, start, count);
+        byte[] rle = AckData.Rle(bits, start, count);
+        return rle.Length < map.Length ? (AckData.RleEncoding, rle) : (AckData.BitmapEncoding, map);
     }
 
     // ---- synchronisation (C-0790 to C-0802) and reset (C-0812, C-0822, C-0265) ----
@@ -458,9 +527,18 @@ internal sealed class ArqFrame(ArqCPdu owner, int segment, int fsn)
 }
 
 /// <summary>
+/// One ACK-ONLY's worth of acknowledgement (C-0195, C-0215): the RX LWE it carries, the Ack Data
+/// encoding (C-0227, C-0228), the offset in units of 256 FSNs (C-0222, C-0233) and the Ack Data.
+/// </summary>
+internal sealed record AckUnit(int RxLwe, int Encoding, int Offset, byte[] Data);
+
+/// <summary>
 /// An ARQ C_PDU for a connected peer (C-0653, C-0673): held whole until first placed, then cut into
-/// segments (C-0502 to C-0510), each sent as a DATA-ONLY or DATA-ACK D_PDU with its own FSN, in
-/// order. Confirmed to the CAS when every segment has been acknowledged (C-0679, C-1130).
+/// segments one at a time as each is placed, from a cursor (C-0502 to C-0510; core-architecture.md
+/// 5.2), each sent as a DATA-ONLY or DATA-ACK D_PDU with its own FSN, in order. A segment is
+/// normally the maximum segment size in force, the last one shorter; towards an Ed4 peer the planner
+/// may cut one shorter to line D_PDUs up with modem blocks (C-0553, C-0872, interp C-1155).
+/// Confirmed to the CAS when every segment has been acknowledged (C-0679, C-1130).
 /// </summary>
 internal sealed class ArqCPdu(long seq, DUnidataRequest request)
 {
@@ -472,11 +550,14 @@ internal sealed class ArqCPdu(long seq, DUnidataRequest request)
 
     public int Priority => Request.Priority;
 
-    /// <summary>The segments (offset, length), cut at first placement; null until then.</summary>
+    /// <summary>The C_PDU length in bytes.</summary>
+    public int Length => Request.CPdu.Length;
+
+    /// <summary>The segments (offset, length) cut so far, each given an FSN when cut; null until the first.</summary>
     public List<(int Offset, int Length)>? Segments { get; private set; }
 
-    /// <summary>The first segment not yet given an FSN.</summary>
-    public int NextSegment { get; set; }
+    /// <summary>The bytes cut into segments so far.</summary>
+    public int Cursor { get; private set; }
 
     /// <summary>Segments given an FSN and not yet acknowledged.</summary>
     public int Unacked { get; set; }
@@ -486,28 +567,29 @@ internal sealed class ArqCPdu(long seq, DUnidataRequest request)
 
     public bool Placed => Segments is not null;
 
-    public bool HasUnplacedSegment => !Placed || NextSegment < Segments!.Count;
+    public bool HasUnplacedSegment => !Placed || Cursor < Length;
 
     /// <summary>A C_PDU some of whose segments have FSNs and some not: its first transmissions must not be split by other data (C-0850, C-1127).</summary>
-    public bool Partial => Placed && NextSegment > 0 && NextSegment < Segments!.Count;
+    public bool Partial => Placed && Cursor > 0 && Cursor < Length;
 
-    /// <summary>The segment length the next segment has, cutting with this size if not yet cut.</summary>
-    public int NextSegmentLength(int maxSegment) =>
-        Placed ? Segments![NextSegment].Length : Math.Min(maxSegment, Request.CPdu.Length);
+    /// <summary>The bytes not yet cut.</summary>
+    public int Remaining => Length - Cursor;
 
-    /// <summary>
-    /// Cuts the C_PDU into segments of the maximum segment size in force, the last one shorter
-    /// (C-0505, C-0507, C-0508, C-0509), each a contiguous run in order.
-    /// </summary>
-    public void Cut(int maxSegment)
+    /// <summary>The length the next segment has at the maximum segment size: that size, or what is left (C-0505, C-0507, C-0508).</summary>
+    public int NextSegmentLength(int maxSegment) => Math.Min(maxSegment, Remaining);
+
+    /// <summary>Cuts the next segment, <paramref name="length"/> bytes from the cursor (C-0509), and returns its index.</summary>
+    public int CutNext(int length)
     {
-        var segments = new List<(int, int)>();
-        int length = Request.CPdu.Length;
-        for (int offset = 0; offset < length; offset += maxSegment)
-        {
-            segments.Add((offset, Math.Min(maxSegment, length - offset)));
-        }
-
-        Segments = segments;
+        Segments ??= [];
+        Segments.Add((Cursor, length));
+        Cursor += length;
+        return Segments.Count - 1;
     }
+
+    /// <summary>Whether a segment is the first of the C_PDU (C-0176).</summary>
+    public bool IsFirst(int segment) => Segments![segment].Offset == 0;
+
+    /// <summary>Whether a segment ends the C_PDU (C-0177).</summary>
+    public bool IsLast(int segment) => Segments![segment].Offset + Segments[segment].Length == Length;
 }
