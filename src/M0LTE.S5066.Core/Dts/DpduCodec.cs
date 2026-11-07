@@ -336,7 +336,7 @@ public static class DpduCodec
             case 8:
             {
                 int n = ((ts[0] & 3) << 8) | ts[1];
-                var f = new NonArqFields(((ts[0] >> 4) << 8) | ts[2], (ts[0] & 8) != 0, (ts[0] & 4) != 0, U16(ts[3..]), U16(ts[5..]), U16(ts[7..]));
+                var f = new NonArqFields(((ts[0] >> 4) << 8) | ts[2], (ts[0] & 8) != 0, info.GroupAddress, U16(ts[3..]), U16(ts[5..]), U16(ts[7..]));
                 return type == 7
                     ? WithSegment(rest, n, end, (seg, ok) => new NonArqData(header, f, seg, ok))
                     : WithSegment(rest, n, end, (seg, ok) => new ExpeditedNonArqData(header, f, seg, ok));

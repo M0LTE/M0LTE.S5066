@@ -37,7 +37,8 @@ internal sealed record RxQuality(long LastHeard, int? SnrTenthDb, int Wn, Interl
 /// Per D_PDU, in byte order (core-architecture.md 3.5 rule 3), the header effects happen as soon as
 /// the header is complete and valid, even if its data has not all arrived: an EOT &gt; 0 gives the
 /// end time <c>t_rx + eot * 500</c>, where <c>t_rx</c> is the time of the <c>bytes_received</c> that
-/// completed the header (C-0842, K-0021; EOT 0 gives nothing, C-0105), and the (src, dst, group)
+/// completed the header, or the burst end for a header found only by the search at the burst end
+/// (C-0842, K-0021, C-1024; EOT 0 gives nothing, C-0105), and the (src, dst, group)
 /// triple goes to the MAC for the two-node rule (K-0068). This holds for every valid header,
 /// whoever it is addressed to (C-0832, C-0868). Then, once the whole D_PDU is there, one whose data
 /// CRC fails is discarded (C-0834, C-0836, C-0839) and the rest go to the state machine (C-0838).
@@ -146,7 +147,16 @@ internal sealed class DtsReceiver
 
             _pos = sync;
             ReadOnlySpan<byte> span = _buffer.AsSpan(_pos, _length - _pos);
-            PeerEdition edition = DpduCodec.TryPeekSource(span, out uint peeked) ? EditionOf(peeked) : PeerEdition.Ed4;
+            bool peekedOk = DpduCodec.TryPeekSource(span, out uint peeked);
+            if (!peekedOk && !endOfBurst && span.Length >= 6 && (span[5] >> 5) != 0)
+            {
+                // The address field is not all here yet: wait for it, so the edition is known
+                // before the header-size check (core-architecture.md 10 item 8).
+                Compact();
+                return;
+            }
+
+            PeerEdition edition = peekedOk ? EditionOf(peeked) : PeerEdition.Ed4;
 
             DecodeResult<DpduHeaderInfo> header = DpduCodec.DecodeHeader(span, edition);
             if (!header.IsSuccess)

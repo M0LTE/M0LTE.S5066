@@ -31,7 +31,8 @@ internal enum MacState
 /// <para>
 /// LBT rules on entry to LBT_WAIT from SENSE, tried in the order 1, 2, 3 (K-0072): rule 1, zero,
 /// when the most recent received transmission held D_PDUs addressed directly to this node and none
-/// addressed directly to another node (K-0067, K-0068); rule 2, <c>lbt_wait_dcd_ms</c>, when DCD
+/// addressed directly to another node, and its end (not an earlier burst's EOT) produced the idle
+/// (K-0067, K-0068); rule 2, <c>lbt_wait_dcd_ms</c>, when DCD
 /// cleared last (K-0070); rule 3, <c>lbt_wait_vdcd_ms</c>, when the EOT prediction cleared last or
 /// at the same time (K-0071, K-0073). The end of this node's own transmission counts as
 /// VDCD-determined (K-0074). Ed3 mode uses the one common value and no rule 1 (K-0107).
@@ -66,7 +67,8 @@ internal sealed class MacSublayer : IMacSublayer
 
     // The channel model fed by the DTS (C-0842, C-0843, K-0021; core-architecture.md 10 item 2).
     // _burstEnd: minimum over the EOTs of the current burst, reset at burst_started.
-    // _priorEnd: the prediction carried from earlier bursts, never cleared (C-0844).
+    // _priorEnd: the prediction carried from earlier bursts (the latest of their estimates), never
+    // cleared (C-0844).
     private long? _burstEnd;
     private long? _priorEnd;
     private long? _dcdClearedAt;
@@ -115,6 +117,14 @@ internal sealed class MacSublayer : IMacSublayer
 
     /// <summary>Whether the last received burst met two-node condition (a) (K-0068, K-0072).</summary>
     public bool LastBurstTwoNode => _lastBurstTwoNode;
+
+    /// <summary>
+    /// The idle was produced by the EOT prediction carried from an earlier burst, not by the last
+    /// burst's own DCD clear or EOTs (a tie counts as the earlier burst). Then more than one received
+    /// transmission is in play, so rule 1 does not apply (K-0067, K-0072).
+    /// </summary>
+    private bool IdleFromEarlierBurst =>
+        _priorEnd is long p && _dcdClearedAt is long c && p >= (_burstEnd is long b ? Math.Max(b, c) : c);
 
     /// <summary>The last queue state reported by the DTS (K-0096).</summary>
     public bool QueueNonEmpty { get; private set; }
@@ -351,8 +361,8 @@ internal sealed class MacSublayer : IMacSublayer
     /// <summary>
     /// The LBT_WAIT_TIMER value on entry from SENSE (K-0066), rules tried in the order 1, 2, 3
     /// (K-0072). Rule 1: zero when the last transmission was a received one meeting two-node
-    /// condition (a) (K-0067, K-0068). Rule 2: a DCD-determined idle gets <c>lbt_wait_dcd_ms</c>
-    /// (K-0070). Rule 3: a VDCD-determined one gets <c>lbt_wait_vdcd_ms</c> (K-0071, K-0073), and so
+    /// condition (a) and its end produced the idle (K-0067, K-0068). Rule 2: a DCD-determined idle
+    /// gets <c>lbt_wait_dcd_ms</c> (K-0070). Rule 3: a VDCD-determined one gets <c>lbt_wait_vdcd_ms</c> (K-0071, K-0073), and so
     /// does the end of our own transmission (K-0074). In ed3 mode both are the one common value,
     /// <c>lbt_wait_dcd_ms</c>, and rule 1 is off (K-0107).
     /// </summary>
@@ -364,7 +374,7 @@ internal sealed class MacSublayer : IMacSublayer
             return csma.LbtWaitDcdMs;
         }
 
-        if (!LastTransmissionOwn && _lastBurstTwoNode)
+        if (!LastTransmissionOwn && _lastBurstTwoNode && !IdleFromEarlierBurst)
         {
             return 0;
         }

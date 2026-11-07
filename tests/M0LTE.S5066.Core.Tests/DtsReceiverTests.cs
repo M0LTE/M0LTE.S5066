@@ -250,6 +250,57 @@ public class DtsReceiverTests
         rig.Handle(EndEom with { T = 4000 }).Should().Equal(new TimerStart(Cont, 45000));
     }
 
+    [Fact]
+    public void Rule_1_does_not_apply_when_an_earlier_bursts_eot_produced_the_idle()
+    {
+        // K-0067, K-0072: a burst to another node is lost before its end; a short burst to us
+        // follows. The idle comes from the first burst's EOT, so the transmission whose end
+        // produced it is not the one meeting condition (a): rule 3, not rule 1.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000));
+        rig.Queue(1500);
+        rig.Handle(new BytesReceived(2000, T7(Peer, Other, 20)));                               // end 12000
+        rig.Handle(EndEom with { T = 3000 }).Should().Equal(new TimerStart(Vdcd, 9000));
+        rig.Handle(new BurstStarted(4000)).Should().Equal(new TimerCancel(Vdcd));
+        rig.Handle(new BytesReceived(5000, T7(Other, Us, 4)));                                  // end 7000
+        rig.Handle(EndEom with { T = 6000 }).Should().Equal(new TimerStart(Vdcd, 6000));
+        rig.Mac.LastBurstTwoNode.Should().BeTrue();
+        rig.Handle(new TimerExpired(12000, Vdcd)).Should().Equal(new TimerStart(Lbt, 3000));
+    }
+
+    [Fact]
+    public void Rule_1_applies_when_the_last_burst_outlasts_an_earlier_prediction()
+    {
+        // K-0067, K-0072: the earlier burst's end time has passed by the time the last burst's
+        // own EOT clears, so the last burst produced the idle and rule 1 applies.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000));
+        rig.Queue(1500);
+        rig.Handle(new BytesReceived(2000, T7(Peer, Other, 8)));                                // end 6000
+        rig.Handle(EndEom with { T = 3000 });
+        rig.Handle(new BurstStarted(4000));
+        rig.Handle(new BytesReceived(5000, T7(Peer, Us, 10)));                                  // end 10000
+        rig.Handle(EndEom with { T = 6000 }).Should().Equal(new TimerStart(Vdcd, 4000));
+        rig.Handle(new TimerExpired(10000, Vdcd)).Should().Equal(new TimerStart(Cont, 45000));
+    }
+
+    [Fact]
+    public void A_header_waits_for_its_whole_address_field_before_the_edition_lookup()
+    {
+        // core-architecture.md 10 item 8: the sender's edition comes from the source address, so a
+        // candidate whose address field is split across blocks waits rather than being checked.
+        byte[] d = T7(Peer, Other, 10);
+        var rig = new ReceiverRig { Now = 1000 };
+        rig.Receiver.OnBurstStarted();
+        rig.Receiver.OnBytesReceived(d.AsSpan(0, 7));
+        rig.Log.Should().BeEmpty();
+        rig.Receiver.RejectedHeaders.Should().Be(0);
+        rig.Now = 2000;
+        rig.Receiver.OnBytesReceived(d.AsSpan(7));
+        rig.Log.Should().Equal("eot 7000", $"heard {Peer}->{Other} group=False");
+        rig.Delivered.Should().ContainSingle();
+    }
+
     private sealed class ReceiverRig : IMacObserver
     {
         private readonly CoreContext _context = new(TestConfig.Basic(CsmaMode.Jitter), new NullModem());
