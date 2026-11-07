@@ -25,10 +25,10 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- Phase 1 is done. The corpus is at v0.2.0, and the submodule is on conformance main.
-- P2: modem 0.5.0 (design items 1 to 3) on M0LTE.Ms110d branch feat/5066-timing-plan. A Sonnet agent is finishing it (API snapshot, version, consumer builds, PR). Next comes an Opus review, then merge and NuGet publish (check that repo's publish.yml), then the SNR estimator (0.6.0, Opus or Fable).
+- Phase 3 has started. Its design is docs/core-architecture.md (merged as PR #19); the work items are in its section 9, with issues #18 (P3-0) and #20 to #26 (P3-1 to P3-7). P3-0 (runtime, T2 runner) is with an Opus implementer.
+- P2: modem 0.5.0 is M0LTE/M0LTE.Ms110d PR #20, under Opus review for binary compatibility. After it passes: merge, publish to NuGet (check that repo's publish.yml), then the SNR estimator (0.6.0).
 - Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
 
 ## Next
 
-- Then phase 3 (DTS non-ARQ). It needs the T2 scenario runner, and Opus implementers.
+- Phase 3 items run in the order of core-architecture.md section 9, each with a conformance PR first, an Opus implementer for state machines, and a fresh Opus reviewer.
