@@ -25,10 +25,10 @@ How the coordinating session runs this project. It is written so that a fresh se
 
 ## In flight (update when this changes)
 
-- P3-0 is merged (#27). P3-1 (#20) and P3-2 (#21) are with Opus implementers, in parallel.
+- P3-0, P3-1 and P3-2 are merged (#27, #29, #28). P3-3 (#22) and P3-4 (#23) are with Opus implementers in parallel; expect an integration step for whichever merges second. Rulings for P3-4 are in issue #23's comments; P6-1 notes are in #30.
 - Agents get standard briefs from /home/tf/src/s5066-research/scripts/implementer-brief.md and reviewer-brief.md. The coordinator's prompt only names the item, issue and PRs.
 - Merging is one command: `/home/tf/src/s5066-research/scripts/merge-pair.sh <conformance_pr> <code_pr>` merges the conformance PR, repins the submodule, waits for CI, merges the code PR and cleans up.
-- Modem 0.5.0 is published (tag v0.5.0, 2026-11-07; Tom gave explicit permission to tag NuGet releases). The SNR estimator (0.6.0) comes next in that repo, and is not started.
+- Modem 0.5.0 is published (tag v0.5.0, 2026-11-07; Tom gave explicit permission to tag NuGet releases). The SNR estimator (0.6.0) is with an Opus agent on branch feat/5066-snr; a full validation sweep may need a spot instance.
 - Lesson: in the main checkout, run `git submodule update` before any `git add -A`.
 - Lesson: an interrupt can stop background agents silently. Check ListAgents before claiming anything is running.
 
