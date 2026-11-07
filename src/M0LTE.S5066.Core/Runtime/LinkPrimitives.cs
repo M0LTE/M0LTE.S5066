@@ -110,6 +110,13 @@ internal sealed record DCloseRequest(uint Peer, ClosePolicy Policy, ReadOnlyMemo
 /// <param name="Clean">The link is in clean close state.</param>
 internal sealed record DLinkCleanState(uint Peer, bool Clean) : ToCas;
 
+/// <summary>
+/// DTS to CAS, ours (interp B-0452): the first regular ARQ D_PDU from the peer on this connection has
+/// arrived, so the peer has held the connection too. Sent once per connection.
+/// </summary>
+/// <param name="Peer">The peer's address.</param>
+internal sealed record DPeerArqHeard(uint Peer) : ToCas;
+
 /// <summary>C_PHYSICAL_LINK_MAKE, SIS to CAS: make a physical link to the peer (B-0010, B-0196, A-0193).</summary>
 /// <param name="Peer">The peer's address.</param>
 internal sealed record CPhysicalLinkMake(uint Peer) : ToCas;
@@ -138,6 +145,14 @@ internal sealed record CPhysicalLinkBroken(uint Peer, LinkReason Reason) : ToSis
 /// <param name="PeerIsEd4">The link was negotiated with Ed4 set (B-0138, B-0308).</param>
 /// <param name="ShortFamily">Short-FSN D_PDUs are used on the link: Short accepted with Ed4, or the peer is Ed3 (B-0141, B-0232).</param>
 internal sealed record DConnectionMade(uint Peer, bool PeerIsEd4, bool ShortFamily) : ToDts;
+
+/// <summary>
+/// CAS to DTS, ours (interp B-0453): an expedited non-ARQ request of the CAS's own is no longer
+/// wanted. If no part of it has been placed in a transmission it is removed from the queue, with no
+/// confirm or reject; otherwise it runs its course.
+/// </summary>
+/// <param name="Handle">The request handle.</param>
+internal sealed record DExpeditedWithdraw(int Handle) : ToDts;
 
 /// <summary>D_CONNECTION_TERMINATED, CAS to DTS: the connection with the peer has ended (C-0572, C-0652, B-0406).</summary>
 /// <param name="Peer">The peer's address.</param>

@@ -156,6 +156,7 @@ public enum TimerKind
     CasLinkRequest /*peer*/, CasFirstData /*peer*/, CasBreak /*peer*/, CasCleanClose /*peer*/,
     // sis
     SisConfirmWait, SisTtd, SisSoftLinkIdle /*peer*/, SisSoftLinkMinHold /*peer*/, SisSoftLinkMax /*peer*/,
+    SisHeldOff /*peer*/,   // added by the #73 fix (interp B-0451)
 }
 
 /// A registered name: the kind plus its qualifier (a peer address or a conn), or none.
@@ -272,6 +273,8 @@ In P3-0 only the routing bases exist (`ToSis`, `ToCas`, `ToDts`, by destination)
 `DstIsGroup` on the two request records was added by P3-1: a non-ARQ D_PDU to a group says so in its own header (C-0122), and the destination value alone cannot tell.
 
 P5-1 added `CPhysicalLinkBreak(Peer, SisBreakReason, Priority)` and `DConnectionLost(Peer)` from Tables B-1 and C-1, and two primitives of ours for clean close, which B.7.2.4 says needs DTS co-operation but gives no primitive for (B-0421): `DCloseRequest(Peer, ClosePolicy, BreakRequest, Handle)` from the CAS, and `DLinkCleanState(Peer, Clean)`, the DTS's answer and its later report.
+
+The fixes for issues #70 to #73 added two more of ours: `DPeerArqHeard(Peer)`, DTS to CAS, sent once per connection when the first regular ARQ D_PDU from the peer arrives, so the CAS can tell a repeated PHYSICAL LINK REQUEST from a new call (interp B-0452); and `DExpeditedWithdraw(Handle)`, CAS to DTS, which drops a link C_PDU of the CAS's own that no transmission has placed yet, so a PHYSICAL LINK REQUEST the procedure has moved past never goes on air (interp B-0453).
 
 `Handle` is our addition: the standard's request primitives carry no identifier, and the confirm and reject primitives of Table C-1 implicitly refer to "the request". An integer handle, allocated from one counter in the dispatcher, makes the reference explicit and deterministic. It never appears on the wire.
 

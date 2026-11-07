@@ -167,6 +167,13 @@ internal sealed class CasSublayer : ICasSublayer
                 OnBreakRequestIfArq(d);
                 OnDataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
                 break;
+            case DPeerArqHeard h:
+                if (_links.TryGetValue(h.Peer, out Link? heard) && IsMade(heard))
+                {
+                    heard.PeerHeard = true;   // interp B-0452
+                }
+
+                break;
             case DLinkCleanState c:
                 OnCleanState(c.Peer, c.Clean);
                 break;
@@ -329,6 +336,7 @@ internal sealed class CasSublayer : ICasSublayer
     /// <summary>The call failed (B-0220, B-0223): link_state unlinked, then C_PHYSICAL_LINK_REJECTED to the SIS.</summary>
     private void Fail(uint peer, LinkReason reason)
     {
+        Withdraw(_links[peer]);   // interp B-0453
         _links.Remove(peer);
         _context.Emit(new LinkState(peer, LinkStateName.Unlinked));
         _context.Enqueue(new CPhysicalLinkRejected(peer, reason));
@@ -373,6 +381,7 @@ internal sealed class CasSublayer : ICasSublayer
     private void Made(uint peer, Link link, bool called)
     {
         link.Phase = Phase.Linked;
+        link.Called = called;
         _context.Emit(new LinkState(peer, LinkStateName.Linked));
         _context.Enqueue(new DConnectionMade(peer, link.Ed4, link.ShortFamily));
         _context.Enqueue(new CPhysicalLinkMade(peer, called));
@@ -443,8 +452,10 @@ internal sealed class CasSublayer : ICasSublayer
 
     /// <summary>
     /// Step 2, a PHYSICAL LINK REQUEST received (B-0130). In order: LINK set is rejected with
-    /// reason 5 (B-0128); on a made link the request is answered again with the values in force
-    /// (B-0214, B-0314), once while an answer is unsent (B-0401); while accepting nothing more is
+    /// reason 5 (B-0128); on a made link a Called node that has had no ARQ D_PDU from the Caller
+    /// answers it again with the values in force (B-0214, B-0314), once while an answer is unsent
+    /// (B-0401), and any other breaks the link locally and is taken as a new request (interp
+    /// B-0452); while accepting nothing more is
     /// needed; a call of ours to the same peer gives way to it (B-0405); otherwise reason 4 when
     /// accepting would exceed <c>cas.max_links</c> (B-0209, B-0313, B-0402), else accept (B-0210,
     /// B-0211): Ed4 echoed (B-0138, B-0139), Short when offered with Ed4 (B-0140, B-0409), LINK 0
@@ -467,12 +478,25 @@ internal sealed class CasSublayer : ICasSublayer
 
         if (link?.Phase is Phase.Linked or Phase.Closing)
         {
-            if (link.Handle is null)
+            if (link.Called && !link.PeerHeard)
             {
-                link.Handle = SendControl(peer, new PhysicalLinkAccepted(link.ShortFamily && link.Ed4, link.Ed4, false));
+                // B-0214, B-0314: the Caller has sent nothing on the link, so it may not have heard our
+                // accept; answer it again, keeping the link. Nothing has come from the Caller's ARQ
+                // machine, so ours still matches the fresh one it starts when the accept arrives (interp B-0452).
+                if (link.Handle is null)
+                {
+                    link.Handle = SendControl(peer, new PhysicalLinkAccepted(link.ShortFamily && link.Ed4, link.Ed4, false));
+                }
+
+                return;
             }
 
-            return;
+            // Interp B-0452: a request from the node we called, or from a Caller that has used the link,
+            // cannot repeat one we answered: the peer no longer holds the link and starts afresh. Ours
+            // is broken locally (as B-0324, nothing sent; unfinished C_PDUs are rejected, C-0866) and the
+            // request is handled as a new one, so both ends start the new link with fresh ARQ state (C-0782).
+            Broken(peer, LinkReason.HalfOpen, confirm: false);
+            link = null;
         }
 
         if (link?.Phase == Phase.Accepting)
@@ -496,6 +520,7 @@ internal sealed class CasSublayer : ICasSublayer
         else
         {
             _context.Timers.Cancel(RequestTimer(peer));   // B-0405: our own call gives way
+            Withdraw(link);   // interp B-0453
             link.Phase = Phase.Accepting;
             link.Crossed = true;
         }
@@ -523,6 +548,7 @@ internal sealed class CasSublayer : ICasSublayer
         if (link.Phase == Phase.Calling)
         {
             _context.Timers.Cancel(RequestTimer(peer));
+            Withdraw(link);   // interp B-0453: a repeat of our request still queued is no longer wanted
             if (link.RequestEd4)
             {
                 _context.Peers.SetEdition(peer, a.Ed4 ? KnownEdition.Ed4 : KnownEdition.Ed3);
@@ -888,6 +914,21 @@ internal sealed class CasSublayer : ICasSublayer
         }
     }
 
+    /// <summary>
+    /// Interp B-0453: our link C_PDU still waiting in the DTS (a PHYSICAL LINK REQUEST repeated just
+    /// before the call ended) is withdrawn, so a request the procedure has moved past never goes on air
+    /// to be read by the peer as a new call (interp B-0452).
+    /// </summary>
+    private void Withdraw(Link link)
+    {
+        if (link.Handle is int handle)
+        {
+            link.Handle = null;
+            _ownHandles.Remove(handle);
+            _context.Enqueue(new DExpeditedWithdraw(handle));
+        }
+    }
+
     /// <summary>Hands a link C_PDU to the DTS for one type 8 D_PDU (B-0191) and returns its handle.</summary>
     private int SendControl(uint peer, CPdu c)
     {
@@ -942,6 +983,12 @@ internal sealed class CasSublayer : ICasSublayer
 
         /// <summary>Crossed calls: we were calling when the peer's request arrived, so we accepted it (B-0405).</summary>
         public bool Crossed { get; set; }
+
+        /// <summary>The link was made as the Called node, by sending PHYSICAL LINK ACCEPTED (B-0213), not as Caller or by a crossed accept received (B-0219, B-0405).</summary>
+        public bool Called { get; set; }
+
+        /// <summary>A regular ARQ D_PDU from the peer has arrived on this link, so the peer has held it (interp B-0452).</summary>
+        public bool PeerHeard { get; set; }
 
         /// <summary>Called node: no DATA C_PDU received yet (B-0215).</summary>
         public bool AwaitingFirstData { get; set; }

@@ -116,6 +116,9 @@ internal sealed class ArqLink
     /// <summary>A regular ARQ D_PDU has been sent or received on this connection (C-0738).</summary>
     public bool ArqUsed { get; set; }
 
+    /// <summary>The CAS has been told a regular ARQ D_PDU from the peer arrived on this connection (<see cref="DPeerArqHeard"/>, interp B-0452).</summary>
+    public bool PeerHeard { get; set; }
+
     /// <summary>Allocates the next FSN for a new D_PDU, ascending modulo 256 or 65536 (C-0189, C-0190, C-0191, C-0766), and moves TX UWE to it (C-0769).</summary>
     public int AllocateFsn()
     {
@@ -451,6 +454,25 @@ internal sealed class ArqLink
             deliver.Add(Consume(r));
         }
 
+        return deliver;
+    }
+
+    /// <summary>
+    /// The connection is ending (interp C-1254): the complete in-order C_PDUs still held behind a gap
+    /// are released, in FSN order, since their segments were acknowledged and the sender has confirmed
+    /// them (C-0680, C-0764), and the gap can no longer be filled (C-0178). Partly received C_PDUs stay
+    /// behind and are lost with the connection.
+    /// </summary>
+    public List<ReadOnlyMemory<byte>> TakeHeldInOrder()
+    {
+        var deliver = new List<ReadOnlyMemory<byte>>();
+        _pendingInOrder.Sort((a, b) => a.First.CompareTo(b.First));
+        foreach (CPduRun r in _pendingInOrder)
+        {
+            deliver.Add(Consume(r));
+        }
+
+        _pendingInOrder.Clear();
         return deliver;
     }
 

@@ -233,6 +233,21 @@ public class ArqLinkTests
     }
 
     [Fact]
+    public void Held_in_order_cpdus_are_released_in_fsn_order_when_the_connection_ends()
+    {
+        // Interp C-1254: FSN 0 never came, so C_PDUs B (FSN 1) and C (FSN 3 and 4) wait for in-order
+        // delivery; D (FSN 6, 7) is partly received. When the connection ends B and C go up, in FSN
+        // order, and the partial D is lost.
+        var link = new ArqLink(1);
+        link.Receive(3, true, false, true, false, [0xC]).Should().BeEmpty();
+        link.Receive(4, false, true, true, false, [0xC]).Should().BeEmpty();
+        link.Receive(1, true, true, true, false, [0xB]).Should().BeEmpty();
+        link.Receive(6, true, false, true, false, [0xD]).Should().BeEmpty();
+        link.TakeHeldInOrder().Select(m => m.ToArray()).Should().BeEquivalentTo(new[] { new byte[] { 0xB }, new byte[] { 0xC, 0xC } }, o => o.WithStrictOrdering());
+        link.TakeHeldInOrder().Should().BeEmpty();
+    }
+
+    [Fact]
     public void Equations_1_to_3_are_arcs_from_the_receive_edges()
     {
         var link = new ArqLink(1);

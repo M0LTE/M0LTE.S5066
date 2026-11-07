@@ -199,7 +199,9 @@ public class DtsPeersTests
         var r = new Rig();
         r.Peers.OnConnectionMade(new DConnectionMade(X, false, true));
         r.Peers.OnDpdu(new Ed3DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(true, true, false, false, true, true), 0, new Octets([7]), true));
-        r.Take().Should().ContainSingle().Which.As<DUnidataIndication>().CPdu.ToArray().Should().Equal(7);
+        List<object> up = [.. r.Take()];
+        up[0].Should().Be(new DPeerArqHeard(X));   // interp B-0452: the first ARQ D_PDU from the peer
+        up.Skip(1).Should().ContainSingle().Which.As<DUnidataIndication>().CPdu.ToArray().Should().Equal(7);
         ArqLink link = r.Tx.LinkOf(X)!;
         (link.ShortFamily, link.RxLwe, link.AckOwed).Should().Be((true, 1, true));
         r.Peers.StateOf(X).Should().Be(DtsPeerState.DataConnected);

@@ -383,6 +383,22 @@ public class TransmitQueueTests
         link.AckOwed.Should().BeFalse();
     }
 
+    [Fact]
+    public void In_order_cpdus_to_one_peer_keep_submission_order_across_priorities()
+    {
+        // Interp C-1253 (C-0017, C-0851): B (priority 12) was submitted after A (priority 1), both in
+        // order to X, so A takes it ahead with it: A FSN 0, B FSN 1. C (priority 5, any order) comes
+        // after both, and D (priority 3, in order) after C, since nothing later lifts it.
+        var q = new Rig();
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 1) with { Priority = 1, DeliverInOrder = true, CPdu = new byte[] { 0xA } });
+        q.Tx.AddArq(Arq(X, 1) with { Priority = 12, DeliverInOrder = true, CPdu = new byte[] { 0xB } });
+        q.Tx.AddArq(Arq(X, 1) with { Priority = 5, CPdu = new byte[] { 0xC } });
+        q.Tx.AddArq(Arq(X, 1) with { Priority = 3, DeliverInOrder = true, CPdu = new byte[] { 0xD } });
+        q.Decode(q.Tx.Build()).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Span[0]))
+            .Should().Equal((0, (byte)0xA), (1, (byte)0xB), (2, (byte)0xC), (3, (byte)0xD));
+    }
+
     private static DUnidataRequest Arq(uint dst, int length) =>
         new(dst, false, true, 0, 1_000_000, false, 0, new byte[length], 1);
 
