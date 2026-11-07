@@ -246,35 +246,40 @@ public static class DpduCodec
     /// <summary>
     /// Decodes exactly one D_PDU from <paramref name="bytes"/>, which must start at the sync and hold the
     /// whole PDU and nothing else. Checks run in the order of corpus-format.md section 3.3 and the first
-    /// failure is reported.
+    /// failure is reported. An <see cref="Extension"/> is the exception: what follows its header is
+    /// unknown, so bytes after its header CRC are not reported as trailing (C-0365).
     /// </summary>
     public static DecodeResult<Dpdu> Decode(ReadOnlySpan<byte> bytes, PeerEdition peer)
     {
         DecodeResult<Dpdu> r = DecodeFirst(bytes, peer);
-        return r.IsSuccess && r.Consumed < bytes.Length ? DecodeResult<Dpdu>.Fail(DecodeErrorKind.TrailingBytes) : r;
+        return r.IsSuccess && r.Value is not Extension && r.Consumed < bytes.Length
+            ? DecodeResult<Dpdu>.Fail(PduErrorKind.TrailingBytes)
+            : r;
     }
 
     /// <summary>
     /// Decodes the D_PDU at the start of <paramref name="bytes"/> and reports how many bytes it used.
-    /// Bytes after it are left alone, so a caller can step through a transmission.
+    /// Bytes after it are left alone, so a caller can step through a transmission. For an
+    /// <see cref="Extension"/> the count covers the header only, and the caller resumes the sync search
+    /// after it (C-0365).
     /// </summary>
     public static DecodeResult<Dpdu> DecodeFirst(ReadOnlySpan<byte> bytes, PeerEdition peer)
     {
-        static DecodeResult<Dpdu> Fail(DecodeErrorKind k) => DecodeResult<Dpdu>.Fail(k);
+        static DecodeResult<Dpdu> Fail(PduErrorKind k) => DecodeResult<Dpdu>.Fail(k);
 
         if (bytes.Length < 2)
         {
-            return Fail(DecodeErrorKind.Truncated);
+            return Fail(PduErrorKind.Truncated);
         }
 
         if (bytes[0] != Sync0 || bytes[1] != Sync1)
         {
-            return Fail(DecodeErrorKind.BadSync);
+            return Fail(PduErrorKind.BadSync);
         }
 
         if (bytes.Length < 6)
         {
-            return Fail(DecodeErrorKind.Truncated);
+            return Fail(PduErrorKind.Truncated);
         }
 
         int type = bytes[2] >> 4;
@@ -282,25 +287,25 @@ public static class DpduCodec
         int h = bytes[5] & 31;
         if (m == 0)
         {
-            return Fail(DecodeErrorKind.BadAddressSize);
+            return Fail(PduErrorKind.BadAddressSize);
         }
 
         bool undefined = peer == PeerEdition.Ed3 && type >= 9 && type <= 14;
         bool okSize = undefined ? h >= UndefinedMinHeader : h >= HeaderSize[type].Min && h <= HeaderSize[type].Max;
         if (!okSize)
         {
-            return Fail(DecodeErrorKind.BadHeaderSize);
+            return Fail(PduErrorKind.BadHeaderSize);
         }
 
         int end = 2 + h + m;
         if (bytes.Length < end)
         {
-            return Fail(DecodeErrorKind.Truncated);
+            return Fail(PduErrorKind.Truncated);
         }
 
         if (Crc16S5066.Compute(bytes[2..(end - 2)]) != Crc16S5066.Read(bytes[(end - 2)..end]))
         {
-            return Fail(DecodeErrorKind.HeaderCrc);
+            return Fail(PduErrorKind.HeaderCrc);
         }
 
         DpduAddress.Read(bytes.Slice(6, m), out uint dst, out uint src);
@@ -373,6 +378,7 @@ public static class DpduCodec
             case 10:
                 return DecodeAckOnly(header, ts, rest, end);
             case 13:
+                // Unrecognised extension: header and extended type only, nothing after the header CRC (C-0365).
                 return DecodeResult<Dpdu>.Ok(new Extension(header, ts[0], new Octets(ts[1..])), end);
             case 14:
                 return DecodeResult<Dpdu>.Ok(new Padding(header), end);
@@ -392,17 +398,17 @@ public static class DpduCodec
             // Header form: h must equal 10 + aa (C-0235).
             return ts.Length == 4 + aa
                 ? DecodeResult<Dpdu>.Ok(new AckOnly(header, rxLwe, encoding, offset, new Octets(ts[4..]), null), end)
-                : DecodeResult<Dpdu>.Fail(DecodeErrorKind.BadHeaderSize);
+                : DecodeResult<Dpdu>.Fail(PduErrorKind.BadHeaderSize);
         }
 
         if (ts.Length != 4)
         {
-            return DecodeResult<Dpdu>.Fail(DecodeErrorKind.BadHeaderSize);
+            return DecodeResult<Dpdu>.Fail(PduErrorKind.BadHeaderSize);
         }
 
         if (rest.Length < aa + 4)
         {
-            return DecodeResult<Dpdu>.Fail(DecodeErrorKind.Truncated);
+            return DecodeResult<Dpdu>.Fail(PduErrorKind.Truncated);
         }
 
         ReadOnlySpan<byte> ack = rest[..aa];
@@ -414,7 +420,7 @@ public static class DpduCodec
     {
         if (rest.Length < n + 4)
         {
-            return DecodeResult<Dpdu>.Fail(DecodeErrorKind.Truncated);
+            return DecodeResult<Dpdu>.Fail(PduErrorKind.Truncated);
         }
 
         ReadOnlySpan<byte> seg = rest[..n];

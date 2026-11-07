@@ -30,7 +30,27 @@ public class DpduUnitTests
         first.Consumed.Should().Be(a.Length);
         first.Value.Should().BeOfType<Warning>();
         DpduCodec.DecodeFirst(both.AsSpan(first.Consumed), PeerEdition.Ed4).Value.Should().BeOfType<Padding>();
-        DpduCodec.Decode(both, PeerEdition.Ed4).Error.Should().Be(DecodeErrorKind.TrailingBytes);
+        DpduCodec.Decode(both, PeerEdition.Ed4).Error.Should().Be(PduErrorKind.TrailingBytes);
+    }
+
+    [Fact]
+    public void An_extension_is_unrecognised_and_consumes_only_its_header()
+    {
+        byte[] ext = DpduCodec.Encode(new Extension(Hdr, 2, new Octets([0xA5])));
+        byte[] following = [.. ext, 0x00, 0x11, 0x90, 0xEB];
+        DecodeResult<Dpdu> r = DpduCodec.DecodeFirst(following, PeerEdition.Ed4);
+        r.Consumed.Should().Be(ext.Length, "the sync search resumes after the header CRC (C-0365)");
+        ((Extension)r.Value!).IsRecognised.Should().BeFalse();
+        DpduCodec.Decode(following, PeerEdition.Ed4).IsSuccess.Should().BeTrue("bytes after an extension header are not trailing bytes");
+    }
+
+    [Fact]
+    public void Address_read_rejects_sizes_outside_1_to_7()
+    {
+        DpduAddress.TryRead([], out _, out _).Should().BeFalse();
+        DpduAddress.TryRead(new byte[8], out _, out _).Should().BeFalse();
+        DpduAddress.TryRead([0x5A], out uint dst, out uint src).Should().BeTrue();
+        (dst, src).Should().Be((5u, 10u));
     }
 
     [Fact]

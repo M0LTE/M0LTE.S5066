@@ -231,12 +231,11 @@ public class CorpusHarnessTests
 
             case "address":
             {
-                if (bytes.Length is < 1 or > 7)
+                if (!DpduAddress.TryRead(bytes, out uint dst, out uint src))
                 {
                     return (null, "bad_address_size");
                 }
 
-                DpduAddress.Read(bytes, out uint dst, out uint src);
                 return (new JsonObject
                 {
                     ["address_size"] = bytes.Length,

@@ -13,36 +13,11 @@ public enum PeerEdition
     Ed4,
 }
 
-/// <summary>The error kinds of corpus-format.md section 3.1, in the corpus vocabulary.</summary>
-public enum DecodeErrorKind
-{
-    /// <summary>The input ends before the PDU does.</summary>
-    Truncated,
-
-    /// <summary>The PDU does not start with the sync bytes 90 EB (C-0083, C-0084).</summary>
-    BadSync,
-
-    /// <summary>The header CRC does not match (C-0137, C-0138).</summary>
-    HeaderCrc,
-
-    /// <summary>The size-of-header field is impossible for the type.</summary>
-    BadHeaderSize,
-
-    /// <summary>The size-of-address field is zero or otherwise impossible (C-0110).</summary>
-    BadAddressSize,
-
-    /// <summary>Bytes remain after the PDU in a whole-buffer decode.</summary>
-    TrailingBytes,
-
-    /// <summary>A field holds a value the codec cannot represent.</summary>
-    InvalidField,
-}
-
 /// <summary>Either a decoded value or a typed error, plus how many bytes the PDU used.</summary>
 /// <typeparam name="T">The decoded value type.</typeparam>
 public sealed record DecodeResult<T> where T : class
 {
-    private DecodeResult(T? value, DecodeErrorKind? error, int consumed)
+    private DecodeResult(T? value, PduErrorKind? error, int consumed)
     {
         Value = value;
         Error = error;
@@ -53,7 +28,7 @@ public sealed record DecodeResult<T> where T : class
     public T? Value { get; }
 
     /// <summary>The error, or null on success.</summary>
-    public DecodeErrorKind? Error { get; }
+    public PduErrorKind? Error { get; }
 
     /// <summary>Bytes the PDU occupies when decoding succeeded; 0 on error.</summary>
     public int Consumed { get; }
@@ -65,5 +40,5 @@ public sealed record DecodeResult<T> where T : class
     public static DecodeResult<T> Ok(T value, int consumed) => new(value, null, consumed);
 
     /// <summary>A failed result.</summary>
-    public static DecodeResult<T> Fail(DecodeErrorKind error) => new(null, error, 0);
+    public static DecodeResult<T> Fail(PduErrorKind error) => new(null, error, 0);
 }

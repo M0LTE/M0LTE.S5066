@@ -53,10 +53,33 @@ public static class DpduAddress
         }
     }
 
+    /// <summary>
+    /// Reads an address field of any length. Returns false, setting both addresses to 0, when the length is
+    /// not 1 to 7 (C-0108, C-0110); a decoder reports that as <see cref="PduErrorKind.BadAddressSize"/>.
+    /// </summary>
+    public static bool TryRead(ReadOnlySpan<byte> field, out uint dst, out uint src)
+    {
+        if (field.Length is < 1 or > 7)
+        {
+            dst = 0;
+            src = 0;
+            return false;
+        }
+
+        Read(field, out dst, out src);
+        return true;
+    }
+
     /// <summary>Reads an m-byte address field, m being the length of <paramref name="field"/> (C-0127, C-0133).</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The field is not 1 to 7 bytes.</exception>
     public static void Read(ReadOnlySpan<byte> field, out uint dst, out uint src)
     {
         int m = field.Length;
+        if (m is < 1 or > 7)
+        {
+            throw new ArgumentOutOfRangeException(nameof(field), "address size must be 1 to 7");
+        }
+
         ulong packed = 0;
         foreach (byte b in field)
         {

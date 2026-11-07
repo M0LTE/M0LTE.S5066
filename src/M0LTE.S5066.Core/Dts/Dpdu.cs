@@ -159,8 +159,10 @@ public sealed record ResetWinResync(DpduHeader Header, ResetFlags Flags, int New
 }
 
 /// <summary>
-/// Type 13 EXTENSION (C-0360). The format after the header CRC is unknown for any extended type, so
-/// it is read as header only (C-0365).
+/// Type 13 EXTENSION (C-0360). No extended type is implemented, so a decoded EXTENSION is always an
+/// unrecognised extension (<see cref="IsRecognised"/> is false): the generic header and the extended
+/// type are decoded, and whatever follows the header CRC is not read or reported. A receiver resumes
+/// the sync search after the header CRC (C-0365).
 /// </summary>
 /// <param name="Header">The generic header.</param>
 /// <param name="ExtendedType">The extended D_PDU type, 0 to 255.</param>
@@ -169,6 +171,9 @@ public sealed record Extension(DpduHeader Header, int ExtendedType, Octets Exten
 {
     /// <inheritdoc/>
     public override int Type => 13;
+
+    /// <summary>Whether the extended type is one this codec implements. Always false (C-0365).</summary>
+    public bool IsRecognised => false;
 }
 
 /// <summary>Type 14 PADDING (C-0366): generic header only.</summary>

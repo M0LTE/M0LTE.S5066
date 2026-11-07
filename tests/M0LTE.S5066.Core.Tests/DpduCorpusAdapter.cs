@@ -10,15 +10,15 @@ namespace M0LTE.S5066.Core.Tests;
 /// </summary>
 internal static class DpduCorpusAdapter
 {
-    public static string ErrorName(DecodeErrorKind k) => k switch
+    public static string ErrorName(PduErrorKind k) => k switch
     {
-        DecodeErrorKind.Truncated => "truncated",
-        DecodeErrorKind.BadSync => "bad_sync",
-        DecodeErrorKind.HeaderCrc => "header_crc",
-        DecodeErrorKind.BadHeaderSize => "bad_header_size",
-        DecodeErrorKind.BadAddressSize => "bad_address_size",
-        DecodeErrorKind.TrailingBytes => "trailing_bytes",
-        DecodeErrorKind.InvalidField => "invalid_field",
+        PduErrorKind.Truncated => "truncated",
+        PduErrorKind.BadSync => "bad_sync",
+        PduErrorKind.HeaderCrc => "header_crc",
+        PduErrorKind.BadHeaderSize => "bad_header_size",
+        PduErrorKind.BadAddressSize => "bad_address_size",
+        PduErrorKind.TrailingBytes => "trailing_bytes",
+        PduErrorKind.InvalidField => "invalid_field",
         _ => throw new ArgumentOutOfRangeException(nameof(k)),
     };
 
