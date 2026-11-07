@@ -151,8 +151,11 @@ public static class ConfigReader
             return null;
         }
 
-        if (n.GetValueKind() != JsonValueKind.Number || n is not JsonValue v || !v.TryGetValue(out long value)
-            || value < 0 || value > int.MaxValue)
+        // Parse the JSON text, so a value read from a file and one built in code behave alike;
+        // a fraction or an exponent does not parse, as corpus-format.md section 2 requires.
+        if (n.GetValueKind() != JsonValueKind.Number
+            || !long.TryParse(n.ToJsonString(), NumberStyles.None, CultureInfo.InvariantCulture, out long value)
+            || value > int.MaxValue)
         {
             throw new ConfigException(prefix + key, "must be a non-negative integer");
         }

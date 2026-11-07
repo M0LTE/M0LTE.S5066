@@ -451,7 +451,7 @@ public enum CsmaMode { Jitter, Slotted, Ed3 }
 
 The harness builds it from `defaults.json` plus the scenario overlay; the host builds it from its own file. The core is given the finished record. `prng_seed` is a constructor argument, not a field, so a run-time `config` input can never re-seed (prng.md section 3).
 
-A setting that is `null` in `defaults.json` and not supplied by the scenario makes the harness fail the case with `missing_setting` before the core is constructed.
+A setting that is `null` in `defaults.json` and not supplied by the scenario fails the case with `missing_setting` when the core needs it. `local_address` and `address_size` are needed by every node, so `ConfigReader` checks them before the core is constructed. Settings only some behaviour needs (`csma.mode`, `csma.node_slot_position`, `modem.preamble_ms`, `modem.flush_ms`) stay nullable in the record and throw `MissingSettingException` where they are read, because corpus-format.md section 6 makes a null a failure only for a scenario that exercises the setting (P3-0 implementation note).
 
 ### 7.2 Settings, phases 3 to 6
 

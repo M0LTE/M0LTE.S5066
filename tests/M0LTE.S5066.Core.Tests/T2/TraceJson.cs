@@ -89,7 +89,7 @@ internal static class TraceJson
             "bytes_received" => new BytesReceived(t, Hex(line, "bytes")),
             "burst_ended" => new BurstEnded(t, Reason(Str(line, "reason")), Int(line, "wn"),
                 InterleaverNames.Parse(Str(line, "interleaver")), Int(line, "k"),
-                line["snr_tenth_db"] is null ? null : line["snr_tenth_db"]!.GetValue<int>(), Int(line, "blocks")),
+                Snr(line), Int(line, "blocks")),
             "transmit_done" => new TransmitDone(t),
             "channel_busy" => new ChannelBusy(t, line["busy"]!.GetValue<bool>()),
             "sis_connect" => new SisConnect(t, Int(line, "conn")),
@@ -148,11 +148,19 @@ internal static class TraceJson
             : throw new InvalidDataException($"'{key}' must be a string");
 
     public static long Long(JsonObject o, string key) =>
-        o[key] is JsonValue v && v.TryGetValue(out long n) && n >= 0
+        o[key] is JsonValue v && v.GetValueKind() == JsonValueKind.Number
+            && long.TryParse(v.ToJsonString(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long n)
             ? n
             : throw new InvalidDataException($"'{key}' must be a non-negative integer");
 
     private static int Int(JsonObject o, string key) => checked((int)Long(o, key));
+
+    private static int? Snr(JsonObject o) =>
+        o["snr_tenth_db"] is not JsonValue v ? null
+        : v.GetValueKind() == JsonValueKind.Number
+            && int.TryParse(v.ToJsonString(), System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int n)
+            ? n
+            : throw new InvalidDataException("'snr_tenth_db' must be an integer or null");
 
     private static byte[] Hex(JsonObject o, string key) => Convert.FromHexString(Str(o, key));
 
