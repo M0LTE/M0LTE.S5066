@@ -238,7 +238,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (e.HasUnplacedSegment && (e.Placed || _expeditedIds.IsFree(_context.Now)))
             {
-                return SizeOf(e.NextSegmentLength(MaxSegment), true);
+                return SizeOf(e.NextSegmentLength(MaxSegment), true, e.Dst);
             }
         }
 
@@ -247,7 +247,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (e.HasUnplacedSegment && !HeldBehindExpedited(e) && (e.Placed || idFree))
             {
-                return SizeOf(e.NextSegmentLength(MaxSegment), false);
+                return SizeOf(e.NextSegmentLength(MaxSegment), false, e.Dst);
             }
         }
 
@@ -255,7 +255,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (e.OwedRepeat() is int seg)
             {
-                return SizeOf(e.Segments![seg].Length, false);
+                return SizeOf(e.Segments![seg].Length, false, e.Dst);
             }
         }
 
@@ -297,14 +297,15 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>
     /// The queued MANAGEMENT and WARNING D_PDUs in class order, each class oldest first (C-0297,
-    /// C-1041; P3-6), with their encoded sizes at the address size in force now.
+    /// C-1041; P3-6), with their encoded sizes at the local address in force now (the address size follows the
+    /// addresses, C-0133).
     /// </summary>
     private List<ControlItem> SortedControl()
     {
         NodeConfig config = _context.Config;
         foreach (ControlItem c in _control)
         {
-            c.Size = DpduCodec.Encode(c.Build(new DpduHeader(0, 0, config.AddressSize, c.Dst, config.LocalAddress))).Length;
+            c.Size = DpduCodec.Encode(c.Build(Header(0, 0, c.Dst))).Length;
         }
 
         List<ControlItem> control = _control.ToList();
@@ -348,7 +349,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                     break;
                 }
 
-                int size = SizeOf(e.NextSegmentLength(maxSegment), true);
+                int size = SizeOf(e.NextSegmentLength(maxSegment), true, e.Dst);
                 if (!Fits(size))
                 {
                     break;   // skipped, the next expedited C_PDU is tried (core-architecture.md 5.3)
@@ -369,7 +370,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
             while (e.HasUnplacedSegment)
             {
-                int size = SizeOf(e.NextSegmentLength(maxSegment), false);
+                int size = SizeOf(e.NextSegmentLength(maxSegment), false, e.Dst);
                 if ((!e.Placed && !_normalIds.IsFree(_context.Now)) || !Fits(size))
                 {
                     stop = true;   // never let lower priority data overtake (C-0851); the rest waits (C-0880)
@@ -390,7 +391,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             while (e.OwedRepeat() is int seg)
             {
-                int size = SizeOf(e.Segments![seg].Length, false);
+                int size = SizeOf(e.Segments![seg].Length, false, e.Dst);
                 if (!Fits(size))
                 {
                     return (chosenControl, chosen);
@@ -490,7 +491,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             long block = offset / plan.BytesPerBlock;
             long airStart = plan.PreambleMs + (block * plan.BlockMs);
             int eot = (int)((plan.DurationMs - airStart + HalfSecondMs - 1) / HalfSecondMs);
-            var header = new DpduHeader(TakeEow(c.Dst, false), eot, config.AddressSize, c.Dst, config.LocalAddress);
+            var header = Header(TakeEow(c.Dst, false), eot, c.Dst);
             byte[] encoded = DpduCodec.Encode(c.Build(header));
             if (encoded.Length != c.Size)
             {
@@ -523,7 +524,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             e.NewCommitEnd = e.NewCommitEnd is long c ? Math.Min(c, end) : end;
 
             (int segOffset, int segLength) = e.Segments![p.Segment];
-            var header = new DpduHeader(TakeEow(e.Dst, e.DstIsGroup), eot, config.AddressSize, e.Dst, config.LocalAddress);   // EOW 0, EMPTY (C-0398), unless one is owed (C-1079)
+            var header = Header(TakeEow(e.Dst, e.DstIsGroup), eot, e.Dst);   // EOW 0, EMPTY (C-0398), unless one is owed (C-1079)
             var fields = new NonArqFields(
                 e.Id,
                 false,               // DELIVER IN ORDER is never set (C-0333)
@@ -580,7 +581,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         long room = BlocksWithin(shape, Budget) * shape.BytesPerBlock;
         int count = 0;
         long used = 0;
-        foreach (int size in e.OwedSizes().Select(len => SizeOf(len, e.Expedited)))
+        foreach (int size in e.OwedSizes().Select(len => SizeOf(len, e.Expedited, e.Dst)))
         {
             if (count == 0 || used + size > room)
             {
@@ -676,14 +677,24 @@ internal sealed class TransmitQueue : ITransmissionSource
     }
 
     /// <summary>The encoded size of a type 7 or 8 D_PDU with a segment of this length; EOT and window values do not change it.</summary>
-    private int SizeOf(int segmentLength, bool expedited)
+    private int SizeOf(int segmentLength, bool expedited, uint dst)
     {
-        NodeConfig config = _context.Config;
-        var header = new DpduHeader(0, 0, config.AddressSize, 0, config.LocalAddress);
+        DpduHeader header = Header(0, 0, dst);
         var fields = new NonArqFields(0, false, false, segmentLength, 0, 0);
         var segment = new Octets(new byte[segmentLength]);
         Dpdu pdu = expedited ? new ExpeditedNonArqData(header, fields, segment, true) : new NonArqData(header, fields, segment, true);
         return DpduCodec.Encode(pdu).Length;
+    }
+
+    /// <summary>
+    /// A header from this node to <paramref name="dst"/>, with the smallest address size that holds both
+    /// addresses (C-0133, C-0130, C-0108, C-0109): so a group or broadcast destination, or any
+    /// address wider than our own, gets the size it needs, up to 7 for the broadcast address (C-0123).
+    /// </summary>
+    private DpduHeader Header(int eow, int eot, uint dst)
+    {
+        uint src = _context.Config.LocalAddress;
+        return new DpduHeader(eow, eot, DpduAddress.MinimumSize(dst, src), dst, src);
     }
 
     /// <summary>One D_PDU chosen for a transmission: a copy (1 = first) of one segment of a C_PDU.</summary>

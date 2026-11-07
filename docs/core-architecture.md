@@ -131,6 +131,8 @@ Notes:
 
 Addresses are `uint` 28-bit values throughout the core (`DpduAddress.MaxValue`), with the group flag carried separately where a PDU carries it (C-0122). The dotted form exists only in the harness and the host. A peer is identified by its unicast address; group addresses never key a per-peer table.
 
+The size-of-address field m is not configured. The planner gives each D_PDU it sends the smallest m that holds both its destination and this node's address (`DpduAddress.MinimumSize`), so a broadcast D_PDU has m = 7 and a node with a short address can still send to any group or wider address (C-0133, C-0130; issue #35). A receiver accepts any m from 1 to 7.
+
 ---
 
 ## 3. Time and timers
@@ -443,7 +445,6 @@ These are checked in review of every core PR.
 ```csharp
 public sealed record NodeConfig(
     uint LocalAddress,                 // local_address
-    int AddressSize,                   // address_size, 1 to 7 (C-0133)
     IReadOnlyList<uint> Groups,        // groups: group addresses this node receives (A.2.2.9; A-0119)
     TimeConfig Time,                   // time.epoch_year, time.epoch_day, time.epoch_second (section 3.1)
     CsmaConfig Csma,                   // csma.*
@@ -460,11 +461,11 @@ public enum CsmaMode { Jitter, Slotted, Ed3 }
 
 The record above is the full set for phases 3 to 6; the code holds only the fields whose keys exist in `defaults.json`, and each item of section 7.2 adds its own. `ConfigReader`, which turns the merged JSON object into the record, is public in `M0LTE.S5066.Core` so the host can share it; `Node` never sees JSON, and `ConfigMerge` stays in the tests project. The harness builds it from `defaults.json` plus the scenario overlay; the host builds it from its own file. The core is given the finished record. `prng_seed` is a constructor argument, not a field, so a run-time `config` input can never re-seed (prng.md section 3).
 
-A setting that is `null` in `defaults.json` and not supplied by the scenario fails the case with `missing_setting` when the core needs it. `local_address` and `address_size` are needed by every node, so `ConfigReader` checks them before the core is constructed. Settings only some behaviour needs (`csma.mode`, `csma.node_slot_position`, `modem.preamble_ms`, `modem.flush_ms`) stay nullable in the record and throw `MissingSettingException` where they are read, because corpus-format.md section 6 makes a null a failure only for a scenario that exercises the setting (P3-0 implementation note).
+A setting that is `null` in `defaults.json` and not supplied by the scenario fails the case with `missing_setting` when the core needs it. `local_address` is needed by every node, so `ConfigReader` checks it before the core is constructed. Settings only some behaviour needs (`csma.mode`, `csma.node_slot_position`, `modem.preamble_ms`, `modem.flush_ms`) stay nullable in the record and throw `MissingSettingException` where they are read, because corpus-format.md section 6 makes a null a failure only for a scenario that exercises the setting (P3-0 implementation note).
 
 ### 7.2 Settings, phases 3 to 6
 
-Each is added to `defaults.json` and corpus-format.md section 6 by the PR that first needs it, with its source (corpus-format.md section 6 rule; plan 3.2 principle 5, no unrequested settings). The existing ones are `local_address`, `address_size`, `prng_seed`, `csma.*` and `modem.*`.
+Each is added to `defaults.json` and corpus-format.md section 6 by the PR that first needs it, with its source (corpus-format.md section 6 rule; plan 3.2 principle 5, no unrequested settings). The existing ones are `local_address`, `prng_seed`, `csma.*` and `modem.*`.
 
 | Key | Default proposed | Source | Added by |
 |---|---|---|---|
@@ -490,7 +491,7 @@ Fixed values the standard fixes or the matrix fixes as constants are not setting
 
 ### 7.3 Run-time changes
 
-`ConfigInput` replaces `NodeConfig` and calls each sublayer's `OnConfigChanged(old, new)`. The dispatcher checks that these calls emit nothing and enqueue nothing, as it does for the MAC's entry calls and `OnTimer` (section 3.5 rule 4). The rule for when a change takes effect: a value is read when it is used, never cached, except where a cached copy is part of protocol state. Concretely: CSMA timer values apply to the next timer started; `csma.mode` applies to the next contention computation; `dts.max_segment_size` applies to C_PDUs segmented after the change; `local_address` and `address_size` apply to D_PDUs encoded after the change (a change mid-link is an operator error, not something the core guards against); `groups` applies to the next D_PDU received. No change restarts a running timer or re-seeds the PRNG.
+`ConfigInput` replaces `NodeConfig` and calls each sublayer's `OnConfigChanged(old, new)`. The dispatcher checks that these calls emit nothing and enqueue nothing, as it does for the MAC's entry calls and `OnTimer` (section 3.5 rule 4). The rule for when a change takes effect: a value is read when it is used, never cached, except where a cached copy is part of protocol state. Concretely: CSMA timer values apply to the next timer started; `csma.mode` applies to the next contention computation; `dts.max_segment_size` applies to C_PDUs segmented after the change; `local_address` applies to D_PDUs encoded after the change (a change mid-link is an operator error, not something the core guards against); `groups` applies to the next D_PDU received. No change restarts a running timer or re-seeds the PRNG.
 
 ---
 
@@ -609,6 +610,7 @@ Each is an implementation choice a later item will need. Where a matrix row exis
 | 13 | Station-layer identification hook transmissions (D4, K-0007) | Not in phases 3 to 6. Phase 8 will need an input (hook requests a turn, with its duration) and an output (turn granted) so the hook obeys Annex K from inside the core. Both are corpus-format additions for that phase | K-0007 |
 | 14 | `terminate_receive` and `set_max_input_blocks` | Never emitted in phases 3 to 6 | plan 5.1 |
 | 15 | Merging an ACK into a DATA D_PDU | When a peer receives both an acknowledgement and new data in one transmission, the first data D_PDU to it becomes DATA-ACK and the ACK-ONLY is dropped; ACK-ONLY repeats in fill still refer to the same RX LWE | C-0658, C-0678 ("as appropriate") |
+| 16 | The address size m a sender uses | The smallest whole number of nibbles that holds both addresses, chosen per D_PDU; no setting (section 2.3) | C-0133 |
 
 ---
 

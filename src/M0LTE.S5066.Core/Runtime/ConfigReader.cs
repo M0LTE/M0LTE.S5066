@@ -12,7 +12,7 @@ namespace M0LTE.S5066.Core.Runtime;
 /// in the same shape; <see cref="Node"/> itself never sees JSON (core-architecture.md 2).
 /// </summary>
 /// <remarks>
-/// <c>local_address</c> and <c>address_size</c> are needed by every node, so a null there throws
+/// <c>local_address</c> is needed by every node, so a null there throws
 /// <see cref="MissingSettingException"/> here. Settings needed only by some behaviour (for example
 /// <c>csma.mode</c>, needed once the node contends) stay null in the record and throw when used.
 /// </remarks>
@@ -21,7 +21,7 @@ public static class ConfigReader
     /// <summary>Every leaf key this reader knows, dotted, in the order of corpus-format.md section 6.</summary>
     public static IReadOnlyList<string> KnownKeys { get; } =
     [
-        "local_address", "address_size", "groups", "time.epoch_year", "time.epoch_day", "time.epoch_second", "prng_seed",
+        "local_address", "groups", "time.epoch_year", "time.epoch_day", "time.epoch_second", "prng_seed",
         "csma.mode", "csma.cont_slot_width_ms", "csma.num_cont_slots", "csma.lbt_wait_dcd_ms",
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
         "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
@@ -59,12 +59,6 @@ public static class ConfigReader
         if (!DpduAddress.TryParse(addr, out uint local))
         {
             throw new ConfigException("local_address", "must be a dotted address w.x.y.z");
-        }
-
-        int addressSize = Int(config, "address_size") ?? throw new MissingSettingException("address_size");
-        if (addressSize is < 1 or > 7)
-        {
-            throw new ConfigException("address_size", "must be 1 to 7");
         }
 
         JsonObject csma = Object(config, "csma");
@@ -107,7 +101,7 @@ public static class ConfigReader
         }
 
         var fixture = new ModemFixture(Int(modem, "preamble_ms", "modem."), Int(modem, "flush_ms", "modem."), waveforms);
-        return new NodeConfig(local, addressSize, csmaConfig, fixture)
+        return new NodeConfig(local, csmaConfig, fixture)
         {
             Groups = ReadGroups(config),
             Time = ReadTime(config),

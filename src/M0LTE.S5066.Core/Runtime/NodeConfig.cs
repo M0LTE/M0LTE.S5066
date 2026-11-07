@@ -8,11 +8,13 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <c>prng_seed</c> is not a field: it is a constructor argument of <see cref="Node"/>, so a
 /// run-time change can never re-seed the generator.
 /// </summary>
-/// <param name="LocalAddress">local_address: this node's 28-bit address.</param>
-/// <param name="AddressSize">address_size: the size-of-address field the node sends, 1 to 7 (C-0133).</param>
+/// <param name="LocalAddress">
+/// local_address: this node's 28-bit address. There is no address size setting: each D_PDU is sent
+/// with the smallest address size that holds its source and destination (C-0133).
+/// </param>
 /// <param name="Csma">csma.*.</param>
 /// <param name="Modem">modem.*: the T2 modem fixture; the host ignores it.</param>
-public sealed record NodeConfig(uint LocalAddress, int AddressSize, CsmaConfig Csma, ModemFixture Modem)
+public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture Modem)
 {
     /// <summary>
     /// groups: the group addresses this node receives, as 28-bit values. Membership is

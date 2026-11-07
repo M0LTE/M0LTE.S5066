@@ -8,14 +8,13 @@ namespace M0LTE.S5066.Core.Tests;
 public class ConfigReaderTests
 {
     private static JsonObject Config(JsonObject? overlay = null) =>
-        ConfigMerge.Merge(Corpus.T2Defaults, overlay ?? new JsonObject { ["local_address"] = "0.0.1.2", ["address_size"] = 4 });
+        ConfigMerge.Merge(Corpus.T2Defaults, overlay ?? new JsonObject { ["local_address"] = "0.0.1.2" });
 
     [Fact]
     public void Reads_the_defaults_plus_the_per_node_settings()
     {
         NodeConfig c = ConfigReader.Read(Config());
         c.LocalAddress.Should().Be(0x0102u);
-        c.AddressSize.Should().Be(4);
         c.Csma.Should().Be(new CsmaConfig(null, 3000, 16, 30000, 3000, null));
         c.Modem.PreambleMs.Should().BeNull();
         c.Modem.Waveforms.Should().BeEmpty();
@@ -29,24 +28,22 @@ public class ConfigReaderTests
     [InlineData("ed3", CsmaMode.Ed3)]
     public void Reads_each_csma_mode(string text, CsmaMode mode)
     {
-        var o = new JsonObject { ["local_address"] = "0.0.1.2", ["address_size"] = 4, ["csma"] = new JsonObject { ["mode"] = text } };
+        var o = new JsonObject { ["local_address"] = "0.0.1.2", ["csma"] = new JsonObject { ["mode"] = text } };
         ConfigReader.Read(Config(o)).Csma.Mode.Should().Be(mode);
     }
 
     [Fact]
     public void Missing_and_bad_settings_are_reported_by_key()
     {
-        FluentActions.Invoking(() => ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, new JsonObject { ["address_size"] = 4 })))
+        FluentActions.Invoking(() => ConfigReader.Read(ConfigMerge.Merge(Corpus.T2Defaults, new JsonObject())))
             .Should().Throw<MissingSettingException>().Which.Setting.Should().Be("local_address");
-        FluentActions.Invoking(() => ConfigReader.Read(Config(new JsonObject { ["local_address"] = "0.0.1.2", ["address_size"] = 8 })))
-            .Should().Throw<ConfigException>().Which.Setting.Should().Be("address_size");
         FluentActions.Invoking(() => ConfigReader.Read(Config(new JsonObject
         {
-            ["local_address"] = "0.0.1.2", ["address_size"] = 4, ["csma"] = new JsonObject { ["mode"] = "aloha" },
+            ["local_address"] = "0.0.1.2", ["csma"] = new JsonObject { ["mode"] = "aloha" },
         }))).Should().Throw<ConfigException>().Which.Setting.Should().Be("csma.mode");
         FluentActions.Invoking(() => ConfigReader.Read(Config(new JsonObject
         {
-            ["local_address"] = "0.0.1.2", ["address_size"] = 4, ["csma"] = new JsonObject { ["num_cont_slots"] = 0 },
+            ["local_address"] = "0.0.1.2", ["csma"] = new JsonObject { ["num_cont_slots"] = 0 },
         }))).Should().Throw<ConfigException>().Which.Setting.Should().Be("csma.num_cont_slots");
     }
 
@@ -54,7 +51,7 @@ public class ConfigReaderTests
     public void Reads_the_modem_fixture()
     {
         var o = JsonNode.Parse("""
-            {"local_address": "0.0.1.2", "address_size": 4,
+            {"local_address": "0.0.1.2", 
              "modem": {"preamble_ms": 720, "flush_ms": 0,
                        "waveforms": [{"wn": 6, "interleaver": "short", "block_bytes": 192, "block_ms": 1000}]}}
             """)!.AsObject();
@@ -107,7 +104,7 @@ public class FixtureModemTests
 
 public class T2RunnerTests
 {
-    private static JsonObject NodeOverlay() => new() { ["local_address"] = "0.0.1.2", ["address_size"] = 4 };
+    private static JsonObject NodeOverlay() => new() { ["local_address"] = "0.0.1.2" };
 
     private static ScenarioBuilder Builder(JsonObject? config = null) =>
         new("test-scenario", ["K-0065"], "derived", "a test", config ?? NodeOverlay());
@@ -150,7 +147,7 @@ public class T2RunnerTests
     [Fact]
     public void A_null_setting_the_core_needs_is_a_missing_setting()
     {
-        FluentActions.Invoking(() => Run(Builder(new JsonObject { ["address_size"] = 4 }).BurstStarted(0)))
+        FluentActions.Invoking(() => Run(Builder(new JsonObject()).BurstStarted(0)))
             .Should().Throw<T2FailureException>().Which.Reason.Should().Be("missing_setting");
         FluentActions.Invoking(() => Run(Builder().Config(10, new JsonObject { ["local_address"] = null })))
             .Should().Throw<T2FailureException>().Which.Reason.Should().Be("missing_setting");
