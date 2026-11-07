@@ -192,7 +192,7 @@ internal sealed class TimerTable
 
 Restart is `Start` on a running timer: one `TimerStart` output, new deadline (corpus-format.md 4.4). There is no pause: the Annex K "hold while busy" reading of K-0087 is implemented as cancel on busy and start on idle, which is what a trace shows.
 
-**Zero-duration rule.** Several protocol values can be zero: LBT rule 1 sets the LBT wait to zero (K-0067), the jitter draw can give slot 0 (K-0080), and slotted position 1 after another node's transmission gives a zero contention wait (K-0081). The format forbids `ms` = 0, so a sublayer that would start a timer with 0 ms starts nothing, emits nothing, and immediately takes the action its expiry would have taken, within the same handler. So SENSE to LBT_WAIT (0) to CONT_WAIT (0) to LINKING to `transmit` can all happen inside one input, with the `csma.jitter` draw made on the way. Both cores must follow this; a core that started a 1 ms timer instead would fail every two-node scenario.
+**Zero-duration rule.** Several protocol values can be zero: LBT rule 1 sets the LBT wait to zero (K-0067), the jitter draw can give slot 0 (K-0080), and slotted position 1 after another node's transmission gives a zero contention wait (K-0081). The format forbids `ms` = 0, so a sublayer that would start a timer with 0 ms starts nothing, emits nothing, and immediately takes the action its expiry would have taken, within the same handler. So SENSE to LBT_WAIT (0) to CONT_WAIT (0) to LINKING to `transmit` can all happen inside one input, with the `csma.jitter` draw made on the way. Both cores must follow this; a core that started a 1 ms timer instead would fail every two-node scenario. A zero wait asked for a timer that is already running is a bug (the core throws): the harness would still hold the old deadline, so the sublayer cancels the timer explicitly first and the `timer_cancel` shows in the trace (P3-0 implementation note).
 
 **No enumeration of the timer table.** Protocol code never iterates the `TimerTable` (for example "cancel every timer for this peer"). A sublayer that must stop several timers cancels them by name, in the order its code lists them, which the implementing PR fixes in its comments. This keeps the order of `timer_cancel` outputs independent of how `TimerKind` happens to be numbered.
 
@@ -264,6 +264,8 @@ internal sealed record CUnidataRequestConfirm(int Handle);
 internal sealed record CUnidataRequestRejected(int Handle, CReason Reason);
 internal sealed record CUnidataIndication(uint Src, uint Dst, bool DstIsGroup, bool Arq, ReadOnlyMemory<byte> SPdu);
 ```
+
+In P3-0 only the routing bases exist (`ToSis`, `ToCas`, `ToDts`, by destination); each record above is added by the item that first sends it, with the reason enums it needs (P3-1, P4-1).
 
 `Handle` is our addition: the standard's request primitives carry no identifier, and the confirm and reject primitives of Table C-1 implicitly refer to "the request". An integer handle, allocated from one counter in the dispatcher, makes the reference explicit and deterministic. It never appears on the wire.
 
@@ -449,9 +451,9 @@ public sealed record CsmaConfig(CsmaMode Mode, int ContSlotWidthMs, int NumContS
 public enum CsmaMode { Jitter, Slotted, Ed3 }
 ```
 
-The harness builds it from `defaults.json` plus the scenario overlay; the host builds it from its own file. The core is given the finished record. `prng_seed` is a constructor argument, not a field, so a run-time `config` input can never re-seed (prng.md section 3).
+The record above is the full set for phases 3 to 6; the code holds only the fields whose keys exist in `defaults.json`, and each item of section 7.2 adds its own. `ConfigReader`, which turns the merged JSON object into the record, is public in `M0LTE.S5066.Core` so the host can share it; `Node` never sees JSON, and `ConfigMerge` stays in the tests project. The harness builds it from `defaults.json` plus the scenario overlay; the host builds it from its own file. The core is given the finished record. `prng_seed` is a constructor argument, not a field, so a run-time `config` input can never re-seed (prng.md section 3).
 
-A setting that is `null` in `defaults.json` and not supplied by the scenario makes the harness fail the case with `missing_setting` before the core is constructed.
+A setting that is `null` in `defaults.json` and not supplied by the scenario fails the case with `missing_setting` when the core needs it. `local_address` and `address_size` are needed by every node, so `ConfigReader` checks them before the core is constructed. Settings only some behaviour needs (`csma.mode`, `csma.node_slot_position`, `modem.preamble_ms`, `modem.flush_ms`) stay nullable in the record and throw `MissingSettingException` where they are read, because corpus-format.md section 6 makes a null a failure only for a scenario that exercises the setting (P3-0 implementation note).
 
 ### 7.2 Settings, phases 3 to 6
 
@@ -481,7 +483,7 @@ Fixed values the standard fixes or the matrix fixes as constants are not setting
 
 ### 7.3 Run-time changes
 
-`ConfigInput` replaces `NodeConfig` and calls each sublayer's `OnConfigChanged(old, new)`. The rule for when a change takes effect: a value is read when it is used, never cached, except where a cached copy is part of protocol state. Concretely: CSMA timer values apply to the next timer started; `csma.mode` applies to the next contention computation; `dts.max_segment_size` applies to C_PDUs segmented after the change; `local_address` and `address_size` apply to D_PDUs encoded after the change (a change mid-link is an operator error, not something the core guards against); `groups` applies to the next D_PDU received. No change restarts a running timer or re-seeds the PRNG.
+`ConfigInput` replaces `NodeConfig` and calls each sublayer's `OnConfigChanged(old, new)`. The dispatcher checks that these calls emit nothing and enqueue nothing, as it does for the MAC's entry calls and `OnTimer` (section 3.5 rule 4). The rule for when a change takes effect: a value is read when it is used, never cached, except where a cached copy is part of protocol state. Concretely: CSMA timer values apply to the next timer started; `csma.mode` applies to the next contention computation; `dts.max_segment_size` applies to C_PDUs segmented after the change; `local_address` and `address_size` apply to D_PDUs encoded after the change (a change mid-link is an operator error, not something the core guards against); `groups` applies to the next D_PDU received. No change restarts a running timer or re-seeds the PRNG.
 
 ---
 

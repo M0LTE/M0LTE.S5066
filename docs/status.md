@@ -6,6 +6,8 @@ Last updated: 2026-11-07.
 
 Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harness, CRC-16, CRC-32, SplitMix64), P1c (C_PDU and S_PDU codecs) and P1d (SIS S_primitive codec, `src/M0LTE.S5066.Core/Sis/`) are merged; P1b (D_PDU, EOW and address codecs, issue #11) is in review. Phase 2 (modem work, design in progress as M0LTE/M0LTE.Ms110d draft PR) runs alongside.
 
+Phase 3 in progress: P3-0 (runtime and T2 runner, issue #18) is in review with corpus 0.3.0 (s5066-conformance PR #10).
+
 ## Phases
 
 | Phase | State |
@@ -13,7 +15,7 @@ Phase 0 is complete. Phase 1 (codecs) is in progress: P1a (scaffold, corpus harn
 | 0. Foundations: requirements matrix, corpus format, harness contract | done |
 | 1. Codecs | in progress: P1a (#10), P1c (#12), P1d (#13) done; P1b in review (#11) |
 | 2. Modem work (M0LTE.Ms110d, ms110d-cpp) | design merged (Ms110d#19); 0.5.0 in progress (#8) |
-| 3. DTS non-ARQ | not started |
+| 3. DTS non-ARQ | in progress: P3-0 in review (#18) |
 | 4. DTS ARQ | not started |
 | 5. CAS and MAC | not started |
 | 6. SIS and host | not started |
@@ -46,3 +48,4 @@ None.
 - 2026-11-07: P1a done (issue #10): solution, M0LTE.S5066.Core, conformance submodule at corpus 0.1.0, corpus harness (CRC and PRNG cases pass; D_PDU and T2 cases skipped until P1b and phase 3), CI.
 - 2026-11-07: P1c (issue #12): C_PDU (Annex B types 0 to 10, 7 to 10 decode only) and S_PDU (Annex A types 0 to 2) codecs in Core, 89 T1 cases from conformance PR #7; all pass.
 - 2026-11-07: P1b (issue #11): codecs for D_PDU types 0 to 15, EOWs, address field and speed byte in `M0LTE.S5066.Core.Dts`; 403 new T1 vectors (corpus 0.2.0); all corpus cases pass. Review: type 13 decodes as an unrecognised extension (C-0365), the D_PDU codec shares PduErrorKind with P1c.
+- 2026-11-07: P3-0 (issue #18): `M0LTE.S5066.Core.Runtime` (Node, CoreInput/CoreOutput, dispatcher with the entry table and FIFO, TimerTable with the zero-duration rule, TimerName, NodeConfig and ConfigReader, IModemPort, sublayer stubs with a MAC that stays in SENSE), SeqSpace, and the C# T2 runner (FixtureModem, ConfigMerge, TraceJson, ScenarioBuilder) replacing the T2 skip. Corpus 0.3.0 adds core/idle-sense and core/config-change. Also restores the submodule pointer, which the phase 1 status commit had moved back to corpus 0.1.0.
