@@ -1116,19 +1116,28 @@ internal sealed class TransmitQueue : ITransmissionSource
 
             long end = pos + overhead + full;
             long boundary;
+            int bpb = shape.BytesPerBlock;
             if (end > capacity)
             {
                 boundary = capacity;   // the end of the whole blocks, less the marker's space (interp C-1290)
             }
-            else if (full < a.Remaining && end % shape.BytesPerBlock != 0 && (end - 1) / shape.BytesPerBlock > pos / shape.BytesPerBlock)
+            else if (chosenControl.Count == 0 && chosen.Count == 0 && capacity > budgetCapacity)
             {
-                boundary = end / shape.BytesPerBlock * shape.BytesPerBlock;
-                if (chosenControl.Count == 0 && chosen.Count == 0 && capacity > budgetCapacity)
+                // Stretched for this D_PDU alone (C-1042): the places it may end are where the room of
+                // whole blocks ends, n x bytes_per_block - eom_bytes, since ending at a block boundary
+                // itself would leave the modem's end-of-message marker a block of its own (interp C-1290).
+                // It is cut to the last such place it passes; with no marker these are the boundaries.
+                long e = shape.EomBytes;
+                if (!(full < a.Remaining && (end + e) % bpb != 0 && (end + e - 1) / bpb > (pos + e) / bpb))
                 {
-                    // Stretched for this D_PDU alone (C-1042): end it where those blocks end once the
-                    // modem's end-of-message marker has its room, or the marker would take one more (interp C-1290).
-                    boundary = shape.CapacityOf(end / shape.BytesPerBlock);
+                    return full;
                 }
+
+                boundary = shape.CapacityOf((end + e) / bpb);
+            }
+            else if (full < a.Remaining && end % bpb != 0 && (end - 1) / bpb > pos / bpb)
+            {
+                boundary = end / bpb * bpb;
             }
             else
             {

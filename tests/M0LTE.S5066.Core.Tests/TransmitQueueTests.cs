@@ -388,6 +388,26 @@ public class TransmitQueueTests
             .Should().Equal((0, 73, true, false));
     }
 
+    [Theory]
+    [InlineData(173, 188, 2)]   // ends at the boundary at 192: the marker would take a third block alone
+    [InlineData(171, 188, 2)]   // ends at 190, inside the marker's room of block 2
+    [InlineData(169, 188, 2)]   // ends at 188, exactly the room of two blocks: not cut
+    [InlineData(180, 188, 2)]   // ends at 199, past the boundary: cut to the room of two blocks
+    public void A_stretched_first_segment_is_cut_to_the_last_room_end_it_passes(int maxSegment, int length, int blocks)
+    {
+        // C-1155 with C-1042 and interp C-1290: 96-byte blocks, a 4-byte EOM and a one-block budget (92
+        // bytes). A first DATA-ONLY of 19 + maxSegment bytes stretches the transmission; it is cut to end
+        // where the room of whole blocks ends (96n - 4) at the last such place it passes, so the marker
+        // never gets a block of its own and a D_PDU a few bytes shorter never makes a longer transmission.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: maxSegment, eomBytes: 4);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 400));
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(length);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(blocks);
+    }
+
     [Fact]
     public void An_ed4_peer_on_a_short_link_gets_padding_and_aligned_segments()
     {
