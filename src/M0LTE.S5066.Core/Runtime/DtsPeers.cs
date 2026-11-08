@@ -386,6 +386,11 @@ internal sealed class DtsPeers
                 _context.Enqueue(new DUnidataIndication(h.Src, h.Dst, false, true, cpdu));
             }
 
+            if (link.LastHeld is { } held)
+            {
+                _context.Enqueue(new DCpduHeld(h.Src, held));   // interp B-0460: received, held for in-order delivery
+            }
+
             _tx.AckOwed();
         }
 

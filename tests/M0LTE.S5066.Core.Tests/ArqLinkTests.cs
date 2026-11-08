@@ -233,6 +233,27 @@ public class ArqLinkTests
     }
 
     [Fact]
+    public void A_complete_in_order_cpdu_held_behind_a_gap_is_reported_once()
+    {
+        // Interp B-0460: FSN 0 is missing. B (FSN 1 and 2) is reported as held only when its last
+        // segment arrives, a copy of a segment reports nothing, and B is delivered, not reported,
+        // when FSN 0 fills the gap. A C_PDU delivered at once (no flag, or nothing missing) is not held.
+        var link = new ArqLink(1);
+        link.Receive(1, true, false, true, false, [0xB, 0x1]).Should().BeEmpty();
+        link.LastHeld.Should().BeNull("B is not complete");
+        link.Receive(2, false, true, true, false, [0xB, 0x2]).Should().BeEmpty();
+        link.LastHeld!.Value.ToArray().Should().Equal(0xB, 0x1, 0xB, 0x2);
+        link.Receive(2, false, true, true, false, [0xB, 0x2]).Should().BeEmpty();
+        link.LastHeld.Should().BeNull("a copy completes nothing new");
+        link.Receive(4, true, true, false, false, [0xD]).Should().ContainSingle();   // no flag: at once (C-0179)
+        link.LastHeld.Should().BeNull();
+        link.Receive(0, true, true, true, false, [0xA]).Select(m => m.ToArray()[0]).Should().Equal(0xA, 0xB);
+        link.LastHeld.Should().BeNull("delivered, not held");
+        link.Receive(3, true, true, true, false, [0xC]).Should().ContainSingle();   // nothing missing before it
+        link.LastHeld.Should().BeNull();
+    }
+
+    [Fact]
     public void Held_in_order_cpdus_are_released_in_fsn_order_when_the_connection_ends()
     {
         // Interp C-1254: FSN 0 never came, so C_PDUs B (FSN 1) and C (FSN 3 and 4) wait for in-order

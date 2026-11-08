@@ -545,7 +545,10 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 // WARNINGs reach it (B-0426) or 16 answer waits pass (C-1250); for node 0, which may hold
                 // one link, that can stop all its traffic for minutes. Since #70 and #71 that is a delay,
                 // not a fault: with the derived wait a 300-seed sweep showed no safety failure, and four
-                // runs in 1200 still had traffic in flight when the run ended.
+                // runs in 1200 still had traffic in flight when the run ended. Rechecked after P7-2 (issue #77,
+                // a held in-order C_PDU now ends the wait, interp B-0460): without this departure 2 runs in
+                // 1200 (seeds 63 and 95, slotted) still end with traffic in flight, against 3 before P7-2,
+                // so the departure stays.
                 ["first_data_timeout_ms"] = 10_000_000,
             },
             ["sis"] = new JsonObject { ["soft_link_idle_ms"] = 60_000, ["soft_link_min_hold_ms"] = 30_000, ["soft_link_max_ms"] = 150_000 },

@@ -167,6 +167,9 @@ internal sealed class CasSublayer : ICasSublayer
                 OnBreakRequestIfArq(d);
                 OnDataIndication(d.Src, d.Dst, d.DstIsGroup, d.Arq, d.CPdu);
                 break;
+            case DCpduHeld held:
+                FirstDataIfArq(held.Peer, true, held.CPdu);   // interp B-0460
+                break;
             case DPeerArqHeard h:
                 if (_links.TryGetValue(h.Peer, out Link? heard) && IsMade(heard))
                 {
@@ -401,7 +404,9 @@ internal sealed class CasSublayer : ICasSublayer
     /// </summary>
     /// <summary>
     /// B-0215, B-0403: a DATA C_PDU received by ARQ is the first data on the link and stops
-    /// <c>cas.first_data</c>, whether it came by the regular or the expedited ARQ service (C-1216).
+    /// <c>cas.first_data</c>, whether it came by the regular or the expedited ARQ service (C-1216), and
+    /// whether it was delivered or is complete and held by the DTS for in-order delivery (interp B-0460,
+    /// C-0178, C-1123). A segment of an incomplete C_PDU or an ACK-ONLY does not stop it.
     /// </summary>
     private void FirstDataIfArq(uint src, bool arq, ReadOnlyMemory<byte> cpdu)
     {
