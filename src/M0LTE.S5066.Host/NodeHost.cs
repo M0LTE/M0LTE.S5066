@@ -273,7 +273,7 @@ public sealed class NodeHost : IAsyncDisposable
                     _server?.Close(c.Conn);
                     break;
                 case LinkState l:
-                    _options.Log?.Invoke($"link {Core.Dts.DpduAddress.Format(l.Peer)} {l.State}");
+                    _options.Log?.Invoke($"link {Core.Dts.DpduAddress.ToDotted(l.Peer)} {l.State}");
                     LinkStateChanged?.Invoke(l.Peer, l.State);
                     break;
             }

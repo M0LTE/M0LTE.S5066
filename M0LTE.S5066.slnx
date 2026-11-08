@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
+    <Project Path="src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/M0LTE.S5066.Core.Tests/M0LTE.S5066.Core.Tests.csproj" />
