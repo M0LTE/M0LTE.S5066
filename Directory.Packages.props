@@ -7,6 +7,7 @@
   <ItemGroup>
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
     <PackageVersion Include="AwesomeAssertions" Version="9.2.0" />
+    <PackageVersion Include="M0LTE.Ms110d" Version="0.6.0" />
   </ItemGroup>
 
 </Project>
