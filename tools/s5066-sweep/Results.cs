@@ -49,7 +49,7 @@ internal sealed class Dist
         }
     }
 
-    /// <summary>The p-quantile (0 to 1), as the middle of its 100 ms bin; 0 when empty.</summary>
+    /// <summary>The p-quantile (0 to 1), as the middle of its 100 ms bin kept within the minimum and maximum; 0 when empty.</summary>
     public double Quantile(double p)
     {
         if (N == 0)
@@ -64,7 +64,7 @@ internal sealed class Dist
             seen += c;
             if (seen >= Math.Max(1, target))
             {
-                return k + (BinMs / 2.0);
+                return Math.Clamp(k + (BinMs / 2.0), Min, Max);
             }
         }
 

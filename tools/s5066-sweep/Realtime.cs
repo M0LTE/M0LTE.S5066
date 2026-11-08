@@ -89,7 +89,7 @@ internal static class Realtime
         var logText = new StringBuilder();
         var processes = new List<Process>();
         var clock = Stopwatch.StartNew();
-        float gain = RungPower.Gain(s.Channel.Ssb, rung) / 1f;
+        float gain = RungPower.Gain(s.Channel.Ssb, rung);   // the nodes modulate at 0.5, as SimModem does before its gain
         using var bridge = new Bridge(s, gain, ports[2], ports[1], ports[3], ports[0], clock);
         var wall = Stopwatch.StartNew();
         try

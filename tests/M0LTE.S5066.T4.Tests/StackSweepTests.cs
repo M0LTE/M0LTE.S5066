@@ -99,7 +99,7 @@ public class StackSweepTests
         (a.N, a.Min, a.Max).Should().Be((5L, -120L, 350L));
         a.Mean.Should().Be(136);
         a.Quantile(0.5).Should().Be(150);
-        a.Quantile(0).Should().Be(-150);
+        a.Quantile(0).Should().Be(-120, "a quantile stays within the extremes");
         a.Quantile(1).Should().Be(350);
     }
 
