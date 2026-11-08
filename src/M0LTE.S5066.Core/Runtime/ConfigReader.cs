@@ -28,7 +28,7 @@ public static class ConfigReader
         "sis.default_ttl", "sis.soft_link_idle_ms", "sis.soft_link_min_hold_ms", "sis.soft_link_max_ms",
         "sis.frag_size", "sis.confirm_wait_ms",
         "dts.max_segment_size", "dts.max_transmission_ms", "dts.max_window", "dts.ack_wait_ms",
-        "drc.default_speed",
+        "drc.default_speed", "drc.table",
         "cas.max_links", "cas.link_request_timeout_ms", "cas.link_request_retries", "cas.first_data_timeout_ms",
         "cas.break_timeout_ms", "cas.break_retries", "cas.clean_close_timeout_ms",
     ];
@@ -267,7 +267,146 @@ public static class ConfigReader
 
         int wn = Required(speed, "wn", "drc.default_speed.", 0);
         string il = String(speed, "interleaver", "drc.default_speed.") ?? throw new MissingSettingException("drc.default_speed.interleaver");
-        return new DrcConfig(new Speed(wn, InterleaverNames.Parse(il)));
+        return new DrcConfig(new Speed(wn, InterleaverNames.Parse(il))) { Table = ReadTable(drc) };
+    }
+
+    private static readonly string[] TableKeys =
+    [
+        "ladder", "thresholds", "smoothing_weight", "clean_run", "rx_error_limit_ppt", "rx_ceiling_initial",
+        "rx_ceiling_cap", "tx_step_down_waits", "tx_ceiling_initial", "tx_ceiling_cap",
+    ];
+
+    /// <summary>
+    /// drc.table (corpus-format.md 6.1). Ladder rungs are WN 1 to 8 or 13 at Ultra Short, Short, Medium
+    /// or Long (core-architecture.md 9, phase 7, design shape item 4); each list in <c>thresholds</c>
+    /// is as long as the ladder. Absent from an older configuration means empty.
+    /// </summary>
+    private static DrcTable ReadTable(JsonObject drc)
+    {
+        if (drc["table"] is null)
+        {
+            return DrcTable.Empty;
+        }
+
+        if (drc["table"] is not JsonObject table)
+        {
+            throw new ConfigException("drc.table", "must be an object");
+        }
+
+        foreach (KeyValuePair<string, JsonNode?> kv in table)
+        {
+            if (!TableKeys.Contains(kv.Key, StringComparer.Ordinal))
+            {
+                throw new ConfigException("drc.table." + kv.Key, "is not a drc.table key");
+            }
+        }
+
+        var ladder = new List<Speed>();
+        foreach (JsonNode? e in List(table, "ladder"))
+        {
+            Speed rung = Rung(e, "drc.table.ladder");
+            if (rung.Wn is not ((>= 1 and <= 8) or 13) || rung.Interleaver is Interleaver.VeryShort or Interleaver.VeryLong)
+            {
+                throw new ConfigException("drc.table.ladder", "rungs are WN 1 to 8 or 13 at ultra_short, short, medium or long");
+            }
+
+            if (ladder.Contains(rung))
+            {
+                throw new ConfigException("drc.table.ladder", "a rung appears twice");
+            }
+
+            ladder.Add(rung);
+        }
+
+        var thresholds = new List<DrcThresholds>();
+        foreach (JsonNode? e in List(table, "thresholds"))
+        {
+            Speed rung = Rung(e, "drc.table.thresholds");
+            if (thresholds.Exists(t => t.Rung == rung))
+            {
+                throw new ConfigException("drc.table.thresholds", "a rung appears twice");
+            }
+
+            JsonObject o = (JsonObject)e!;
+            thresholds.Add(new DrcThresholds(rung, Tenths(o, "bulk", ladder.Count), Tenths(o, "latency", ladder.Count)));
+        }
+
+        int? weight = Int(table, "smoothing_weight", "drc.table.");
+        if (weight is < 1 or > 16)
+        {
+            throw new ConfigException("drc.table.smoothing_weight", "must be 1 to 16");
+        }
+
+        int? limit = Int(table, "rx_error_limit_ppt", "drc.table.");
+        if (limit is > 1000)
+        {
+            throw new ConfigException("drc.table.rx_error_limit_ppt", "must be 0 to 1000");
+        }
+
+        return new DrcTable(
+            ladder,
+            thresholds,
+            weight,
+            Positive(table, "clean_run"),
+            limit,
+            Positive(table, "rx_ceiling_initial"),
+            Positive(table, "rx_ceiling_cap"),
+            Positive(table, "tx_step_down_waits"),
+            Positive(table, "tx_ceiling_initial"),
+            Positive(table, "tx_ceiling_cap"));
+
+        static int? Positive(JsonObject t, string key) =>
+            Int(t, key, "drc.table.") is int v && v < 1 ? throw new ConfigException("drc.table." + key, "must be at least 1") : Int(t, key, "drc.table.");
+    }
+
+    private static JsonArray List(JsonObject obj, string key) =>
+        obj[key] switch
+        {
+            null => [],
+            JsonArray a => a,
+            _ => throw new ConfigException("drc.table." + key, "must be a list"),
+        };
+
+    private static Speed Rung(JsonNode? e, string key)
+    {
+        if (e is not JsonObject o)
+        {
+            throw new ConfigException(key, "entries must be objects");
+        }
+
+        int wn = Required(o, "wn", key + ".", 0);
+        string il = String(o, "interleaver", key + ".") ?? throw new ConfigException(key, "interleaver missing");
+        return new Speed(wn, InterleaverNames.Parse(il));
+    }
+
+    /// <summary>A list of signed tenths of a dB or nulls, as long as the ladder.</summary>
+    private static List<int?> Tenths(JsonObject o, string key, int length)
+    {
+        string where = "drc.table.thresholds." + key;
+        if (o[key] is not JsonArray a || a.Count != length)
+        {
+            throw new ConfigException(where, "must be a list as long as the ladder");
+        }
+
+        var values = new List<int?>();
+        foreach (JsonNode? n in a)
+        {
+            if (n is null)
+            {
+                values.Add(null);
+                continue;
+            }
+
+            if (n.GetValueKind() != JsonValueKind.Number
+                || !int.TryParse(n.ToJsonString(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int v))
+            {
+                throw new ConfigException(where, "entries are integers or null");
+            }
+
+            values.Add(v);
+        }
+
+        return values;
     }
 
     private static string? FirstUnknown(JsonObject obj, string prefix)

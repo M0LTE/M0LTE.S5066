@@ -149,7 +149,86 @@ public sealed record Speed(int Wn, Interleaver Interleaver);
 /// drc.default_speed: the waveform and interleaver every transmission uses until rate selection
 /// arrives in phase 7 (plan 6.2; core-architecture.md 5.3).
 /// </param>
-public sealed record DrcConfig(Speed DefaultSpeed);
+public sealed record DrcConfig(Speed DefaultSpeed)
+{
+    /// <summary>
+    /// drc.table: the rate selection calibration (corpus-format.md 6.1; core-architecture.md 9, phase
+    /// 7, design shape items 5 and 6). Empty by default: no calibration, so no recommendations and
+    /// fixed speed at <see cref="DefaultSpeed"/>.
+    /// </summary>
+    public DrcTable Table { get; init; } = DrcTable.Empty;
+}
+
+/// <summary>
+/// drc.table (corpus-format.md 6.1): calibration data, not an operator setting. Integers only
+/// (core-architecture.md 6 rule 1). The constants are null in <c>defaults.json</c>; a null one the
+/// core needs throws <see cref="MissingSettingException"/> where it is read.
+/// </summary>
+/// <param name="Ladder">The rungs, slowest first; empty means no calibration.</param>
+/// <param name="Thresholds">Per measured rung, the estimate thresholds for each ladder position.</param>
+/// <param name="SmoothingWeight">smoothing_weight, 1 to 16, in sixteenths.</param>
+/// <param name="CleanRun">clean_run: clean bursts in a row before a move up, and before MAX-SEGMENT doubles.</param>
+/// <param name="RxErrorLimitPpt">rx_error_limit_ppt: a burst D_PDU error rate above this caps its rung.</param>
+/// <param name="RxCeilingInitial">rx_ceiling_initial: bursts a first cap lasts.</param>
+/// <param name="RxCeilingCap">rx_ceiling_cap: the longest cap, in bursts.</param>
+/// <param name="TxStepDownWaits">tx_step_down_waits (P7-7).</param>
+/// <param name="TxCeilingInitial">tx_ceiling_initial (P7-7).</param>
+/// <param name="TxCeilingCap">tx_ceiling_cap (P7-7).</param>
+public sealed record DrcTable(
+    IReadOnlyList<Speed> Ladder,
+    IReadOnlyList<DrcThresholds> Thresholds,
+    int? SmoothingWeight = null,
+    int? CleanRun = null,
+    int? RxErrorLimitPpt = null,
+    int? RxCeilingInitial = null,
+    int? RxCeilingCap = null,
+    int? TxStepDownWaits = null,
+    int? TxCeilingInitial = null,
+    int? TxCeilingCap = null)
+{
+    /// <summary>The empty table of <c>defaults.json</c>.</summary>
+    public static DrcTable Empty { get; } = new([], []);
+
+    /// <summary>No calibration: an empty ladder.</summary>
+    public bool IsEmpty => Ladder.Count == 0;
+
+    /// <summary>The ladder position of a rung, or -1 when it is not on the ladder.</summary>
+    public int PositionOf(Speed rung)
+    {
+        for (int i = 0; i < Ladder.Count; i++)
+        {
+            if (Ladder[i] == rung)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The thresholds measured on a rung, or null when the table has none for it.</summary>
+    public DrcThresholds? ThresholdsOn(Speed rung)
+    {
+        foreach (DrcThresholds t in Thresholds)
+        {
+            if (t.Rung == rung)
+            {
+                return t;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Reads a constant the core needs; null throws <see cref="MissingSettingException"/>.</summary>
+    internal static int Need(int? value, string key) => value ?? throw new MissingSettingException("drc.table." + key);
+}
+
+/// <summary>One <c>drc.table.thresholds</c> entry (corpus-format.md 6.1).</summary>
+/// <param name="Rung">The rung the estimate is measured on.</param>
+/// <param name="Bulk">Per ladder position, the smoothed estimate in tenths of a dB at or above which that rung meets the bulk criterion, or null for never.</param>
+/// <param name="Latency">The same for the latency criterion.</param>
+public sealed record DrcThresholds(Speed Rung, IReadOnlyList<int?> Bulk, IReadOnlyList<int?> Latency);
 
 /// <summary>
 /// time.* settings: the UTC year, day-of-year and seconds-of-day that correspond to core time 0.
