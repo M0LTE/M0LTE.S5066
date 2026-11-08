@@ -153,6 +153,26 @@ public class TransmitSafetyTests
         log.Snapshot().Count(x => x == "key").Should().Be(1, "nothing is keyed after an emergency unkey");
     }
 
+    [Fact]
+    public async Task A_burst_that_underran_says_so()
+    {
+        var log = new EventLog();
+        var lines = new List<string>();
+        int underruns = 0;
+        var output = new FakeOutput(CardRate, log);
+        using var channel = new RadioAudioChannel(new FakeInput(CardRate), output, new FakePtt(log), 0, 0, Lines(lines))
+        {
+            PlaybackXruns = () => Interlocked.Increment(ref underruns) - 1,
+        };
+        channel.Start(_ => { });
+        var played = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        channel.Play(new float[960], () => played.TrySetResult());
+        await played.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Lines(lines, null).Should().ContainSingle().Which.Should().StartWith("radio: the playback device underran 1 time(s)");
+    }
+
     private static Action<string> Lines(List<string> lines) => line =>
     {
         lock (lines)

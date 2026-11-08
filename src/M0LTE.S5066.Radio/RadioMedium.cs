@@ -54,7 +54,15 @@ public sealed class RadioMedium : IDisposable
             opened.Add(output);
             var ptt = Opening("ptt_device", settings.PttDevice, () => new Cm108Ptt(settings.PttDevice, settings.PttGpio));
             opened.Add(ptt);
-            return Create(settings, input, output, ptt, log);
+            foreach (string? warning in new[] { input.ConfigurationWarning, output.ConfigurationWarning })
+            {
+                if (warning is not null)
+                {
+                    log?.Invoke("radio: " + warning);
+                }
+            }
+
+            return Create(settings, input, output, ptt, log, () => input.Xruns, () => output.Xruns);
         }
         catch
         {
@@ -68,9 +76,13 @@ public sealed class RadioMedium : IDisposable
     }
 
     /// <summary>Puts the medium together on devices already open; for tests, with fakes.</summary>
-    internal static RadioMedium Create(RadioSettings settings, IAudioInput input, IAudioOutput output, IPttControl ptt, Action<string>? log)
+    internal static RadioMedium Create(RadioSettings settings, IAudioInput input, IAudioOutput output, IPttControl ptt, Action<string>? log, Func<int>? captureXruns = null, Func<int>? playbackXruns = null)
     {
-        var audio = new RadioAudioChannel(input, output, ptt, settings.TxDelayMs, settings.TxTailMs, log);
+        var audio = new RadioAudioChannel(input, output, ptt, settings.TxDelayMs, settings.TxTailMs, log)
+        {
+            CaptureXruns = captureXruns,
+            PlaybackXruns = playbackXruns,
+        };
         WavRecorder? recorder = null;
         if (settings.RxRecord is { } path)
         {

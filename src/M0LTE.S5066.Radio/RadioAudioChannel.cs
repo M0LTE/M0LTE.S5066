@@ -111,6 +111,15 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
     /// </summary>
     public static readonly TimeSpan GuardMargin = TimeSpan.FromSeconds(3);
 
+    /// <summary>
+    /// The playback device's count of underruns so far, or null when it keeps none. Each one is a
+    /// gap in a burst on air, so a burst that had any is logged; on a busy Pi this is the sign.
+    /// </summary>
+    internal Func<int>? PlaybackXruns { get; init; }
+
+    /// <summary>The capture device's count of overruns so far, or null when it keeps none; each is logged.</summary>
+    internal Func<int>? CaptureXruns { get; init; }
+
     /// <summary>Raised with true just before the radio is keyed and with false just after it is unkeyed, on the transmit thread.</summary>
     public event Action<bool>? Keyed;
 
@@ -200,6 +209,7 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
         // 20 ms reads: the decimator's output reaches the modem and the busy detector promptly.
         var raw = new float[_rate / 50];
         var decimated = new float[_decimator.MaxOutput(raw.Length)];
+        int overrunsSeen = 0;
         try
         {
             while (!_stop.IsCancellationRequested)
@@ -213,6 +223,12 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
                     }
 
                     throw new IOException("the capture device closed");
+                }
+
+                if (CaptureXruns?.Invoke() is int overruns && overruns != overrunsSeen)
+                {
+                    overrunsSeen = overruns;
+                    _log?.Invoke($"radio: the capture device overran ({overruns} so far), so some received audio was lost; the Pi is too busy");
                 }
 
                 int produced = _decimator.Process(raw.AsSpan(0, n), decimated);
@@ -319,6 +335,7 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
                 return !_guardTripped;
             }
 
+            int underrunsBefore = PlaybackXruns?.Invoke() ?? 0;
             TimeSpan allowed = TimeSpan.FromSeconds(keyup.Length / (double)_rate) + _guardMargin;
             using (var guard = new Timer(_ => Trip(generation, allowed), null, allowed, Timeout.InfiniteTimeSpan))
             {
@@ -334,6 +351,11 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
                 {
                     _output.Drain();
                 }
+            }
+
+            if (PlaybackXruns?.Invoke() - underrunsBefore is > 0 and int underruns)
+            {
+                _log?.Invoke($"radio: the playback device underran {underruns} time(s) during the burst, so it went out with gaps; the Pi is too busy");
             }
 
             if (_guardTripped)
