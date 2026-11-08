@@ -23,6 +23,8 @@ s5066-test --node 127.0.0.1:5067        # the far end, interactive
 s5066-test --node 127.0.0.1:5066        # and this end
 ```
 
+Add `--trace` before a node's configuration file to log every D_PDU, timer and burst it handles, for when a transfer goes wrong.
+
 ## Interactive mode
 
 A plain line-mode screen that works over ssh. Type a line to send it as chat. Commands:

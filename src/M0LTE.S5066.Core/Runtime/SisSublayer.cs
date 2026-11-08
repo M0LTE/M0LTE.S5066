@@ -1070,15 +1070,16 @@ internal sealed class SisSublayer : ISisSublayer
     }
 
     /// <summary>
-    /// The idle wait ran out, but the peer was heard during it (a valid D_PDU header from it in a
-    /// burst that ended after the wait began, C-0833): the link is not idle, since the peer may be
-    /// part way through a C_PDU whose segments have not all arrived. Returns the time left until one
-    /// idle wait after the burst it was last heard in, from which the wait now counts; null when it
-    /// was not heard (interp A-0320; issue #86).
+    /// The idle wait ran out, but the peer was heard during it: a valid D_PDU header from it (C-0833)
+    /// in a burst that began after the wait did. The link is not idle, since the peer may be part way
+    /// through a C_PDU whose segments have not all arrived. Returns the time left until one idle wait
+    /// after the end of the burst it was last heard in, from which the wait now counts; null when it
+    /// was not heard. A burst begun before the wait, such as the one whose C_PDU started it, does not
+    /// count (interp A-0320; issue #86).
     /// </summary>
     private long? HeardDuringIdle(uint peer, SoftLink link)
     {
-        if (!_context.RxQuality.TryGetValue(peer, out RxQuality? q) || q.LastHeard <= link.IdleSince)
+        if (!_context.RxQuality.TryGetValue(peer, out RxQuality? q) || q.LastBurstStart < link.IdleSince)
         {
             return null;
         }

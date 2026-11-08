@@ -56,7 +56,7 @@ public class DtsReceiverTests
 
         rig.Now = 3000;
         rig.Receiver.OnBurstEnded(EndEom);
-        rig.Receiver.Quality[Peer].Should().Be(new RxQuality(3000, 85, 2, Interleaver.Long, 7, 1, 1));
+        rig.Receiver.Quality[Peer].Should().Be(new RxQuality(3000, 85, 2, Interleaver.Long, 7, 1, 1, LastBurstStart: 2000));
     }
 
     [Fact]

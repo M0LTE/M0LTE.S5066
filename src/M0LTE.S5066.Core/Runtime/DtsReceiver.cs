@@ -10,7 +10,8 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <param name="K">The constraint length the modem locked to.</param>
 /// <param name="ValidHeaders">D_PDU headers from this sender with a good header CRC, all bursts.</param>
 /// <param name="DataCrcFailures">D_PDUs from this sender discarded for a bad data CRC, all bursts (C-0836, C-0839).</param>
-internal sealed record RxQuality(long LastHeard, int? SnrTenthDb, int Wn, Interleaver Interleaver, int K, long ValidHeaders, long DataCrcFailures);
+/// <param name="LastBurstStart">Core time at which the burst of <paramref name="LastHeard"/> started (interp A-0320: the SIS counts a soft link's idle wait from a burst begun during it).</param>
+internal sealed record RxQuality(long LastHeard, int? SnrTenthDb, int Wn, Interleaver Interleaver, int K, long ValidHeaders, long DataCrcFailures, long LastBurstStart = 0);
 
 /// <summary>
 /// The D_PDU stream receiver of the DTS (core-architecture.md 4.3). It turns the modem's bytes
@@ -59,6 +60,7 @@ internal sealed class DtsReceiver
     private readonly Action<Dpdu> _toStateMachine;
     private readonly Action<DpduHeaderInfo>? _onHeader;
     private readonly SortedDictionary<uint, RxQuality> _quality = new();
+    private long _burstStart;
     private readonly SortedSet<uint> _heardThisBurst = new();
     private readonly SortedDictionary<uint, (long Headers, long DataCrc)> _countsThisBurst = new();
 
@@ -88,6 +90,7 @@ internal sealed class DtsReceiver
     /// <summary>A new burst: a fresh stream buffer and fresh per-burst records (core-architecture.md 3.5 rule 1).</summary>
     public void OnBurstStarted()
     {
+        _burstStart = _context.Now;
         Reset();
         _heardThisBurst.Clear();
         _countsThisBurst.Clear();
@@ -115,7 +118,7 @@ internal sealed class DtsReceiver
             _quality.TryGetValue(src, out RxQuality? old);
             _quality[src] = new RxQuality(
                 _context.Now, burst.SnrTenthDb, burst.Wn, burst.Interleaver, burst.K,
-                (old?.ValidHeaders ?? 0) + headers, (old?.DataCrcFailures ?? 0) + dataCrc);
+                (old?.ValidHeaders ?? 0) + headers, (old?.DataCrcFailures ?? 0) + dataCrc, _burstStart);
         }
 
         _heardThisBurst.Clear();
