@@ -277,9 +277,14 @@ internal static class Realtime
             _reader.Start();
         }
 
+        /// <summary>
+        /// Lets the app send a few frames. Bounded, because the flow-off that stops the bulk sender
+        /// arrives on the reader thread, which needs the lock this runs under; 8 bulk U_PDUs per
+        /// 20 ms tick is far more than any rung carries.
+        /// </summary>
         public void Pump(long now)
         {
-            while (_app.Poll(now))
+            for (int i = 0; i < 8 && _app.Poll(now); i++)
             {
             }
 

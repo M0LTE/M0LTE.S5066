@@ -83,9 +83,10 @@ namespace M0LTE.S5066.Sweep
         internal static void Print(RunResult r)
         {
             var inv = CultureInfo.InvariantCulture;
-            Console.WriteLine(string.Create(inv, $"{r.Id}: goodput {r.GoodputBps:0} bit/s ({r.DeliveredBytesWindow} bytes in the window, {r.DeliveredBytes} in all), retransmissions {r.RetransmissionRate:P1}, links lost {r.LinksLost}"));
+            bool real = r.Mode == "realtime";   // the bridge sees only audio: bursts and their timing, no D_PDUs or links
+            Console.WriteLine(string.Create(inv, $"{r.Id}: goodput {r.GoodputBps:0} bit/s ({r.DeliveredBytesWindow} bytes in the window, {r.DeliveredBytes} in all){(real ? "" : $", retransmissions {r.RetransmissionRate:P1}, links lost {r.LinksLost}")}"));
             Console.WriteLine(string.Create(inv, $"  chat {r.Chat.Delivered}/{r.Chat.Sent} delivered, latency {r.Chat.LatencyMs.Summary()}"));
-            foreach ((string node, NodeStats n) in r.Nodes)
+            foreach ((string node, NodeStats n) in real ? [] : r.Nodes)
             {
                 Console.WriteLine(string.Create(inv, $"  node {node}: {n.Transmissions} transmissions ({n.AckOnlyTransmissions} ACK-only), links made {n.LinksMade}, lost {n.LinksLost}, closed {n.LinksClosed}"));
                 foreach ((string rung, RungStats s) in n.Rungs)
@@ -93,6 +94,11 @@ namespace M0LTE.S5066.Sweep
                     string snr = s.SnrCount > 0 ? string.Create(inv, $", mean estimate {s.SnrSumTenths / 10.0 / s.SnrCount:0.0} dB") : "";
                     Console.WriteLine(string.Create(inv, $"    {rung}: {s.Count} tx, {s.AirtimeMs / 1000.0:0.0} s on air, D_PDUs {s.DpdusOk}/{s.Dpdus} right, {s.RetransmittedDpdus}/{s.DataDpdus} data retransmitted, {string.Join(" ", s.Outcomes.Select(kv => $"{kv.Key} {kv.Value}"))}{snr}"));
                 }
+            }
+
+            foreach ((string node, NodeStats n) in real ? r.Nodes : [])
+            {
+                Console.WriteLine(string.Create(inv, $"  node {node}: {n.Transmissions} bursts, {n.Rungs.Values.Sum(x => x.AirtimeMs) / 1000.0:0.0} s on air"));
             }
 
             foreach ((string rung, Dist d) in r.SameSenderGapMs)
@@ -106,7 +112,7 @@ namespace M0LTE.S5066.Sweep
                 Console.WriteLine($"  EOT overshoot on {rung}: {d.Summary()}");
             }
 
-            Console.WriteLine(string.Create(inv, $"  {r.WallSeconds:0.0} s wall, {r.CoreSecondsPerSignalSecond:0.000} core-s per channel-s{(r.Error is null ? "" : ", ERROR " + r.Error)}"));
+            Console.WriteLine(string.Create(inv, $"  {r.WallSeconds:0.0} s wall{(real ? "" : $", {r.CoreSecondsPerSignalSecond:0.000} core-s per channel-s")}{(r.Error is null ? "" : ", ERROR " + r.Error)}"));
         }
 
         private static SweepSettings Grid(Options o)
