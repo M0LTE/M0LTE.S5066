@@ -24,7 +24,7 @@ public static class ConfigReader
         "local_address", "groups", "time.epoch_year", "time.epoch_day", "time.epoch_second", "prng_seed",
         "csma.mode", "csma.cont_slot_width_ms", "csma.num_cont_slots", "csma.lbt_wait_dcd_ms",
         "csma.lbt_wait_vdcd_ms", "csma.node_slot_position",
-        "modem.preamble_ms", "modem.flush_ms", "modem.waveforms",
+        "modem.preamble_ms", "modem.flush_ms", "modem.eom_bytes", "modem.waveforms",
         "sis.default_ttl", "sis.soft_link_idle_ms", "sis.soft_link_min_hold_ms", "sis.soft_link_max_ms",
         "sis.frag_size", "sis.confirm_wait_ms",
         "dts.max_segment_size", "dts.max_transmission_ms", "dts.max_window", "dts.ack_wait_ms",
@@ -105,7 +105,8 @@ public static class ConfigReader
                 Required(e, "block_ms", "modem.waveforms.", 1)));
         }
 
-        var fixture = new ModemFixture(Int(modem, "preamble_ms", "modem."), Int(modem, "flush_ms", "modem."), waveforms);
+        var fixture = new ModemFixture(Int(modem, "preamble_ms", "modem."), Int(modem, "flush_ms", "modem."), waveforms,
+            Int(modem, "eom_bytes", "modem.") ?? 0);
         var result = new NodeConfig(local, csmaConfig, fixture)
         {
             Groups = ReadGroups(config),

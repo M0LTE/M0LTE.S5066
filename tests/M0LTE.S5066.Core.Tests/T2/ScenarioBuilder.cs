@@ -70,7 +70,8 @@ internal sealed class ScenarioBuilder
 
     public ScenarioBuilder TimerExpired(long t, string name) => In(t, "timer_expired", new JsonObject { ["name"] = name });
 
-    public ScenarioBuilder BurstStarted(long t) => In(t, "burst_started");
+    public ScenarioBuilder BurstStarted(long t, int? blockMs = null) =>
+        In(t, "burst_started", blockMs is int ms ? new JsonObject { ["block_ms"] = ms } : null);
 
     public ScenarioBuilder BytesReceived(long t, string hex) => In(t, "bytes_received", new JsonObject { ["bytes"] = hex });
 

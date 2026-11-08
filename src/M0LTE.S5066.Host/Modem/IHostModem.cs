@@ -48,7 +48,8 @@ public interface IHostModem : IModemPort
 public interface IModemEvents
 {
     /// <summary>A burst has started and the modem has locked to it: carrier detect.</summary>
-    void BurstStarted();
+    /// <param name="blockMs">The duration of one block of the waveform locked to, whole ms rounded down, or null when unknown (interp C-1289).</param>
+    void BurstStarted(int? blockMs);
 
     /// <summary>The bytes of one decoded block.</summary>
     /// <param name="bytes">The bytes.</param>

@@ -41,6 +41,8 @@ internal sealed class Probe(string name, List<string> log) : ISisSublayer, ICasS
 
     public void OnBurstStarted() => Call("OnBurstStarted");
 
+    public void OnBurstStarted(int? blockMs) => Call("OnBurstStarted");
+
     public void OnBytesReceived(ReadOnlyMemory<byte> bytes) => Call("OnBytesReceived");
 
     public void OnBurstEnded(BurstEnded burst) => Call("OnBurstEnded");

@@ -76,10 +76,10 @@ public sealed class RadioHostModem : IHostModem, IHostModemWrapper
     {
         private int _bytes;
 
-        public void BurstStarted()
+        public void BurstStarted(int? blockMs)
         {
             _bytes = 0;
-            inner.BurstStarted();
+            inner.BurstStarted(blockMs);
         }
 
         public void BytesReceived(ReadOnlyMemory<byte> bytes)

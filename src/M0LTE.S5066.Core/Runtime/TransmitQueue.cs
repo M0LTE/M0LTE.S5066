@@ -618,7 +618,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         (Speed speed, int position, long capacity) = Shape();
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
-        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape.BytesPerBlock, BlocksWithin(shape, Budget) * shape.BytesPerBlock);
+        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape, shape.CapacityOf(BlocksWithin(shape, Budget)));
         if (chosenControl.Count == 0 && chosen.Count == 0)
         {
             throw new InvalidOperationException("the planner chose nothing");
@@ -645,7 +645,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
             int first = FirstItemSize() ?? throw new InvalidOperationException("nothing can be placed");
             long capacity = Capacity(shape, first);
-            long longest = shape.PreambleMs + ((capacity / shape.BytesPerBlock) * shape.BlockMs) + shape.FlushMs;
+            long longest = shape.PreambleMs + (shape.BlocksFor(capacity) * shape.BlockMs) + shape.FlushMs;
             List<Entry> late = _entries.Where(e => e.CommitEnd is long end && _context.Now + longest > end).ToList();
             if (late.Count == 0)
             {
@@ -752,7 +752,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                 int? low = rx?.LowSpeed is SpeedInterleaver l && RateChoice.Named(l, defaultSpeed) is Speed ls ? RateChoice.Map(table, ls) : null;
                 int bulkPosition = max ?? low ?? defaultPosition;
                 Speed bulkRung = table.Ladder[bulkPosition];
-                bool bulk = DataBytesTo(peer) > _context.Modem.PlanBurst(bulkRung.Wn, bulkRung.Interleaver, 0).BytesPerBlock;
+                bool bulk = DataBytesTo(peer) > _context.Modem.PlanBurst(bulkRung.Wn, bulkRung.Interleaver, 0).CapacityOf(1);   // more than one block holds (C-1285, C-1290)
                 position = bulk ? bulkPosition : low ?? max ?? defaultPosition;
                 if (max is int ceiling)
                 {
@@ -1038,7 +1038,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// ARQ data D_PDU to a peer whose acknowledgement is one ACK-ONLY of at most 18 bytes of Ack Data
     /// carries it instead, as DATA-ACK (C-0238, C-0249, C-1128, C-1152).
     /// </summary>
-    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, int bytesPerBlock, long budgetCapacity)
+    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, BurstPlan shape, long budgetCapacity)
     {
         var chosenControl = new List<ControlItem>();
         var chosen = new List<Piece>();
@@ -1094,7 +1094,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             {
                 // The capacity went past the configured length only for this D_PDU (C-1042); cut short by
                 // alignment it may need fewer blocks, and the transmission is then just those (C-1155).
-                capacity = Math.Max(budgetCapacity, (used + bytesPerBlock - 1) / bytesPerBlock * bytesPerBlock);
+                capacity = Math.Max(budgetCapacity, shape.CapacityOf(shape.BlocksFor(used)));
             }
 
             return true;
@@ -1116,13 +1116,28 @@ internal sealed class TransmitQueue : ITransmissionSource
 
             long end = pos + overhead + full;
             long boundary;
+            int bpb = shape.BytesPerBlock;
             if (end > capacity)
             {
-                boundary = capacity;   // whole blocks: the capacity is a block boundary
+                boundary = capacity;   // the end of the whole blocks, less the marker's space (interp C-1290)
             }
-            else if (full < a.Remaining && end % bytesPerBlock != 0 && (end - 1) / bytesPerBlock > pos / bytesPerBlock)
+            else if (chosenControl.Count == 0 && chosen.Count == 0 && capacity > budgetCapacity)
             {
-                boundary = end / bytesPerBlock * bytesPerBlock;
+                // Stretched for this D_PDU alone (C-1042): the places it may end are where the room of
+                // whole blocks ends, n x bytes_per_block - eom_bytes, since ending at a block boundary
+                // itself would leave the modem's end-of-message marker a block of its own (interp C-1290).
+                // It is cut to the last such place it passes; with no marker these are the boundaries.
+                long e = shape.EomBytes;
+                if (!(full < a.Remaining && (end + e) % bpb != 0 && (end + e - 1) / bpb > (pos + e) / bpb))
+                {
+                    return full;
+                }
+
+                boundary = shape.CapacityOf((end + e) / bpb);
+            }
+            else if (full < a.Remaining && end % bpb != 0 && (end - 1) / bpb > pos / bpb)
+            {
+                boundary = end / bpb * bpb;
             }
             else
             {
@@ -1376,7 +1391,8 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     /// <summary>
     /// The byte capacity of this transmission (core-architecture.md 5.3): whole blocks within the
-    /// smaller of 127.5 s and <c>dts.max_transmission_ms</c> (C-0106, K-0094, K-0095). If the first
+    /// smaller of 127.5 s and <c>dts.max_transmission_ms</c> (C-0106, K-0094, K-0095), less the
+    /// block space the modem's end-of-message marker takes (interp C-1290). If the first
     /// D_PDU the build would take does not fit, the transmission is made just long enough for it
     /// (C-0551, C-0878; C-1042): the limit never blocks one D_PDU, and nothing else stretches it.
     /// A D_PDU that needs more than 127.5 s on the configured waveform cannot be sent at all, which
@@ -1385,18 +1401,18 @@ internal sealed class TransmitQueue : ITransmissionSource
     private long Capacity(BurstPlan shape, int first)
     {
         long blocks = BlocksWithin(shape, Budget);
-        if (first <= blocks * shape.BytesPerBlock)
+        if (blocks > 0 && first <= shape.CapacityOf(blocks))
         {
-            return blocks * shape.BytesPerBlock;
+            return shape.CapacityOf(blocks);
         }
 
-        long needed = (first + shape.BytesPerBlock - 1) / shape.BytesPerBlock;
+        long needed = shape.BlocksFor(first);
         if (shape.PreambleMs + (needed * shape.BlockMs) + shape.FlushMs > DtsConfig.MaxTransmissionLimitMs)
         {
             throw new ConfigException("drc.default_speed", $"a {first}-byte D_PDU needs more than 127.5 s on this waveform");
         }
 
-        return needed * shape.BytesPerBlock;
+        return shape.CapacityOf(needed);
     }
 
     private long Budget => Math.Min(DtsConfig.MaxTransmissionLimitMs, _context.Config.Dts.MaxTransmissionMs);
@@ -1453,7 +1469,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         _eows.BeginTransmission(dataPeers);
         long chosenTotal = chosenControl.Sum(c => (long)c.Size) + ordered.Sum(x => (long)x.p.Size);
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
-        List<FillItem> fill = Fill(chosenControl, ordered.Select(x => x.p).ToList(), chosenTotal, shape.BytesPerBlock);
+        List<FillItem> fill = Fill(chosenControl, ordered.Select(x => x.p).ToList(), chosenTotal, shape);
         long total = chosenTotal + fill.Sum(f => (long)f.Size);
         BurstPlan plan = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, (int)total);
 
@@ -1663,11 +1679,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// each taking the next EOW of that peer's sequence (C-0373). The rest is left to the modem's
     /// zero fill.
     /// </summary>
-    private List<FillItem> Fill(List<ControlItem> control, List<Piece> laidOut, long chosenTotal, int bytesPerBlock)
+    private List<FillItem> Fill(List<ControlItem> control, List<Piece> laidOut, long chosenTotal, BurstPlan shape)
     {
         var fill = new List<FillItem>();
-        long blocks = Math.Max(1, (chosenTotal + bytesPerBlock - 1) / bytesPerBlock);
-        long room = (blocks * bytesPerBlock) - chosenTotal;
+        long room = shape.CapacityOf(shape.BlocksFor(chosenTotal)) - chosenTotal;   // the marker's space is not fill (interp C-1290)
 
         var units = new List<(ArqLink Link, AckUnit Unit)>();
         foreach (Piece piece in laidOut)
@@ -1773,7 +1788,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     private int LaterTransmissions(Entry e, BurstPlan shape)
     {
-        long room = BlocksWithin(shape, Budget) * shape.BytesPerBlock;
+        long room = shape.CapacityOf(BlocksWithin(shape, Budget));
         int count = 0;
         long used = 0;
         foreach (int size in e.OwedSizes().Select(len => SizeOf(len, e.Expedited, e.Dst)))

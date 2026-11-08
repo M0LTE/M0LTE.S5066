@@ -30,6 +30,25 @@ public class Ms110dHostTests
         plan.DurationMs.Should().BeGreaterThanOrEqualTo((long)Math.Ceiling(audioMs), "the plan is never early (C-0891)");
         plan.DurationMs.Should().BeLessThanOrEqualTo((long)Math.Ceiling(audioMs) + 3, "each of the three parts rounds up by under 1 ms");
         (plan.BytesPerBlock * plan.Blocks * 8).Should().BeGreaterThanOrEqualTo((bytes * 8) + 32, "the blocks hold the bytes and the 32-bit EOM");
+        plan.EomBytes.Should().Be(4, "the 32-bit EOM takes 4 bytes of block space (interp C-1290)");
+        plan.Blocks.Should().Be((int)plan.BlocksFor(bytes));
+        plan.CapacityOf(plan.Blocks).Should().BeGreaterThanOrEqualTo(bytes);
+    }
+
+    [Theory]
+    [InlineData(6, Interleaver.Short)]
+    [InlineData(2, Interleaver.Long)]
+    [InlineData(13, Interleaver.Medium)]
+    [InlineData(8, Interleaver.UltraShort)]
+    public void The_received_block_duration_is_never_longer_than_the_block(int wn, Interleaver il)
+    {
+        // Interp C-1289: rounded down, so the receiver's anchor is never early; the transmit plan
+        // rounds the same block up (C-0891), so the two differ by under 1 ms.
+        var modem = new Ms110dHostModem(new AudioMedium().CreateChannel());
+        int up = modem.PlanBurst(wn, il, 0).BlockMs;
+        int? down = Ms110dHostModem.ReceivedBlockMs(new Ms110dLockInfo(wn, Kind(il), 7, 0));
+        down.Should().NotBeNull();
+        down!.Value.Should().BeInRange(up - 1, up);
     }
 
     [Fact]
@@ -158,8 +177,11 @@ public class Ms110dHostTests
 
         public int TransmitDones => Volatile.Read(ref _transmitDones);
 
-        public void BurstStarted()
+        public int? StartedBlockMs { get; private set; }
+
+        public void BurstStarted(int? blockMs)
         {
+            StartedBlockMs = blockMs;
         }
 
         public void BytesReceived(ReadOnlyMemory<byte> bytes)

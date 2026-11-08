@@ -32,8 +32,9 @@ internal sealed class FixtureModem(ModemFixture fixture) : IModemPort
 
         int preamble = fixture.PreambleMs ?? throw new MissingSettingException("modem.preamble_ms");
         int flush = fixture.FlushMs ?? throw new MissingSettingException("modem.flush_ms");
-        int blocks = byteCount == 0 ? 1 : (byteCount + entry.BlockBytes - 1) / entry.BlockBytes;
+        long used = (long)byteCount + fixture.EomBytes;
+        int blocks = used == 0 ? 1 : (int)((used + entry.BlockBytes - 1) / entry.BlockBytes);
         return new BurstPlan(preamble, entry.BlockMs, flush, entry.BlockBytes, blocks,
-            preamble + ((long)blocks * entry.BlockMs) + flush);
+            preamble + ((long)blocks * entry.BlockMs) + flush, fixture.EomBytes);
     }
 }

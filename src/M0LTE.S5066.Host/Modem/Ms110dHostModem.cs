@@ -64,7 +64,8 @@ public sealed class Ms110dHostModem : IHostModem
     /// The plan for a burst, converted from <see cref="Ms110dBurstPlan.Plan"/> so it is never early
     /// (core-architecture.md 12.5 rule 1; C-0891): preamble, one block and the flush (the leading
     /// mini-probe, the EOT marker and the pulse-shaping tail) are each rounded up to a whole ms. The
-    /// 32-bit EOM counts against the blocks, since every burst the core sends asks for it.
+    /// 32-bit EOM counts against the blocks, since every burst the core sends asks for it, and is
+    /// reported as <see cref="BurstPlan.EomBytes"/> so the planner leaves room for it (interp C-1290).
     /// </summary>
     public BurstPlan PlanBurst(int wn, Interleaver interleaver, int byteCount)
     {
@@ -75,7 +76,27 @@ public sealed class Ms110dHostModem : IHostModem
         int preambleMs = CeilMs(p.PreambleSymbols * SamplesPerSymbol);
         int blockMs = CeilMs(blockSymbols * SamplesPerSymbol);
         int flushMs = CeilMs(flushSamples);
-        return new BurstPlan(preambleMs, blockMs, flushMs, p.BytesPerBlock, p.Blocks, preambleMs + ((long)p.Blocks * blockMs) + flushMs);
+        int eomBytes = (((p.Blocks * p.InputBitsPerBlock) - p.PayloadCapacityBits) + 7) / 8;
+        return new BurstPlan(preambleMs, blockMs, flushMs, p.BytesPerBlock, p.Blocks, preambleMs + ((long)p.Blocks * blockMs) + flushMs, eomBytes);
+    }
+
+    /// <summary>
+    /// The duration of one block of a received burst, rounded down to a whole ms so that the
+    /// receiver's anchor for an EOT is never early (interp C-1289), or null for a lock the planner
+    /// cannot describe.
+    /// </summary>
+    public static int? ReceivedBlockMs(Ms110dLockInfo l)
+    {
+        try
+        {
+            Ms110dBurstPlan p = Ms110dBurstPlan.ForBlocks(Settings(l.WaveformNumber, FromKind(l.Interleaver), l.ConstraintLength, true), 1);
+            int blockSymbols = (int)Math.Round(p.BlockSeconds * 2400);
+            return (int)Math.Floor(blockSymbols * SamplesPerSymbol / SamplesPerMs);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     /// <inheritdoc/>
@@ -232,7 +253,7 @@ public sealed class Ms110dHostModem : IHostModem
 
         _locked = start.Lock;
         _blocks = 0;
-        _events?.BurstStarted();
+        _events?.BurstStarted(ReceivedBlockMs(start.Lock));
     }
 
     private void OnBlockDecoded(Ms110dRxBlock block)

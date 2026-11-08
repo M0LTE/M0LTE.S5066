@@ -199,6 +199,48 @@ public class DtsReceiverTests
     }
 
     [Fact]
+    public void With_the_block_duration_the_eot_counts_from_the_start_of_the_dpdus_block()
+    {
+        // Interp C-1289: the block holding both D_PDUs arrived at 6000 and lasts 4800 ms, so it began
+        // on air no later than 1200. Announced ends (C-1043): A 1200 + 10000 = 11200, B 1200 + 8000 =
+        // 9200, latest 11200. Bounds with the byte's share: A 11200, B (half the block, 2400) 11600,
+        // earliest 11200. The estimate is the later, 11200; without block_ms it would be 6000 + 8000.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000, 4800));
+        rig.Queue(1500);
+        byte[] a = T7(Peer, Other, 20, id: 1);
+        rig.Handle(new BytesReceived(6000, Cat(a, T7(Peer, Other, 16, id: 2)))).Should().BeEmpty();
+        rig.Handle(EndEom with { T = 7000 }).Should().Equal(new TimerStart(Vdcd, 4200));
+        rig.Mac.PredictedEndTime.Should().Be(11200);
+    }
+
+    [Fact]
+    public void With_the_block_duration_no_eot_heard_is_overruled()
+    {
+        // Interp C-1289, C-0889: A (EOT 16) announces 1200 + 8000 = 9200 and B (EOT 20, half way into
+        // the block) announces 1200 + 10000 = 11200; the earliest bound is A's 9200, but B's announced
+        // end binds, so the estimate is 11200, not the earliest end time of C-1024.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000, 4800));
+        rig.Queue(1500);
+        byte[] a = T7(Peer, Other, 16, id: 1);
+        rig.Handle(new BytesReceived(6000, Cat(a, T7(Peer, Other, 20, id: 2)))).Should().BeEmpty();
+        rig.Handle(EndEom with { T = 7000 }).Should().Equal(new TimerStart(Vdcd, 4200));
+        rig.Mac.PredictedEndTime.Should().Be(11200);
+    }
+
+    [Fact]
+    public void Without_the_block_duration_the_eot_counts_from_the_header_arrival()
+    {
+        // C-1024: no block_ms, so t_rx anchors; 6000 + 8000 is the earliest.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000));
+        rig.Queue(1500);
+        rig.Handle(new BytesReceived(6000, Cat(T7(Peer, Other, 20, id: 1), T7(Peer, Other, 16, id: 2)))).Should().BeEmpty();
+        rig.Handle(EndEom with { T = 7000 }).Should().Equal(new TimerStart(Vdcd, 7000));
+    }
+
+    [Fact]
     public void A_new_burst_cancels_vdcd_end_and_the_earlier_prediction_still_binds()
     {
         // C-0844, C-1024: the old end time is carried; the later of the two is used. K-0111: the

@@ -43,7 +43,8 @@ internal interface ICasSublayer : ISublayer
 /// <summary>The Data Transfer Sublayer (Annex C) and the receive side of the modem.</summary>
 internal interface IDtsSublayer : ISublayer
 {
-    void OnBurstStarted();
+    /// <summary>A burst started; <paramref name="blockMs"/> is its block duration from the modem, or null (interp C-1289).</summary>
+    void OnBurstStarted(int? blockMs);
 
     void OnBytesReceived(ReadOnlyMemory<byte> bytes);
 
@@ -63,6 +64,13 @@ internal interface IMacObserver
 {
     /// <summary>A valid header with EOT &gt; 0 gave this predicted end time (C-0842, K-0021; EOT 0 is ignored, C-0105).</summary>
     void EotHeard(long predictedEndTime);
+
+    /// <summary>
+    /// The current burst's end-time estimate, combined by the DTS from block-anchored EOTs (interp
+    /// C-1289); it replaces the burst's estimate and may rise as more headers arrive. Fakes that do
+    /// not model the channel may leave the default.
+    /// </summary>
+    void EotEstimate(long predictedEndTime) => EotHeard(predictedEndTime);
 
     /// <summary>A D_PDU was heard, whatever its destination, for the two-node rule (K-0068, K-0072).</summary>
     void DpduHeard(uint src, uint dst, bool dstIsGroup);

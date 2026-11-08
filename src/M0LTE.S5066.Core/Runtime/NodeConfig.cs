@@ -315,7 +315,8 @@ public sealed record ModemWaveform(int Wn, Interleaver Interleaver, int BlockByt
 /// <param name="PreambleMs">modem.preamble_ms, or null (no default).</param>
 /// <param name="FlushMs">modem.flush_ms, or null (no default).</param>
 /// <param name="Waveforms">modem.waveforms.</param>
-public sealed record ModemFixture(int? PreambleMs, int? FlushMs, IReadOnlyList<ModemWaveform> Waveforms);
+/// <param name="EomBytes">modem.eom_bytes: block space the end-of-message marker takes after the last byte, default 0 (interp C-1290).</param>
+public sealed record ModemFixture(int? PreambleMs, int? FlushMs, IReadOnlyList<ModemWaveform> Waveforms, int EomBytes = 0);
 
 /// <summary>A configuration value is unusable: wrong type or out of range. A bug in the caller, never a protocol event.</summary>
 public class ConfigException : Exception

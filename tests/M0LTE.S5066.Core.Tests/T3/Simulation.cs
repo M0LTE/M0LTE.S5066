@@ -361,7 +361,8 @@ internal sealed class Simulation
         // EOT of any D_PDU of another node whose header its core had been given by the time it
         // decided to transmit (fed before or with the input that produced the transmit output).
         // The announced end is taken from the true start of the D_PDU's block, which is never
-        // later than what the receiving core computes (it uses the arrival time).
+        // later than what the receiving core computes (from the block's arrival less one block,
+        // interp C-1289, or from the arrival itself, C-1024).
         for (int i = 0; i < given; i++)
         {
             (long end, int burstId) = sender.Heard[i];
@@ -422,7 +423,7 @@ internal sealed class Simulation
             }
 
             r.Rx = rx;
-            Modem(r, new BurstStarted(rx.StartedInputT));
+            Modem(r, new BurstStarted(rx.StartedInputT, plan.BlockMs));   // the block duration, so the receiver anchors EOTs by block (interp C-1289)
             for (int k = 0; k < plan.Blocks; k++)
             {
                 int block = k;

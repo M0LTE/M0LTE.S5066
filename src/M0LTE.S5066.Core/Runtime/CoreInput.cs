@@ -54,7 +54,8 @@ public sealed record TimerExpired(long T, TimerName Name) : CoreInput(T);
 
 /// <summary>Class 2: the modem detected the start of a burst (carrier detect).</summary>
 /// <param name="T">Input time in ms.</param>
-public sealed record BurstStarted(long T) : CoreInput(T);
+/// <param name="BlockMs">The duration of one block of the waveform the modem locked to, whole ms rounded down, or null when the modem does not say (interp C-1289).</param>
+public sealed record BurstStarted(long T, int? BlockMs = null) : CoreInput(T);
 
 /// <summary>Class 2: decoded bytes from one modem block.</summary>
 /// <param name="T">Input time in ms.</param>

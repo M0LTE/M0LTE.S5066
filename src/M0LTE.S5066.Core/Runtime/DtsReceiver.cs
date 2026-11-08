@@ -45,9 +45,17 @@ internal sealed record HeardBurst(long Start, long End);
 /// <para>
 /// Per D_PDU, in byte order (core-architecture.md 3.5 rule 3), the header effects happen as soon as
 /// the header is complete and valid, even if its data has not all arrived: an EOT &gt; 0 gives the
-/// end time <c>t_rx + eot * 500</c>, where <c>t_rx</c> is the time of the <c>bytes_received</c> that
-/// completed the header, or the burst end for a header found only by the search at the burst end
-/// (C-0842, K-0021, C-1024; EOT 0 gives nothing, C-0105), and the (src, dst, group)
+/// end time (C-0842, K-0021; EOT 0 gives nothing, C-0105). When the modem gave the block duration
+/// of the burst at <c>burst_started</c> (interp C-1289), the block holding the D_PDU's first byte
+/// started on air no later than its <c>bytes_received</c> time less one block (the modem cannot
+/// decode a block before all of it has been on air). From there, <c>eot * 500</c> is the end the
+/// EOT announces under our reading of where a D_PDU starts (C-1043), and adding first the byte's
+/// share of the block, rounded up, gives an end that bounds a sender counting from the byte's place
+/// too. The burst's estimate is the later of the latest announced end (no EOT heard is overruled,
+/// C-0889) and the earliest bound (each is an upper bound on the true end, C-0843). Without the
+/// block duration each header gives <c>t_rx + eot * 500</c>, where <c>t_rx</c> is the time of the
+/// <c>bytes_received</c> that completed the header, or the burst end for a header found only by the
+/// search at the burst end, and the estimate is the earliest of them (C-1024). The (src, dst, group)
 /// triple goes to the MAC for the two-node rule (K-0068). This holds for every valid header,
 /// whoever it is addressed to (C-0832, C-0868). Then, once the whole D_PDU is there, one whose data
 /// CRC fails is discarded (C-0834, C-0836, C-0839) and the rest go to the state machine (C-0838).
@@ -78,6 +86,18 @@ internal sealed class DtsReceiver
     private int _length;
     private int _pos;
 
+    // Stream offset of _buffer[0] within the current burst, the block duration the modem gave at
+    // burst_started (or null), and each block of the burst: its first stream offset, its length and
+    // the time it arrived (interp C-1289).
+    private long _streamBase;
+    private int? _blockMs;
+    private readonly List<(long Start, int Length, long T)> _blocks = [];
+
+    // With block_ms: the latest end announced under C-1043 and the earliest bound counting the byte's
+    // share of its block, over the burst's headers so far (interp C-1289).
+    private long? _latestAnnounced;
+    private long? _earliestBound;
+
     // Start offset of the D_PDU whose header effects have been applied but whose data is still
     // arriving, or -1. Stops the header effects being applied twice.
     private int _headerDoneAt = -1;
@@ -99,9 +119,13 @@ internal sealed class DtsReceiver
     public IReadOnlyDictionary<uint, RxQuality> Quality => _quality;
 
     /// <summary>A new burst: a fresh stream buffer and fresh per-burst records (core-architecture.md 3.5 rule 1).</summary>
-    public void OnBurstStarted()
+    /// <param name="blockMs">The duration of one block of the burst in ms, from the modem, or null (interp C-1289).</param>
+    public void OnBurstStarted(int? blockMs = null)
     {
         _burstStart = _context.Now;
+        _blockMs = blockMs;
+        _latestAnnounced = null;
+        _earliestBound = null;
         Reset();
         _heardThisBurst.Clear();
         _toUsThisBurst.Clear();
@@ -111,6 +135,7 @@ internal sealed class DtsReceiver
     /// <summary>Appends one block's bytes and processes every D_PDU they complete, in byte order.</summary>
     public void OnBytesReceived(ReadOnlySpan<byte> bytes)
     {
+        _blocks.Add((_streamBase + _length, bytes.Length, _context.Now));
         Append(bytes);
         Scan(endOfBurst: false);
     }
@@ -238,7 +263,19 @@ internal sealed class DtsReceiver
         DpduHeader h = info.Header;
         if (h.Eot > 0)
         {
-            _mac.EotHeard(_context.Now + (h.Eot * 500L));
+            if (_blockMs is int blockMs)
+            {
+                (long blockStart, long share) = BlockAnchor(blockMs);
+                long announced = blockStart + (h.Eot * 500L);
+                long bound = announced + share;
+                _latestAnnounced = Math.Max(_latestAnnounced ?? announced, announced);
+                _earliestBound = Math.Min(_earliestBound ?? bound, bound);
+                _mac.EotEstimate(Math.Max(_latestAnnounced.Value, _earliestBound.Value));
+            }
+            else
+            {
+                _mac.EotHeard(_context.Now + (h.Eot * 500L));
+            }
         }
 
         _mac.DpduHeard(h.Src, h.Dst, info.GroupAddress);
@@ -252,6 +289,26 @@ internal sealed class DtsReceiver
 
         _countsThisBurst.TryGetValue(h.Src, out (long Headers, long DataCrc) c);
         _countsThisBurst[h.Src] = (c.Headers + 1, c.DataCrc);
+    }
+
+    /// <summary>
+    /// For the D_PDU at the search position (interp C-1289): the latest instant the block holding its
+    /// first byte can have started on air, its arrival time less one block, and the share of that
+    /// block before the byte, rounded up.
+    /// </summary>
+    private (long BlockStart, long Share) BlockAnchor(int blockMs)
+    {
+        long offset = _streamBase + _pos;
+        foreach ((long start, int length, long t) in _blocks)
+        {
+            if (offset >= start && offset < start + length)
+            {
+                long into = offset - start;
+                return (t - blockMs, ((into * blockMs) + length - 1) / length);
+            }
+        }
+
+        throw new InvalidOperationException("a D_PDU starts outside every block received in this burst");
     }
 
     /// <summary>
@@ -325,6 +382,7 @@ internal sealed class DtsReceiver
 
         Array.Copy(_buffer, _pos, _buffer, 0, _length - _pos);
         _length -= _pos;
+        _streamBase += _pos;
         if (_headerDoneAt >= 0)
         {
             _headerDoneAt -= _pos;
@@ -338,5 +396,7 @@ internal sealed class DtsReceiver
         _length = 0;
         _pos = 0;
         _headerDoneAt = -1;
+        _streamBase = 0;
+        _blocks.Clear();
     }
 }

@@ -18,7 +18,7 @@ internal static class TraceJson
     {
         ["config"] = (0, ["set"]),
         ["timer_expired"] = (1, ["name"]),
-        ["burst_started"] = (2, []),
+        ["burst_started"] = (2, ["block_ms"]),   // block_ms optional (corpus 0.31.0)
         ["bytes_received"] = (2, ["bytes"]),
         ["burst_ended"] = (2, ["reason", "wn", "interleaver", "k", "snr_tenth_db", "blocks"]),
         ["transmit_done"] = (2, []),
@@ -85,7 +85,7 @@ internal static class TraceJson
         return Str(line, "in") switch
         {
             "timer_expired" => new TimerExpired(t, TimerName.Parse(Str(line, "name"))),
-            "burst_started" => new BurstStarted(t),
+            "burst_started" => new BurstStarted(t, line["block_ms"] is null ? null : Int(line, "block_ms")),
             "bytes_received" => new BytesReceived(t, Hex(line, "bytes")),
             "burst_ended" => new BurstEnded(t, Reason(Str(line, "reason")), Int(line, "wn"),
                 InterleaverNames.Parse(Str(line, "interleaver")), Int(line, "k"),

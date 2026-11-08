@@ -61,7 +61,7 @@ public sealed class LoopbackMedium
                 {
                     m.Receiving = b;
                     hearers.Add(m);
-                    m.Events.BurstStarted();
+                    m.Events.BurstStarted(b.Plan.BlockMs);   // the loopback's blocks take exactly the plan's time
                 }
             }
         }

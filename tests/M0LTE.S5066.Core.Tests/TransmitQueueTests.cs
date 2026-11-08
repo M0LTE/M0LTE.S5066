@@ -72,6 +72,39 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void The_eom_counts_against_the_length_limit()
+    {
+        // Interp C-1290: one 64-byte block within the limit, 4 bytes of it the EOM, so it carries 60.
+        // 8-byte segments make 32-byte D_PDUs; two would fill the block and push the EOM into a
+        // second block, over dts.max_transmission_ms. Every transmission stays within the limit.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, blockBytes: 64, maxSegment: 8, eomBytes: 4);
+        q.Tx.Add(Normal(X, 0, new byte[64]) with { Ttd = long.MaxValue });
+        int transmissions = 0;
+        while (q.Observer.Log.Last(l => l.StartsWith("QueueState", StringComparison.Ordinal)) == "QueueState:True")
+        {
+            Transmit t = q.Tx.Build();
+            t.Bytes.Length.Should().BeLessThanOrEqualTo(60);
+            q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).DurationMs.Should().BeLessThanOrEqualTo(720 + 4800);
+            q.Context.Now += 720 + 4800;
+            transmissions++;
+        }
+
+        transmissions.Should().BeGreaterThan(1);
+    }
+
+    [Fact]
+    public void A_dpdu_too_long_for_the_limit_takes_the_blocks_it_needs_with_the_eom()
+    {
+        // Interp C-1042, C-1290: a 40-byte D_PDU (16-byte segment) does not fit the 36 bytes one block
+        // carries after the EOM, so it goes alone in ceil((40 + 4) / 40) = 2 blocks.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, blockBytes: 40, eomBytes: 4);
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        Transmit t = q.Tx.Build();
+        t.Bytes.Length.Should().Be(40);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).Blocks.Should().Be(2);
+    }
+
+    [Fact]
     public void C_pdu_ids_wrap_modulo_4096()
     {
         // C-0326, C-0329. Each build is a minute after the last, so every earlier window has ended (C-0327).
@@ -338,6 +371,44 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_stretched_first_segment_leaves_room_for_the_eom_in_its_last_block()
+    {
+        // C-1155 with C-1042 and interp C-1290: one 96-byte block within the budget carries 92 bytes after
+        // the 4-byte EOM. The first 119-byte D_PDU would stretch the transmission to two blocks; cut to the
+        // block boundary at 96 it would still need two, the EOM taking the second, so it is cut to end at
+        // 92 (19 + 73) and the transmission is the one block the budget allows.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100, eomBytes: 4);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(92);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(1);
+        q.Decode(first).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+            .Should().Equal((0, 73, true, false));
+    }
+
+    [Theory]
+    [InlineData(173, 188, 2)]   // ends at the boundary at 192: the marker would take a third block alone
+    [InlineData(171, 188, 2)]   // ends at 190, inside the marker's room of block 2
+    [InlineData(169, 188, 2)]   // ends at 188, exactly the room of two blocks: not cut
+    [InlineData(180, 188, 2)]   // ends at 199, past the boundary: cut to the room of two blocks
+    public void A_stretched_first_segment_is_cut_to_the_last_room_end_it_passes(int maxSegment, int length, int blocks)
+    {
+        // C-1155 with C-1042 and interp C-1290: 96-byte blocks, a 4-byte EOM and a one-block budget (92
+        // bytes). A first DATA-ONLY of 19 + maxSegment bytes stretches the transmission; it is cut to end
+        // where the room of whole blocks ends (96n - 4) at the last such place it passes, so the marker
+        // never gets a block of its own and a D_PDU a few bytes shorter never makes a longer transmission.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: maxSegment, eomBytes: 4);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 400));
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(length);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(blocks);
+    }
+
+    [Fact]
     public void An_ed4_peer_on_a_short_link_gets_padding_and_aligned_segments()
     {
         // Interp C-1191: on a Short link (8-bit family, C-0168) to a peer recorded Ed4, segments are cut to
@@ -455,11 +526,11 @@ public class TransmitQueueTests
 
     private sealed class Rig
     {
-        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800, int maxSegment = 1023)
+        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800, int maxSegment = 1023, int eomBytes = 0)
         {
             NodeConfig config = TestConfig.Basic(CsmaMode.Jitter) with
             {
-                Modem = new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, blockBytes, blockMs)]),
+                Modem = new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, blockBytes, blockMs)], eomBytes),
                 Dts = new DtsConfig(maxSegment, maxTransmissionMs),
             };
             Context = new CoreContext(config, new FixtureModem(config.Modem));

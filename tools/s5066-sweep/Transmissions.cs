@@ -1,3 +1,4 @@
+using M0LTE.Ms110d;
 using M0LTE.S5066.Core.Dts;
 using M0LTE.S5066.Core.Runtime;
 
@@ -54,15 +55,18 @@ internal sealed class TxRecord
 
     /// <summary>
     /// Scores the far node's reception against the sent bytes: a D_PDU is right when every one of
-    /// its bytes arrived right. The far node's predicted end is computed as its core computes it
-    /// (DtsReceiver: t_rx + EOT x 500 ms, t_rx the bytes_received that completed a valid header,
-    /// C-0842 to C-0844), and as its MAC keeps it, the earliest over the burst (MacSublayer.EotHeard).
+    /// its bytes arrived right. The far node's predicted end is computed as its core computes it with
+    /// the block duration the modem gives (DtsReceiver, interp C-1289): each header's block started by
+    /// its arrival less one block; the estimate is the later of the latest end so announced and the
+    /// earliest bound that adds the D_PDU's share of its block.
     /// </summary>
     public void Score()
     {
         byte[] rx = Blocks.SelectMany(b => b.Bytes).ToArray();
         int ok = 0;
         long? predicted = null;
+        long? latest = null;
+        long? earliest = null;
         foreach (SentDpdu d in AllDpdus)
         {
             if (!d.Padding && rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
@@ -73,9 +77,11 @@ internal sealed class TxRecord
             int headerEnd = d.Offset + d.HeaderLength;
             if (d.Eot > 0 && rx.Length >= headerEnd && rx.AsSpan(d.Offset, d.HeaderLength).SequenceEqual(Bytes.AsSpan(d.Offset, d.HeaderLength)))
             {
-                long tRx = BlockTimeCovering(headerEnd - 1);
-                long p = tRx + (d.Eot * 500L);
-                predicted = predicted is long q ? Math.Min(q, p) : p;
+                (long blockStart, long share) = Anchor(d.Offset);
+                long announced = blockStart + (d.Eot * 500L);
+                latest = Math.Max(latest ?? announced, announced);
+                earliest = Math.Min(earliest ?? (announced + share), announced + share);
+                predicted = Math.Max(latest.Value, earliest.Value);   // as DtsReceiver with block_ms (interp C-1289)
             }
         }
 
@@ -88,19 +94,30 @@ internal sealed class TxRecord
             : "failed";
     }
 
-    private long BlockTimeCovering(int byteIndex)
+    /// <summary>The receiver's EOT anchor for a D_PDU starting at this byte, as DtsReceiver computes it with block_ms (interp C-1289).</summary>
+    private (long BlockStart, long Share) Anchor(int byteIndex)
     {
+        Ms110dInterleaverKind kind = Rung.Il switch
+        {
+            Interleaver.UltraShort => Ms110dInterleaverKind.UltraShort,
+            Interleaver.Short => Ms110dInterleaverKind.Short,
+            Interleaver.Medium => Ms110dInterleaverKind.Medium,
+            _ => Ms110dInterleaverKind.Long,
+        };
+        int blockMs = M0LTE.S5066.Host.Modem.Ms110dHostModem.ReceivedBlockMs(new Ms110dLockInfo(Rung.Wn, kind, 7, 0))!.Value;
         int seen = 0;
         foreach ((long time, byte[] bytes) in Blocks)
         {
-            seen += bytes.Length;
-            if (byteIndex < seen)
+            if (byteIndex < seen + bytes.Length)
             {
-                return time;
+                long into = byteIndex - seen;
+                return (time - blockMs, ((into * blockMs) + bytes.Length - 1) / bytes.Length);
             }
+
+            seen += bytes.Length;
         }
 
-        return Blocks[^1].Time;
+        return (Blocks[^1].Time, 0);
     }
 
     /// <summary>Lays the sender's bytes out as D_PDUs, as a receiver would find them from the start.</summary>
