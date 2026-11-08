@@ -1,0 +1,20 @@
+// The node settings of both stack sweep nodes (P7-8), merged over the corpus defaults.json. The run
+// sets local_address, prng_seed, drc.default_speed and drc.table; everything else is here, and the
+// whole merged record goes into each run's result. Changing a value here changes every result, so a
+// sweep records this file in its plan.json and a resumed run refuses a different one.
+//
+// Choices (ours, for P7-9 to revisit with the measured turnaround and EOT overshoot):
+// - CSMA as the two-node bench (src/s5066d/bench-node1.json): 4 slots of 1 s, 2 s after DCD, 0.5 s
+//   after VDCD. Two nodes on one channel never need the standard's 16 slots of 3 s and 30 s
+//   listen-before-talk [Ed4 K Table 7, p.K-12]; with those, turnaround and not the rung would set
+//   the throughput. The 0.5 s VDCD wait is shorter than the EOT overshoot on long interleavers
+//   (issue #66); that is measured here, not avoided.
+// - Transmissions of at most 30 s. The standard's 127.5 s (K-0094) would let a single slow
+//   transmission run for minutes; the bench's 6 s is shorter than one Long block on WN 1 and 2.
+//   The answer wait is left derived: 30 s + 2 s + 4 s = 36 s.
+// - Links: as the bench (4 links, 5 link request retries, 3 break retries).
+{
+  "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 1000, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 500 },
+  "dts": { "max_transmission_ms": 30000 },
+  "cas": { "max_links": 4, "link_request_retries": 5, "break_retries": 3 }
+}
