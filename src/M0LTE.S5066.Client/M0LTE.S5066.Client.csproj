@@ -3,7 +3,7 @@
   <PropertyGroup>
     <PackageId>M0LTE.S5066.Client</PackageId>
     <Title>M0LTE.S5066.Client</Title>
-    <Description>A .NET client for the STANAG 5066 Edition 4 Subnetwork Interface Sublayer over TCP (Annex S): bind, send with delivery confirmation, receive, flow control and management messages.</Description>
+    <Description>A .NET client for the STANAG 5066 Edition 4 Subnetwork Interface Sublayer over TCP (Annex S): bind, send with delivery confirmation, receive, flow control and management messages. Licensed AGPL-3.0-or-later; commercial licences are available from the copyright holder (see the repository README).</Description>
     <PackageTags>stanag-5066;stanag;hf;data-link;sis</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <PackageId>M0LTE.S5066.Host</PackageId>
     <Title>M0LTE.S5066.Host</Title>
-    <Description>Hosts one STANAG 5066 Edition 4 node in real time: the SIS server on TCP 5066 (Annex S), the real-time driver for the sans-IO core, a modem port with an M0LTE.Ms110d adapter, and in-process loopback media for tests.</Description>
+    <Description>Hosts one STANAG 5066 Edition 4 node in real time: the SIS server on TCP 5066 (Annex S), the real-time driver for the sans-IO core, a modem port with an M0LTE.Ms110d adapter, and in-process loopback media for tests. Licensed AGPL-3.0-or-later; commercial licences are available from the copyright holder (see the repository README).</Description>
     <PackageTags>stanag-5066;stanag;hf;data-link;sis</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
