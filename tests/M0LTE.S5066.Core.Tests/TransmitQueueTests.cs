@@ -371,6 +371,24 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_stretched_first_segment_leaves_room_for_the_eom_in_its_last_block()
+    {
+        // C-1155 with C-1042 and interp C-1290: one 96-byte block within the budget carries 92 bytes after
+        // the 4-byte EOM. The first 119-byte D_PDU would stretch the transmission to two blocks; cut to the
+        // block boundary at 96 it would still need two, the EOM taking the second, so it is cut to end at
+        // 92 (19 + 73) and the transmission is the one block the budget allows.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100, eomBytes: 4);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(92);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(1);
+        q.Decode(first).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduStart, d.Flags.CPduEnd))
+            .Should().Equal((0, 73, true, false));
+    }
+
+    [Fact]
     public void An_ed4_peer_on_a_short_link_gets_padding_and_aligned_segments()
     {
         // Interp C-1191: on a Short link (8-bit family, C-0168) to a peer recorded Ed4, segments are cut to
