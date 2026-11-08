@@ -47,8 +47,9 @@ public class TwoNodeAudioTests
     [Fact]
     public async Task Long_two_nodes_over_audio_files_both_ways_and_perf_with_echo()
     {
-        // Several minutes; run locally with S5066_LONG_TESTS=1. As of 2026-11-08 it fails: a 10 kB file
-        // (five U_PDUs near the MTU) stalls and its last U_PDUs are rejected with reason 3 (issue #86).
+        // Five to six minutes; run locally with S5066_LONG_TESTS=1. The nodes run with --trace, so a failure
+        // leaves every D_PDU and timer in the output. Issue #86 (fixed): 200 ms contention slots made every
+        // contention a collision, and a receiver closed the link as idle while a C_PDU was still arriving.
         Assert.SkipUnless(Environment.GetEnvironmentVariable("S5066_LONG_TESTS") == "1", "long T4 test: set S5066_LONG_TESTS=1 to run");
         JsonElement result = await RunAsync("""
             [
