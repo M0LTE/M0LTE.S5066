@@ -1,3 +1,4 @@
+using System.Reflection;
 using M0LTE.Ms110d;
 using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host.Audio;
@@ -33,6 +34,18 @@ public sealed class Ms110dHostModem : IHostModem
     private bool _resetPending;
     private Ms110dLockInfo? _locked;
     private int _blocks;
+
+    /// <summary>The package of the modem this adapter drives, as a calibration names it (<see cref="CalibratedTable"/>).</summary>
+    public const string ModemPackage = "M0LTE.Ms110d";
+
+    /// <summary>
+    /// The version of M0LTE.Ms110d loaded at run time (its informational version without the commit
+    /// suffix), which a calibration must match (core-architecture.md 9, phase 7, design shape item 6).
+    /// </summary>
+    public static string ModemVersion { get; } =
+        typeof(Ms110dDemodulator).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
+        ?? typeof(Ms110dDemodulator).Assembly.GetName().Version?.ToString(3)
+        ?? "unknown";
 
     /// <summary>Creates the adapter.</summary>
     /// <param name="audio">The audio path.</param>

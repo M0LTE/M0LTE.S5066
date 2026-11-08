@@ -67,7 +67,8 @@ public sealed class NodeHost : IAsyncDisposable
 
     /// <summary>
     /// Creates a host. The configuration's <c>time.*</c> is replaced with the UTC second at which
-    /// host time 0 falls (core-architecture.md 12.2).
+    /// host time 0 falls (core-architecture.md 12.2), and its <c>drc.table</c> with the calibrated
+    /// table for the modem, when there is one (<see cref="CalibrationFor"/>).
     /// </summary>
     /// <param name="config">The node configuration (from <see cref="ConfigReader"/> or <see cref="HostConfig"/>).</param>
     /// <param name="prngSeed">The PRNG seed (prng.md 3).</param>
@@ -87,7 +88,8 @@ public sealed class NodeHost : IAsyncDisposable
         var second = new DateTimeOffset(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, utc.Second, TimeSpan.Zero);
         _offsetMs = (long)(utc - second).TotalMilliseconds;
         Epoch = second;
-        Config = config with { Time = new TimeConfig(second.Year, second.DayOfYear, (int)second.TimeOfDay.TotalSeconds) };
+        Calibration = CalibrationFor(modem, _options.Log);
+        Config = WithCalibration(config, Calibration) with { Time = new TimeConfig(second.Year, second.DayOfYear, (int)second.TimeOfDay.TotalSeconds) };
         _node = new Node(Config, prngSeed, modem);
         if (_options.Trace is { } sink)
         {
@@ -109,8 +111,50 @@ public sealed class NodeHost : IAsyncDisposable
     /// <summary>The UTC instant of host and core time 0.</summary>
     public DateTimeOffset Epoch { get; }
 
-    /// <summary>The configuration in force, with <c>time.*</c> set by the host.</summary>
+    /// <summary>The configuration in force, with <c>time.*</c> and <c>drc.table</c> set by the host.</summary>
     public NodeConfig Config { get; private set; }
+
+    /// <summary>
+    /// The calibrated <c>drc.table</c> the host loaded over the configured one, or null when it loaded
+    /// none (a modem with no calibration, or a calibration measured on another version).
+    /// </summary>
+    public CalibratedTable? Calibration { get; }
+
+    /// <summary>
+    /// The calibration a host loads for a modem (core-architecture.md 9, phase 7, design shape item 6):
+    /// <see cref="CalibratedTable.Default"/> when the modem is M0LTE.Ms110d at the version it was
+    /// measured on, otherwise none. A calibration of another version is refused with a warning, and
+    /// the configured <c>drc.table</c> (empty by default: no rate selection) stays.
+    /// </summary>
+    /// <param name="modem">The modem the node will run on.</param>
+    /// <param name="log">A sink for the one-line notice, or null.</param>
+    public static CalibratedTable? CalibrationFor(IModemPort modem, Action<string>? log = null)
+    {
+        ArgumentNullException.ThrowIfNull(modem);
+        IModemPort inner = modem;
+        while (inner is IHostModemWrapper wrapper)
+        {
+            inner = wrapper.Inner;
+        }
+
+        if (inner is not Ms110dHostModem)
+        {
+            return null;
+        }
+
+        CalibratedTable c = CalibratedTable.Default;
+        if (!c.Matches(Ms110dHostModem.ModemPackage, Ms110dHostModem.ModemVersion))
+        {
+            log?.Invoke($"warning: drc.table calibration {c.Calibration} is for {c.ModemPackage} {c.ModemVersion}, not {Ms110dHostModem.ModemVersion}; not loaded, so no rate selection: recalibrate for this modem version");
+            return null;
+        }
+
+        log?.Invoke($"drc.table: calibration {c.Calibration} ({c.Table.Ladder.Count} rungs)");
+        return c;
+    }
+
+    private static NodeConfig WithCalibration(NodeConfig config, CalibratedTable? calibration) =>
+        calibration is null ? config : config with { Drc = config.Drc with { Table = calibration.Table } };
 
     /// <summary>The SIS endpoint actually listening, once started, or null.</summary>
     public IPEndPoint? SisEndpoint => _server?.LocalEndpoint;
@@ -264,14 +308,14 @@ public sealed class NodeHost : IAsyncDisposable
 
     /// <summary>
     /// Replaces the configuration at run time, as a class 0 input (core-architecture.md 7.3, 12.4).
-    /// <c>time.*</c> is kept as the host set it.
+    /// <c>time.*</c> and <c>drc.table</c> are kept as the host set them.
     /// </summary>
     public void UpdateConfig(NodeConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
         CheckConfig(config, _modem);
         LogWarnings(config);
-        NodeConfig c = config with { Time = Config.Time };
+        NodeConfig c = WithCalibration(config, Calibration) with { Time = Config.Time };
         Post(InputClass.Config, t => new ConfigInput(t, c));
         Config = c;
     }

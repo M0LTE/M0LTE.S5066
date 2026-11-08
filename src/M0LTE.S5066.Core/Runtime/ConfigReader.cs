@@ -278,6 +278,18 @@ public static class ConfigReader
     ];
 
     /// <summary>
+    /// Reads a <c>drc.table</c> object on its own (corpus-format.md 6.1), with the checks of
+    /// <see cref="Read"/>: for a host that loads a calibrated table (core-architecture.md 9, phase 7,
+    /// design shape item 6).
+    /// </summary>
+    /// <exception cref="ConfigException">A key is unknown or a value is wrong.</exception>
+    public static DrcTable ReadDrcTable(JsonObject table)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        return ReadTable(new JsonObject { ["table"] = table.DeepClone() });
+    }
+
+    /// <summary>
     /// drc.table (corpus-format.md 6.1). Ladder rungs are WN 1 to 8 or 13 at Ultra Short, Short, Medium
     /// or Long (core-architecture.md 9, phase 7, design shape item 4); each list in <c>thresholds</c>
     /// is as long as the ladder. Absent from an older configuration means empty.
