@@ -15,13 +15,13 @@ public sealed record ChatLine(DateTimeOffset Time, string Text);
 /// </summary>
 public sealed class HfChatSession
 {
-    /// <summary>The HFCHAT SAP (O-0008).</summary>
+    /// <summary>The HFCHAT SAP (O-0012).</summary>
     public const byte Sap = 5;
 
-    /// <summary>The default priority (O-0010).</summary>
+    /// <summary>The default priority (O-0014).</summary>
     public const byte DefaultPriority = 12;
 
-    /// <summary>The broadcast address: all ones, group (O-0014).</summary>
+    /// <summary>The broadcast address, group 31.255.255.255 (O-0020, C-0123).</summary>
     public static readonly SisAddress Broadcast = new(0x0FFFFFFF, Group: true);
 
     private readonly SisClient _client;
@@ -38,13 +38,13 @@ public sealed class HfChatSession
     /// <summary>The bind's MTU: the longest message, CR LF included (O-0004).</summary>
     public ushort Mtu { get; }
 
-    /// <summary>How many lines of history are kept, 10 to 100 (O-0006).</summary>
+    /// <summary>How many lines of history are kept, 10 to 100 (O-0007).</summary>
     public int HistorySize { get; }
 
-    /// <summary>Message priority (O-0009, O-0010).</summary>
+    /// <summary>Message priority, configurable (O-0013), default 12 (O-0014).</summary>
     public byte Priority { get; set; } = DefaultPriority;
 
-    /// <summary>Repeats for group messages (non-ARQ minimum retransmissions, O-0013).</summary>
+    /// <summary>Repeats for group messages, as the non-ARQ minimum retransmissions (O-0018); default 1 (interp O-0024).</summary>
     public byte GroupRepeats { get; set; } = 1;
 
     /// <summary>A line was added to the history.</summary>
@@ -63,8 +63,8 @@ public sealed class HfChatSession
     }
 
     /// <summary>
-    /// Binds the client to SAP 5 (O-0008) with ARQ as its default service, and starts showing what
-    /// arrives.
+    /// Binds the client to SAP 5 (O-0012) with ARQ as its default service (interp O-0026), and starts
+    /// showing what arrives.
     /// </summary>
     public static async Task<HfChatSession> StartAsync(SisClient client, int historySize = 50, CancellationToken cancellationToken = default)
     {
@@ -78,8 +78,8 @@ public sealed class HfChatSession
     }
 
     /// <summary>
-    /// Encodes a message: ASCII with the eighth bit zero (O-0001, O-0017), ending CR LF (O-0002), at
-    /// most the MTU (O-0003). A CR LF is added when missing.
+    /// Encodes a message: ASCII (O-0002), LSB aligned with the eighth bit zero (O-0021, O-0022),
+    /// ending CR LF (O-0003, O-0023), at most the MTU (O-0004). A CR LF is added when missing.
     /// </summary>
     /// <exception cref="ArgumentException">A character is not ASCII, the text holds a CR or LF before its end, or it is too long.</exception>
     public static byte[] Encode(string text, int mtu)
@@ -105,7 +105,7 @@ public sealed class HfChatSession
         return bytes.Length <= mtu ? bytes : throw new ArgumentException($"message of {bytes.Length} bytes is over the MTU of {mtu}", nameof(text));
     }
 
-    /// <summary>Decodes a received U_PDU for display: the CR LF is dropped and anything not printable ASCII shows as '?'.</summary>
+    /// <summary>Decodes a received U_PDU for display: the CR LF is dropped and anything not printable ASCII shows as '?' (interp O-0025).</summary>
     public static string Decode(ReadOnlySpan<byte> uPdu)
     {
         if (uPdu.EndsWith("\r\n"u8))
@@ -123,9 +123,9 @@ public sealed class HfChatSession
     }
 
     /// <summary>
-    /// Sends a message. To one node: ARQ, node delivery confirmation, in order (O-0012), and the
-    /// confirmation is shown (O-0007). To a group: non-ARQ with <see cref="GroupRepeats"/>, no
-    /// confirmation, not in order (O-0013).
+    /// Sends a message. To one node: ARQ, node delivery confirmation, in order (O-0016), and the
+    /// confirmation is shown (O-0010). To a group: non-ARQ with <see cref="GroupRepeats"/>, no
+    /// confirmation, not in order (O-0018).
     /// </summary>
     public async Task<SendResult> SendAsync(SisAddress to, string text, CancellationToken cancellationToken = default)
     {
@@ -152,7 +152,7 @@ public sealed class HfChatSession
     {
         await foreach (SisUnidataIndication u in _client.Received.ReadAllAsync().ConfigureAwait(false))
         {
-            // Source and time of receipt shown with every message (O-0005, O-0006).
+            // Source and time of receipt shown with every message (O-0008, O-0009).
             Add($"{u.SrcAddress.Dotted}{(u.DestAddress.Group ? " (to all)" : "")}: {Decode(u.UPdu.Span)}");
         }
     }

@@ -14,7 +14,7 @@ public class HfChatTests
     [Fact]
     public void Messages_are_ascii_lines_ending_cr_lf_within_the_mtu()
     {
-        // O-0001, O-0002, O-0003, O-0017.
+        // O-0002, O-0003, O-0004, O-0021, O-0022, O-0023.
         HfChatSession.Encode("hello", 100).Should().Equal(Encoding.ASCII.GetBytes("hello\r\n"));
         HfChatSession.Encode("hello\r\n", 100).Should().Equal(Encoding.ASCII.GetBytes("hello\r\n"));
         HfChatSession.Encode("hello", 100).Should().OnlyContain(b => b < 0x80);
@@ -27,7 +27,7 @@ public class HfChatTests
     [Fact]
     public async Task A_one_to_one_message_goes_arq_with_node_confirmation_and_is_shown_with_its_source()
     {
-        // O-0005, O-0007, O-0008, O-0010, O-0012.
+        // O-0008, O-0010, O-0012, O-0014, O-0016.
         var medium = new LoopbackMedium();
         await using NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1", "0000000000000001");
         await using NodeHost b = TestNodes.StartLoopbackHost(medium, "0.0.1.2", "0000000000000002");
@@ -51,7 +51,7 @@ public class HfChatTests
     [Fact]
     public async Task A_broadcast_goes_non_arq_to_every_chat_client()
     {
-        // O-0011, O-0013, O-0014.
+        // O-0011, O-0018, O-0020.
         var medium = new LoopbackMedium();
         await using NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1", "0000000000000001");
         await using NodeHost b = TestNodes.StartLoopbackHost(medium, "0.0.1.2", "0000000000000002");
@@ -71,7 +71,7 @@ public class HfChatTests
     [Fact]
     public async Task The_history_keeps_the_last_lines_only()
     {
-        // O-0006.
+        // O-0007.
         var medium = new LoopbackMedium();
         await using NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1");
         await using SisClient ca = await SisClient.ConnectAsync(TestNodes.Endpoint(a));

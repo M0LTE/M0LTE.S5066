@@ -19,7 +19,7 @@ Conventions in this document: type sketches are C# and are indicative, not final
 9. Work breakdown, phases 3 to 6
 10. Choices the standard does not make (NOT STATED)
 11. Proposed changes to the corpus format and harness contract
-12. The host: driving the core in real time (P6-3a)
+12. The host: driving the core in real time (P6-3a), with the client library and chat sample (12.10)
 
 ---
 
@@ -712,9 +712,10 @@ The modem events go into class 2 in the order the modem raised them.
 
 - Bytes go to the modulator LSB first, and decoded blocks are packed back the same way (C-0150).
 - Waveform numbers map one to one (plan 5.3); interleavers by name, ultra short, short, medium and long. Very short and very long are never sent (plan 5.3); asking for them is a configuration error. K is the `k` of the `Transmit` (7 throughout, plan 5.3). EOM as the `Transmit` says; the 110D EOT marker is always appended.
-- `PlanBurst` is `Ms110dBurstPlan.Plan` converted per rule 1: preamble from the preamble symbols, block from the symbols of one interleaver block, flush from the rest of the burst (the leading mini-probe and the EOT marker), each rounded up to a ms at 2400 symbols/s. The modem counts the 32-bit EOM inside the blocks, so a burst whose bytes fill its last block exactly gets one more block; `DurationMs` and the EOTs stay right because the planner stamps from `PlanBurst(totalBytes)` (section 5.6).
+- `PlanBurst` is `Ms110dBurstPlan.Plan` converted per rule 1: preamble from the preamble symbols, block from the symbols of one interleaver block, flush from the rest of the audio (the leading mini-probe, the EOT marker and the pulse-shaping tail), each rounded up to a ms at 9600 samples/s. With the tail in the flush, `DurationMs` is the length of the modulated audio rounded up by under 3 ms, so `TransmitDone` lands at the planned end. The modem counts the 32-bit EOM inside the blocks (the core always asks for EOM, section 5.6), so a burst whose bytes fill its last block exactly gets one more block; `DurationMs` and the EOTs stay right because the planner stamps from `PlanBurst(totalBytes)` (section 5.6). M0LTE.Ms110d 0.6.0 implements 3 kHz waveforms 0 to 8 and 13; asking for another is a configuration error.
 - `BurstStarted` is the demodulator's `BurstStarted` event (WID accepted). `BytesReceived` is each `BlockDecoded`, delivered at once; the bits after the EOM in the last block reach the core too and are ignored by its sync search (C-0973). `BurstEnded` maps `Eom` and `MaxInputDataBlocks` to eom, `Terminated` to terminated, and `SignalLost`, `SignalAbsent` and `NewPreamble` to signal_lost; its waveform, interleaver and K come from the lock and the SNR is the burst SNR in tenths of a dB, rounded.
-- Receive is gated while transmitting and the demodulator is reset after each transmission, as pdn-soundmodem does.
+- A burst that never locked raises nothing (the demodulator may report a completed burst with no lock). A `Transmit` while a burst is locked ends it at once as signal_lost with the blocks so far, so the core still sees exactly one `BurstEnded` (rule 2); the demodulator's own later events for that burst are dropped.
+- Receive is gated while transmitting and the demodulator is reset after each transmission, as pdn-soundmodem does. The reset happens on the audio thread, before the next received chunk, because the demodulator is only ever called from there.
 - The adapter raises no `ChannelBusy`.
 
 ### 12.7 The SIS server
@@ -728,8 +729,27 @@ The modem events go into class 2 in the order the modem raised them.
 
 ### 12.8 Loopback for tests
 
-Two in-process media let several hosts talk in one process: a byte-level loopback modem (each `Transmit` is delivered to every other station on the medium as one burst of blocks, timed by its plan, with no audio) for fast host tests, and an audio medium that carries the M0LTE.Ms110d adapter's audio between stations in real time, for the end-to-end test over the real modem. Both are test aids in the host library, so phase 6's T4 and `s5066-test` can use them too.
+Two in-process media let several hosts talk in one process, both test aids in the host library so phase 6's T4 and `s5066-test` can use them too:
+
+- `LoopbackMedium`, byte level: each `Transmit` reaches every other modem on the medium as one burst of blocks, timed in real time by a plan from the node's `modem.*` fixture (the T2 arithmetic, corpus-format.md 5): carrier detect after the preamble, a block at the end of each block time, the end of the burst after the flush, and `TransmitDone` to the sender then. A modem transmitting or already receiving does not hear a burst; a test can drop bursts per receiver. With small fixture numbers an ARQ exchange takes well under a second.
+- `AudioMedium`, audio: every 20 ms each station hears the sum of what the others play plus a little Gaussian noise, so two hosts run over the real M0LTE.Ms110d adapter. A confirmed ARQ U_PDU at WN 6 short takes about 10 s.
+
+The audio port is `IAudioChannel`: received audio is a continuous real-time stream of chunks, silence included, and a burst is played whole with a callback once its last sample is out. Besides the in-process medium, `UdpAudioChannel` carries the same stream as 20 ms datagrams of 32-bit floats, so two `s5066d` processes, or a host and an audio bridge, can be joined without a sound card. A sound card belongs to P6-3b (pdn-soundmodem).
 
 ### 12.9 Console host
 
-`s5066d` loads one JSON file: the corpus configuration keys of corpus-format.md section 6 (the `ConfigReader` shape, `modem.*` ignored and `time.*` overwritten, 12.2) plus a `host` object with the SIS listen endpoint and the modem choice. It has no amateur radio or AX.25 anything; the node address comes from `local_address`.
+`s5066d` loads one JSON file (`HostConfig`): the corpus configuration keys of corpus-format.md section 6, merged over the corpus `defaults.json` built into the host, with `modem.*` ignored by a real modem and `time.*` overwritten (12.2), plus a `host` object:
+
+| Key | Meaning |
+|---|---|
+| `host.sis_listen` | SIS endpoint, `address:port`; default `127.0.0.1:5066` (S-0007 to S-0009) |
+| `host.modem.kind` | `ms110d` |
+| `host.modem.audio_listen`, `host.modem.audio_peer` | UDP audio endpoints (12.8) |
+
+When the file has no `prng_seed`, the host draws one from the operating system, so two nodes started from copies of one file do not share CSMA jitter. It has no amateur radio or AX.25 anything; the node address comes from `local_address`. `src/s5066d/example.json` is a starting point.
+
+### 12.10 The client library and the chat sample
+
+`M0LTE.S5066.Client` (`SisClient`) is the application side of Annex S over TCP. It reads its connection all the time and queues what arrives without bound, so a slow application never stops it reading (S-0024, S-0025); it answers every keep-alive at once and sends unprompted ones at most every 120 s (S-0041, S-0043, interp S-0044, S-0045); it holds U_PDUs back while flow is off and treats flow as on after each bind (S-0020, S-0021, interp S-0027); and it refuses a U_PDU over the bind's MTU, since splitting is the client's job (A-0003). A send that asks for confirmation completes on the matching S_UNIDATA_REQUEST_CONFIRM or S_UNIDATA_REQUEST_REJECTED: the oldest waiting send to the same SAP and address whose U_PDU starts with the copy returned (the copy may be the first bytes only, S-0127, S-0129), so answers may come in any order. It also parses the node information message (docs/management-messages.md).
+
+`samples/HfChat` (`hfchat`) is HF Operator Chat (Annex O, matrix `O.tsv`) on the client: SAP 5, priority 12, ASCII lines ending CR LF within the MTU, ARQ with node confirmation to one node and non-ARQ to a group or the broadcast address, with source, time and confirmation shown and a short history. Its NOT STATED choices are interp O-0024 to O-0026.
