@@ -47,7 +47,9 @@ S5066_LONG_TESTS=1 dotnet run -c Release --project tests/M0LTE.S5066.T4.Tests --
 
 ## Speed
 
-SPEED_PLACEHOLDER
+Measured on studybox (8 cores, 2026-11-08), Release, both nodes' demodulators counted: 0.15 to 0.26 core-seconds per channel-second for single runs on a quiet box, 0.35 to 0.48 with four workers while another sweep shared the box. Fading and the SSB band-pass cost a little more than AWGN. A run uses well under 100 MB.
+
+For planning take 0.3, and 0.5 as the pessimistic figure. That makes the `baseline` profile about 135 to 225 core-hours, not the 700 of the calibration plan (whose estimate came from the modem's own SNR sweep, before this was measured), and the `adaptive` profile about 15 to 25.
 
 ## On a 192-core spot instance
 
@@ -60,11 +62,13 @@ export PATH=$HOME/.dotnet:$PATH DOTNET_ROOT=$HOME/.dotnet
 git clone --recurse-submodules https://github.com/M0LTE/M0LTE.S5066 && cd M0LTE.S5066
 git checkout <full commit SHA> && git submodule update --init
 dotnet publish tools/s5066-sweep -c Release -o ~/sweep
-mkdir -p ~/out
-cd ~/sweep && nohup dotnet s5066-sweep.dll sweep --profile baseline --out ~/out/baseline --workers 188 > ~/out/baseline.log 2>&1 &
+mkdir -p ~/out && cd ~/sweep
+for i in $(seq 0 46); do nohup dotnet s5066-sweep.dll sweep --profile baseline --out ~/out/baseline --workers 4 --shard $i/47 > ~/out/shard$i.log 2>&1 & done
 ```
 
-Progress, with a tiny command: `tail -n 1 ~/out/baseline/progress.log`. If the instance is interrupted, a new one runs the same commands; to keep finished runs, copy `~/out/baseline/runs` across first (a few MB).
+That is 47 processes of 4 workers (188 runs at once). Separate processes rather than one process with 188 workers, because the tool runs the workstation garbage collector, which stops every thread of a process while it collects.
+
+Progress, with a tiny command: `ls ~/out/baseline/runs/*.json | wc -l` (runs finished, of 891), or `tail -qn 1 ~/out/baseline/progress-*.log | head -3`. A finished shard prints `[sweep] done` at the end of its `~/out/shard<i>.log`; `grep -L "sweep\] done" ~/out/shard*.log` lists the ones still going. If the instance is interrupted, a new one runs the same commands and skips the finished runs found in `~/out/baseline/runs` (copy them across first, a few MB). A process that dies can be restarted alone with its `--shard i/47`.
 
 When it is done:
 
@@ -75,4 +79,4 @@ tar cJf ~/baseline.tar.xz -C ~/out/baseline aggregate runs
 
 Copy back only `baseline.tar.xz` (the per-run JSON compresses to a few MB; the aggregates alone are tens of KB). Nothing else on the box is needed.
 
-RUNTIME_PLACEHOLDER
+**Expected run time.** The `baseline` profile is 891 runs of 30 minutes of channel, about 5 waves of 188. At 0.3 core-seconds per channel-second a run takes 9 minutes, so the whole profile about 45 minutes; at 0.5, about 75 minutes. Allow 1.5 hours. An `adaptive` round (99 runs, one wave) takes 10 to 15 minutes, and runs on our own 12-core box in about 1.5 to 2.5 hours.

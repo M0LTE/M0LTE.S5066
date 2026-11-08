@@ -7,7 +7,7 @@ namespace M0LTE.S5066.Sweep;
 /// <summary>
 /// Runs a sweep's jobs into an output directory: one JSON file per run under <c>runs/</c>, written
 /// whole when the run finishes (a killed run just runs again), <c>plan.json</c> fixing the grid so a
-/// resume or another shard cannot mix grids, and <c>progress.log</c> with the speed and time to go.
+/// resume or another shard cannot mix grids, and <c>progress.log</c> (one per shard when sharded) with the speed and time to go.
 /// </summary>
 internal static class SweepRunner
 {
@@ -18,17 +18,25 @@ internal static class SweepRunner
         Directory.CreateDirectory(runs);
         string planPath = Path.Combine(outDir, "plan.json");
         string plan = settings.Describe().ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-        if (File.Exists(planPath))
+        if (!File.Exists(planPath))
         {
-            if (File.ReadAllText(planPath) != plan)
+            // Atomic, so shard processes started together never read a half-written plan.
+            string tmp = $"{planPath}.{Environment.ProcessId}.tmp";
+            File.WriteAllText(tmp, plan);
+            try
             {
-                log($"{planPath} was written by a different plan; use a new --out, or the same settings, node file, table and build");
-                return 1;
+                File.Move(tmp, planPath, overwrite: false);
+            }
+            catch (IOException)
+            {
+                File.Delete(tmp);   // another shard wrote it first
             }
         }
-        else
+
+        if (File.ReadAllText(planPath) != plan)
         {
-            File.WriteAllText(planPath, plan);
+            log($"{planPath} was written by a different plan; use a new --out, or the same settings, node file, table and build");
+            return 1;
         }
 
         List<RunSettings> all = settings.Jobs();
@@ -42,7 +50,7 @@ internal static class SweepRunner
         log(string.Create(CultureInfo.InvariantCulture,
             $"[sweep] {settings.Profile}: shard {shard.Index}/{shard.Count}, {todo.Count} runs to do ({all.Count} planned), {signalHours:F1} channel-hours, {workers} workers, out {outDir}"));
 
-        var progressPath = Path.Combine(outDir, "progress.log");
+        var progressPath = Path.Combine(outDir, shard.Count == 1 ? "progress.log" : $"progress-{shard.Index}of{shard.Count}.log");
         var gate = new object();
         var wall = Stopwatch.StartNew();
         int done = 0, failed = 0;
