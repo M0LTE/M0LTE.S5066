@@ -283,13 +283,13 @@ public class TransmitQueueTests
         // C-0367, C-0055, C-0560, C-1154: a 35-byte type 7 in a 96-byte block leaves 61 bytes.
         var q = new Rig();
         q.Tx.Add(Normal(X, 0, new byte[16]));
-        q.Decode(q.Tx.Build()).Select(p => p.Type).Should().Equal(7);   // X of unknown edition: zero fill
+        q.Decode(q.Tx.Build()).Select(p => p.Type).Should().Equal(7);   // X of unknown edition: zero fill, EOW EMPTY (C-0419)
 
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         q.Tx.Add(Normal(X, 0, new byte[16]));
         List<Dpdu> padded = q.Decode(q.Tx.Build());
         padded.Select(p => p.Type).Should().Equal(7, 14, 14, 14, 14, 14);   // 35 + 5 x 11 = 90 of 96
-        padded.Skip(1).Should().OnlyContain(p => p.Header.Dst == X && p.Header.Eow == 0);
+        padded.Skip(1).Should().OnlyContain(p => p.Header.Dst == X && p.Header.Eow == 0xF01);   // CAPABILITY, the rotation being empty (C-0426, C-0373, P7-3)
 
         q.Context.Peers.SetEdition(Y, KnownEdition.Ed3);
         q.Tx.Add(Normal(X, 0, new byte[16]));

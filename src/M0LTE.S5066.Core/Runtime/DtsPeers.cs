@@ -170,7 +170,7 @@ internal sealed class DtsPeers
                 return;   // C-0566
             }
 
-            OweEowIfUnrecognised(h, toUs && !f.GroupAddress);
+            OnEow(h, toUs && !f.GroupAddress);
             bool expedited = pdu is ExpeditedNonArqData;
             Peer peer = PeerOf(h.Src);
             if (!peer.Connected)
@@ -209,7 +209,7 @@ internal sealed class DtsPeers
             return;   // a failed data CRC with no ARQ machine to take the acknowledgement: discarded (C-0836, C-0839)
         }
 
-        OweEowIfUnrecognised(h, true);
+        OnEow(h, true);
         switch (pdu)
         {
             case DataOnly or AckOnly or DataAck or Ed3DataOnly or Ed3AckOnly or Ed3DataAck
@@ -1017,17 +1017,67 @@ internal sealed class DtsPeers
     }
 
     /// <summary>
-    /// C-0445, C-0421, C-1079: an unrecognised EOW from a peer, in a D_PDU to our individual address.
+    /// The EOW of a valid header of a D_PDU for this node (P7-3). Only a D_PDU to our individual
+    /// address counts: in one to a group or broadcast address no EOW is acted on (C-0937, open
+    /// question 17; C-1079).
+    /// <list type="bullet">
+    /// <item>An unrecognised EOW is answered with UNRECOGNIZED-TYPE-ERROR (C-0445, C-0421, C-1079).
     /// The WTRP token, EOW 13, is a known type that Annex C keeps from the state machine when WTRP is
-    /// not in use, so it is not answered (C.7.5.1; J-0070, interp J-0081).
+    /// not in use, so it is not answered (C.7.5.1; J-0070, interp J-0081).</item>
+    /// <item>CAPABILITY with the Ed4 bit set records the source Ed4 where CAS-1 has recorded nothing
+    /// (C-0045, C-0049, interp C-0055, MAIN-0008, interp MAIN-0009, interp C-1261); with the bit clear
+    /// it is ignored.</item>
+    /// <item>MAX-SPEED, LOW-SPEED, MAX-SEGMENT and SENDER-APPROACH replace the peer's latest of that
+    /// type (C-0459 to C-0461, C-0472 to C-0475, C-0477 to C-0482), except from a peer recorded Ed3
+    /// (C-0419), with a reserved speed or interleaver 111 (C-0466, interp C-0471), or MAX-SEGMENT 0
+    /// (interp C-0476); ED3-BASIC-RATE likewise (C-0427 to C-0441), except with the reserved
+    /// interleaving code 11 (C-0435, interp C-0471), its Other Parameters ignored (C-0441). SPEED-USED
+    /// is not used, since our modem reports the received waveform (C-0943, C-0944). All under
+    /// interp C-1262.</item>
+    /// </list>
     /// </summary>
-    private void OweEowIfUnrecognised(DpduHeader h, bool individual)
+    private void OnEow(DpduHeader h, bool individual)
     {
-        if (individual && EowCodec.Decode(h.Eow) is UnrecognisedEow { EowType: not ChannelAnalysis.TokenEowType } u)
+        if (!individual)
         {
-            _tx.OweEow(h.Src, EowCodec.Encode(new UnrecognizedTypeErrorEow(u.EowType)));
+            return;
+        }
+
+        Eow eow = EowCodec.Decode(h.Eow);
+        PeerTable editions = _context.Peers;
+        bool ed3 = editions.EditionOf(h.Src) == KnownEdition.Ed3;
+        switch (eow)
+        {
+            case UnrecognisedEow { EowType: not ChannelAnalysis.TokenEowType } u:
+                _tx.OweEow(h.Src, EowCodec.Encode(new UnrecognizedTypeErrorEow(u.EowType)));
+                break;
+            case CapabilityEow { Ed4: true }:
+                editions.RecordCapabilityEd4(h.Src);
+                break;
+            case MaxSpeedEow m when !ed3 && UsableSpeed(m.Value):
+                PeerOf(h.Src).Received.MaxSpeed = m.Value;
+                break;
+            case LowSpeedEow l when !ed3 && UsableSpeed(l.Value):
+                PeerOf(h.Src).Received.LowSpeed = l.Value;
+                break;
+            case MaxSegmentEow { Value: > 0 } s when !ed3:
+                PeerOf(h.Src).Received.MaxSegment = s.Value;
+                break;
+            case SenderApproachEow a when !ed3:
+                PeerOf(h.Src).Received.SenderApproach = a;
+                break;
+            case Ed3BasicRateEow b when b.Interleaving != 3:
+                PeerOf(h.Src).Received.Ed3BasicRate = b;
+                break;
         }
     }
+
+    /// <summary>A speed and interleaver byte that names a speed and an interleaver code: not a reserved speed (0, 14 to 16, 31; C-0466) nor interleaver 111 (C-0469, interp C-0471).</summary>
+    private static bool UsableSpeed(SpeedInterleaver v) =>
+        v.Interleaver != 7 && v.Speed is (>= 1 and <= 13) or (>= 17 and <= 30);
+
+    /// <summary>The latest recommendation EOWs received from a peer (P7-3), or null when none has come; for P7-7 and tests.</summary>
+    internal ReceivedEows? ReceivedEowsOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.Received : null;
 
     /// <summary>A group address this node receives: one configured in <c>groups</c> (A-0120), or broadcast (C-0123).</summary>
     private bool IsOurGroup(uint dst) => dst == DpduAddress.MaxValue || _context.Config.Groups.Contains(dst);
@@ -1046,6 +1096,9 @@ internal sealed class DtsPeers
     private sealed class Peer
     {
         public DtsPeerState State { get; set; } = DtsPeerState.IdleUnconnected;
+
+        /// <summary>The latest recommendation EOWs from this peer (P7-3).</summary>
+        public ReceivedEows Received { get; } = new();
 
         /// <summary>RX MANAGEMENT FRAME ID NUMBER (C-0308, C-0310). TX MANAGEMENT FRAME ID NUMBER is not kept: no MANAGEMENT message is sent before phase 7.</summary>
         public int RxFrameId { get; set; } = NoFrameId;
