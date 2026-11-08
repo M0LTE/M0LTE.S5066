@@ -130,6 +130,45 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_normal_non_arq_request_is_confirmed_when_the_transmission_with_its_last_copy_ends()
+    {
+        // Interp C-1255: confirmed at transmit_done, in placement order with expedited ones (C-1100);
+        // one with a copy still owed is not.
+        var q = new Rig(maxTransmissionMs: 720 + 4800);   // one 96-byte block
+        q.Tx.Add(Normal(X, 9, [1]) with { Handle = 1 });
+        q.Tx.AddExpedited(Expedited(Y, [2]) with { Handle = 2 });
+        q.Tx.Add(Normal(X, 0, new byte[60]) with { Handle = 3, MinRetransmissions = 1 });   // two 74-byte copies
+        q.Tx.Build();
+        q.Tx.TakeSent().Should().Equal((2, true), (1, false));
+        q.Tx.Build();
+        q.Tx.TakeSent().Should().BeEmpty("one copy of request 3 is still owed");
+        q.Tx.Build();
+        q.Tx.TakeSent().Should().Equal((3, false));
+    }
+
+    [Fact]
+    public void A_normal_request_whose_owed_copies_are_dropped_is_confirmed_on_entry_to_linking()
+    {
+        // C-1052 drops the copies a transmission could not finish within the window already
+        // announced; interp C-1255: the request has been sent once, so it is confirmed, after any
+        // TTL rejections, and not again at transmit_done.
+        var q = new Rig(maxTransmissionMs: 720 + 4800);
+        q.Tx.Add(Normal(X, 0, new byte[60]) with { Handle = 3, MinRetransmissions = 1 });
+        q.Tx.Add(Normal(Y, 0, [1]) with { Handle = 4, Ttd = 400_000 });
+        q.Tx.Build();
+        q.Tx.TakeSent().Should().BeEmpty();
+        q.Context.Now = 500_000;
+        q.Tx.ExpireDue();
+        q.Context.TryDequeue(out InternalPrimitive a).Should().BeTrue();
+        a.Should().Be(new DUnidataRequestRejected(4, DReason.TtlExpired));
+        q.Context.TryDequeue(out InternalPrimitive b).Should().BeTrue();
+        b.Should().Be(new DUnidataRequestConfirm(3));
+        q.Context.TryDequeue(out _).Should().BeFalse();
+        q.Tx.Count.Should().Be(0);
+        q.Tx.TakeSent().Should().BeEmpty();
+    }
+
+    [Fact]
     public void Expired_requests_are_rejected_in_ttd_order_on_entry_to_linking()
     {
         // C-0857, C-0864, C-1050: ExpireDue drops everything at or before now, earliest TTD first.

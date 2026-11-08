@@ -22,6 +22,9 @@ internal interface ISisSublayer : ISublayer
 
     void OnDisconnect(int conn);
 
+    /// <summary>The host is shutting the node down (interp A-0059): unbind reason 6 to every bound client, then every connection closed.</summary>
+    void OnShutdown();
+
     void On(ToSis primitive);
 }
 
