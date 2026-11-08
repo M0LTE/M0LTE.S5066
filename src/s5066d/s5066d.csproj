@@ -5,6 +5,8 @@
     <AssemblyName>s5066d</AssemblyName>
     <RootNamespace>M0LTE.S5066.Daemon</RootNamespace>
     <IsPackable>false</IsPackable>
+    <!-- Links pdn-soundmodem (see the licence note in M0LTE.S5066.Radio.csproj and the README). -->
+    <PackageLicenseExpression>AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>

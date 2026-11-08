@@ -12,7 +12,7 @@ namespace M0LTE.S5066.Radio;
 /// </summary>
 /// <param name="CaptureDevice">capture_device: the ALSA device the receiver's audio comes from, for example <c>plughw:CARD=Device,DEV=0</c>.</param>
 /// <param name="PlaybackDevice">playback_device: the ALSA device that feeds the transmitter's audio input.</param>
-/// <param name="SampleRate">sample_rate: the rate both devices are opened at, a multiple of 9600 Hz; 48000 by default.</param>
+/// <param name="SampleRate">sample_rate: the rate both devices are opened at, a multiple of 9600 Hz from 19200 (the resamplers need a factor of at least 2); 48000 by default.</param>
 /// <param name="PttDevice">ptt_device: the CM108's hidraw node, for example <c>/dev/hidraw0</c>.</param>
 /// <param name="PttGpio">ptt_gpio: the CM108 GPIO pin wired to PTT, 1 to 8; 3 by default, as on most interfaces.</param>
 /// <param name="TxDelayMs">txdelay_ms: silence sent after keying and before the burst, so a radio still switching to transmit does not clip the preamble; 250 by default.</param>
@@ -51,7 +51,7 @@ public sealed record RadioSettings(
             }
         }
 
-        int rate = Int(radio, "sample_rate", DefaultSampleRate, 9600, 192000);
+        int rate = Int(radio, "sample_rate", DefaultSampleRate, 2 * IAudioChannel.SampleRate, 192000);
         if (rate % IAudioChannel.SampleRate != 0)
         {
             throw new ConfigException(Prefix + "sample_rate", $"must be a multiple of the modem's {IAudioChannel.SampleRate} Hz, for example 48000");

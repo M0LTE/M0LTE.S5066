@@ -73,7 +73,7 @@ Start from `src/s5066d/radio-ft450.json` or `radio-ft818.json` and put in your d
 | Setting | What it does |
 |---|---|
 | `capture_device`, `playback_device` | the sound card, as above |
-| `sample_rate` | 48000 unless your card cannot do it; any multiple of 9600 works |
+| `sample_rate` | 48000 unless your card cannot do it; any multiple of 9600 from 19200 works |
 | `ptt_device`, `ptt_gpio` | the hidraw node and the GPIO pin wired to PTT (3 on most interfaces) |
 | `txdelay_ms` | silence sent after keying, before the data, while the radio switches to transmit |
 | `txtail_ms` | silence sent after the data, before unkeying |
@@ -96,7 +96,7 @@ radio: tx wn6 short 25 bytes
 radio: rx wn6 short 512 bytes, SNR 18.4 dB
 ```
 
-Point an application, or `s5066-test`, at the SIS port (`127.0.0.1:5066` in the bench files). Stop with Ctrl-C or `systemctl stop`; `s5066d` unkeys the radio as it stops. If the sound card or interface goes away, it says so and exits with status 1, so a service manager can restart it.
+Point an application, or `s5066-test`, at the SIS port (`127.0.0.1:5066` in the bench files). Stop with Ctrl-C or `systemctl stop`; `s5066d` unkeys the radio as it stops. If a transmission runs more than 3 s past its planned length (a sound card that hangs), `s5066d` unkeys the radio and exits. Only a power cut or `kill -9` can leave the radio keyed, so on air also set the radio's own transmit time-out timer if it has one; starting `s5066d` again unkeys it. If the sound card or interface goes away, it says so and exits with status 1, so a service manager can restart it.
 
 ## Setting levels
 

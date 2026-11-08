@@ -125,11 +125,28 @@ internal sealed class FakeOutput(int sampleRate, EventLog log) : IAudioOutput
         }
     }
 
+    /// <summary>When set, a write waits on it, as a wedged card's would: the hung-playback case.</summary>
+    public ManualResetEventSlim? Hang { get; set; }
+
+    /// <summary>When set, a write throws this, an exception the channel does not expect.</summary>
+    public Exception? Throw { get; set; }
+
     public void Write(ReadOnlySpan<float> samples)
     {
         if (Fail)
         {
             throw new InvalidOperationException("snd_pcm_writei: No such device");
+        }
+
+        if (Throw is { } e)
+        {
+            throw e;
+        }
+
+        if (Hang is { } hang)
+        {
+            log.Add("hung write");
+            hang.Wait();
         }
 
         lock (_written)

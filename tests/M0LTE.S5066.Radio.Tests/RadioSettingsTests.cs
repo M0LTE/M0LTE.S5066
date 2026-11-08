@@ -32,6 +32,7 @@ public class RadioSettingsTests
     [InlineData("""{ "capture_device": "a", "playback_device": "b" }""", "host.modem.radio.ptt_device: is required")]
     [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "volume": 3 }""", "host.modem.radio.volume: unknown key")]
     [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "sample_rate": 44100 }""", "host.modem.radio.sample_rate: must be a multiple*")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "sample_rate": 9600 }""", "host.modem.radio.sample_rate: must be from 19200 to 192000")]
     [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "tx_level": 0 }""", "host.modem.radio.tx_level: must be above 0 and at most 1")]
     [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "tx_level": 1.5 }""", "host.modem.radio.tx_level: must be above 0 and at most 1")]
     [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "ptt_gpio": 9 }""", "host.modem.radio.ptt_gpio: must be from 1 to 8")]

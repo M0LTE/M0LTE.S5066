@@ -71,6 +71,34 @@ switch (config.Modem)
 }
 
 using IDisposable ownedMedium = medium;
+
+// From here on every way the process can see it is going ends with the radio unkeyed. SIGTERM
+// (systemctl stop), SIGINT (Ctrl-C), SIGHUP (the terminal closed) and SIGQUIT are handled here
+// rather than by the runtime's defaults, which end the process without running the disposals at
+// the end of this file: those unkey the radio, and a CM108 holds its PTT pin where it was last
+// set. An unhandled exception and the process exit unkey directly, as a last resort.
+var stop = new TaskCompletionSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    stop.TrySetResult();
+};
+var signals = new List<System.Runtime.InteropServices.PosixSignalRegistration>();
+foreach (var signal in new[] { System.Runtime.InteropServices.PosixSignal.SIGTERM, System.Runtime.InteropServices.PosixSignal.SIGHUP, System.Runtime.InteropServices.PosixSignal.SIGQUIT })
+{
+    signals.Add(System.Runtime.InteropServices.PosixSignalRegistration.Create(signal, context =>
+    {
+        context.Cancel = true;
+        stop.TrySetResult();
+    }));
+}
+
+AppDomain.CurrentDomain.UnhandledException += (_, _) => radio?.Audio.EmergencyUnkey();
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    stop.TrySetResult();
+    radio?.Audio.EmergencyUnkey();
+};
 NodeHost made;
 try
 {
@@ -93,7 +121,6 @@ if (radio is not null)
 }
 
 await using NodeHost host = made;
-var stop = new TaskCompletionSource();
 string? failure = null;
 if (radio is not null)
 {
@@ -107,23 +134,8 @@ if (radio is not null)
 host.Start();
 Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, {describe}");
 
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    stop.TrySetResult();
-};
-// SIGTERM (systemctl stop) is handled here rather than by the runtime's default, which ends the
-// process without running the disposals below: those unkey the radio, and a CM108 holds its PTT
-// pin where it was last set.
-using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
-    System.Runtime.InteropServices.PosixSignal.SIGTERM,
-    context =>
-    {
-        context.Cancel = true;
-        stop.TrySetResult();
-    });
-AppDomain.CurrentDomain.ProcessExit += (_, _) => stop.TrySetResult();
 await Task.WhenAny(stop.Task, host.Completion);
+GC.KeepAlive(signals);
 if (host.Completion.IsFaulted)
 {
     Console.Error.WriteLine($"s5066d: the node stopped: {host.Completion.Exception!.InnerException?.Message}");
