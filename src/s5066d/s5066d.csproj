@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <ProjectReference Include="../M0LTE.S5066.Radio/M0LTE.S5066.Radio.csproj" />
   </ItemGroup>
 
 </Project>

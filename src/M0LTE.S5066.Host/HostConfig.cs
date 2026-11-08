@@ -8,10 +8,18 @@ using M0LTE.S5066.Core.Runtime;
 namespace M0LTE.S5066.Host;
 
 /// <summary>The modem a host runs (the <c>host.modem</c> object of a host configuration file).</summary>
-/// <param name="Kind">"ms110d": the M0LTE.Ms110d adapter over UDP audio.</param>
+/// <param name="Kind">"ms110d": the M0LTE.Ms110d adapter, over UDP audio or a radio.</param>
 /// <param name="AudioListen">Where UDP audio is received.</param>
 /// <param name="AudioPeer">Where UDP audio is sent.</param>
-public sealed record HostModemSettings(string Kind, IPEndPoint? AudioListen, IPEndPoint? AudioPeer);
+public sealed record HostModemSettings(string Kind, IPEndPoint? AudioListen, IPEndPoint? AudioPeer)
+{
+    /// <summary>
+    /// <c>host.modem.radio</c> as written, or null when the file has none: a sound card, PTT and
+    /// busy detector driven by the console host itself (core-architecture.md 12.11). This library
+    /// does not read it; the host that opens the radio does, so the library needs no sound card code.
+    /// </summary>
+    public JsonObject? Radio { get; init; }
+}
 
 /// <summary>
 /// A host configuration file (core-architecture.md 12.9): the node keys of corpus-format.md
@@ -74,10 +82,31 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
                     throw new ConfigException("host.modem.kind", "must be \"ms110d\"");
                 }
 
+                foreach (string key in m.Select(kv => kv.Key))
+                {
+                    if (key is not ("kind" or "audio_listen" or "audio_peer" or "radio"))
+                    {
+                        throw new ConfigException("host.modem." + key, "unknown key");
+                    }
+                }
+
+                JsonObject? radio = null;
+                if (m["radio"] is JsonNode r)
+                {
+                    radio = r as JsonObject ?? throw new ConfigException("host.modem.radio", "must be an object");
+                    if (m.ContainsKey("audio_listen") || m.ContainsKey("audio_peer"))
+                    {
+                        throw new ConfigException("host.modem.radio", "cannot be set with audio_listen or audio_peer: the modem uses a radio or UDP audio, not both");
+                    }
+                }
+
                 modem = new HostModemSettings(
                     kind,
                     m["audio_listen"] is JsonNode al ? Endpoint(al, "host.modem.audio_listen") : null,
-                    m["audio_peer"] is JsonNode ap ? Endpoint(ap, "host.modem.audio_peer") : null);
+                    m["audio_peer"] is JsonNode ap ? Endpoint(ap, "host.modem.audio_peer") : null)
+                {
+                    Radio = (JsonObject?)radio?.DeepClone(),
+                };
             }
         }
 

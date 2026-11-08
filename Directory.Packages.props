@@ -8,6 +8,8 @@
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
     <PackageVersion Include="AwesomeAssertions" Version="9.2.0" />
     <PackageVersion Include="M0LTE.Ms110d" Version="0.6.0" />
+    <!-- s5066d's radio medium only (src/M0LTE.S5066.Radio): ALSA sound card, CM108 PTT, busy detector. -->
+    <PackageVersion Include="pdn-soundmodem" Version="0.100.0" />
   </ItemGroup>
 
 </Project>

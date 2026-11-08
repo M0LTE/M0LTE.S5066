@@ -70,3 +70,14 @@ public interface IModemEvents
     /// <param name="busy">True when busy.</param>
     void ChannelBusy(bool busy);
 }
+
+/// <summary>
+/// A modem port that wraps another, adding to it (a busy input, logging) without changing what it
+/// sends or hears. The host looks through it to the modem inside, for example to give an
+/// <see cref="Ms110dHostModem"/> its trace sink.
+/// </summary>
+public interface IHostModemWrapper
+{
+    /// <summary>The modem inside.</summary>
+    IHostModem Inner { get; }
+}
