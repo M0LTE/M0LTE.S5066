@@ -16,17 +16,19 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <remarks>
 /// <para>
 /// D_PDUs to a group or broadcast address carry EMPTY (C-0937); so do D_PDUs to a peer of unknown
-/// edition, since Ed4 EOWs are not used where the edition is unknown (C-0419, interp C-0055), and
-/// to a peer recorded Ed3, which never gets an Ed4 EOW (C-0419, C-0938). An owed
+/// edition, since Ed4 EOWs are not used where the edition is unknown (C-0419, interp C-0055). A peer
+/// recorded Ed3 never gets an Ed4 EOW (C-0419, C-0938): it gets ED3-BASIC-RATE while a
+/// recommendation exists (C-0957, interp C-1273), else EMPTY. An owed
 /// UNRECOGNIZED-TYPE-ERROR, an All-editions EOW (C-0401, C-0415), still goes first to an individual
 /// peer of any edition (C-1079). A peer recorded Ed4 never gets ED3-BASIC-RATE (C-0417, C-0958).
 /// We never send ED3-CAPABILITY (C-1019) or SPEED-USED (C-0482, C-0945), and never originate a
 /// MANAGEMENT D_PDU, so never one with EOW 1 or 2 (C-0918).
 /// </para>
 /// <para>
-/// The top-priority recommendations and the repeating set are filled by P7-6, SENDER-APPROACH by
-/// P7-7; until then they are empty and the only Ed4 EOW sent is CAPABILITY. The providers are
-/// settable so unit tests can show the order with synthetic content.
+/// The top-priority recommendations, the repeating set and the Ed3 recommendation are filled by
+/// P7-6 (<see cref="Recommender"/>, interp C-1271, C-1273), SENDER-APPROACH by P7-7. With an empty
+/// drc.table they stay empty and the only Ed4 EOW sent is CAPABILITY. The providers are settable so
+/// unit tests can show the order with synthetic content.
 /// </para>
 /// </remarks>
 internal sealed class EowScheduler
