@@ -62,6 +62,10 @@ public class P77Scenarios
         Save("drc", "tx-off-ladder-recommendation", OffLadder());
         Save("drc", "tx-empty-table-fixed", EmptyTableFixed());
         Save("sis", "management-node-info-speed", NodeInfoSpeed());
+        Save("drc", "tx-failed-trial-ceiling", FailedTrialCeiling());
+        Save("drc", "tx-step-down-on-silence", StepDownOnSilence());
+        Save("drc", "tx-recommendation-cleared-at-link-end", ClearedAtLinkEnd());
+        Save("drc", "tx-ed3-basic-rate-ceiling", Ed3BasicRateCeiling());
     }
 
     // ---- the synthetic table and fixture -------------------------------------------------------
@@ -443,6 +447,303 @@ public class P77Scenarios
         b.TransmitDone(52000 + t.Duration);
         byte[] body = [0xe0, 0x00, 0x01, 0x02, 6, 4, 1, 0xe0, 0x00, 0x01, 0x03, 0, 6, 4, 2, 4, 0x00, 0x3c, 0x00, 0x39];
         b.SisBytes(60000, 2, "90eb0000021202").ExpectSisBytes(2, ScenarioBuilder.SisHex(new SisManagementMsgIndication(2, body)));
+        return b;
+    }
+
+    // ---- ARQ scenarios -------------------------------------------------------------------------
+
+    private static readonly Wf A2L = new(2, Interleaver.Long, 25, 4800);
+    private static readonly Wf A4L = new(4, Interleaver.Long, 50, 2400);
+    private static readonly Wf A4S = new(4, Interleaver.Short, 25, 1200);
+
+    private static Dpdu Decode(string hex, PeerEdition edition = PeerEdition.Ed4) =>
+        DpduCodec.Decode(Convert.FromHexString(hex), edition).Value!;
+
+    /// <summary>The ARQ request of dts-arq/ack-wait-expiry-retransmit: priority 0, SAP 9 at 0.0.1.3.</summary>
+    private static string ArqRequest(byte[] updu) => ScenarioBuilder.SisHex(new SisUnidataRequest(0, 9, new SisAddress(P3), ServiceType.Default, 0, updu));
+
+    private static byte[] ArqCpdu(long t, byte[] updu)
+    {
+        var time = new TimeConfig(2026, 1, 0);
+        byte[] spdu = SpduCodec.Encode(new SpduData(0, 5, 9, false, TtdCalendar.Encode(time, t + 1296000000L), updu));
+        return CpduCodec.Encode(new CpduData(spdu));
+    }
+
+    private static Item DataOnlyItem(int fsn, byte[] cpdu, int eow)
+    {
+        var template = (DataOnly)Decode("90eb9f01146a103102ec0a0000edc200005940000070696e671ca45ae5");
+        return eot => template with { Header = H(P3, Us, eow, eot), TxFsn = fsn, Segment = new Octets(cpdu) };
+    }
+
+    private static string Ack(int rxLwe) => Hex(Enc(new AckOnly(H(Us, P3, 0, 10), rxLwe, 0, 0, new Octets([]), null)));
+
+    private static JsonObject ArqConfig(JsonObject table, params Wf[] w) => new()
+    {
+        ["local_address"] = "0.0.1.2",
+        ["csma"] = new JsonObject { ["mode"] = "jitter" },
+        ["modem"] = Fixture(w),
+        ["cas"] = new JsonObject { ["max_links"] = 4, ["link_request_timeout_ms"] = 60000, ["link_request_retries"] = 2, ["first_data_timeout_ms"] = 120000 },
+        ["dts"] = new JsonObject { ["ack_wait_ms"] = 60000 },
+        ["drc"] = new JsonObject { ["table"] = table },
+    };
+
+    private sealed class Draws
+    {
+        private readonly SplitMix64 _prng = new(0);
+
+        public int Next() => (int)_prng.Uniform(16) * 3000;
+    }
+
+    /// <summary>
+    /// The Caller's opening of dts-arq/ack-wait-expiry-retransmit, with the peer's PHYSICAL LINK ACCEPTED
+    /// carrying MAX-SPEED WN 4 Long (0x885) in its EOW, up to the burst end at 92000 and the contention
+    /// that follows (draws 1 and 2 of seed 0). Returns the time of the first data transmission.
+    /// </summary>
+    private static long CallerOpening(ScenarioBuilder b, Draws d)
+    {
+        b.SisConnect(0, 1);
+        b.SisBytes(0, 1, "90eb00000401501000").ExpectSisBytes(1, "90eb00000403500800");
+        b.SisBytes(0, 1, ArqRequest("ping"u8.ToArray())).ExpectLinkState("0.0.1.3", LinkStateName.Calling).ExpectTimerStart("csma.lbt_wait", 30000);
+        b.TimerExpired(30000, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", d.Next());
+        b.TimerExpired(75000, "csma.cont_wait").ExpectTransmit("90eb80000a6f10310200010000010000000a5cf612977d6864", 2, Interleaver.Long);
+        b.TransmitDone(80550).ExpectTimerStart("cas.link_request/0.0.1.3", 60000);
+        var accepted = Decode("90eb80000a6f10210300010000010000000a8bb22269d8f546");
+        accepted = accepted with { Header = accepted.Header with { Eow = MaxSpeed(4, Interleaver.Long) } };
+        b.BurstStarted(90000).BytesReceived(91000, Hex(Enc(accepted)))
+            .ExpectTimerCancel("cas.link_request/0.0.1.3").ExpectLinkState("0.0.1.3", LinkStateName.Linked)
+            .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 360000).ExpectTimerStart("dts.ttd", 1295909000);
+        b.BurstEnded(92000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
+        int wait = d.Next();
+        b.TimerExpired(96000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", wait);
+        return 96000 + wait;
+    }
+
+    private const string ArqCommon =
+        "Link setup as dts-arq/ack-wait-expiry-retransmit: conn 1 binds SAP 5 for ARQ, its S_UNIDATA_REQUEST 'ping' to SAP 9 at 0.0.1.3 at 0 makes the CAS call (request at 75000 at drc.default_speed, WN 2 Long, EOW EMPTY to a peer of unknown edition), and at 91000 the peer's PHYSICAL LINK ACCEPTED makes the link (16-bit family) and records the peer Ed4 (B-0408). That D_PDU's EOW is MAX-SPEED WN 4 Long (0x885: interleaver 101, speed 4), recorded (interp C-1262). On D_CONNECTION_MADE the rung the link was made at, drc.default_speed, position 0, counts as the last answered (interp C-1281). A transmission's rung is at most one above the last answered rung, a transmission of ARQ data above it is a trial, and a dts.ack_wait expiry with nothing heard from the peer since is a silent wait (open question 16); a silent wait after a trial is a failed trial, which caps the peer one rung below it for tx_ceiling_initial of its transmissions to the peer, doubling on each repeat failure up to tx_ceiling_cap (design shape item 7, interp C-1281); tx_step_down_waits silent waits in a row step down one rung (plan 6.2, interp C-1282); an answer (C-1250) ends the silence count and the step down and makes the last rung sent the answered one. Every data D_PDU to the peer is the first header to it in its transmission and carries SENDER-APPROACH, 0xB04 (interp C-1286); PADDING carries CAPABILITY (C-0426, C-1154). Fixture: preamble 600, flush 150; WN 2 Long 25 bytes and 4800 ms a block, WN 4 Long 50 bytes and 2400 ms (test data). The 29-byte DATA-ONLY needs two blocks at WN 2 Long (EOT 20, its PADDING in block 1 EOT 10, 10350 ms) and one at WN 4 Long (EOT and the PADDING's EOT ceil(2550 / 500) = 6, 3150 ms; one PADDING, 11 bytes). Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285). dts.ack_wait_ms 60000; after our own transmission, a queue that refills with nothing heard goes through LBT rule 3, 3000 ms (K-0071, K-0074); after a burst addressed only to us, rule 1 (K-0067). Contention waits are seed 0's draws, uniform(16) x 3000 ms (K-0080). ";
+
+    private static (string Hex, long Duration) DataTx(Wf w, int fsn, byte[] cpdu) =>
+        Transmission(w, [DataOnlyItem(fsn, cpdu, Approach)], P3, _ => Capability);
+
+    private static ScenarioBuilder FailedTrialCeiling()
+    {
+        var d = new Draws();
+        var b = new ScenarioBuilder(
+            "drc-tx-failed-trial-ceiling",
+            ["C-0929", "C-0894", "C-0930", "C-1281", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.4.4, p.C-115",
+            "A trial above the last answered rung that draws no answer caps the peer below it for a number of transmissions that doubles on the next failure.",
+            ArqConfig(Table(stepDownWaits: 2, ceilingInitial: 1, ceilingCap: 2), A2L, A4L),
+            ArqCommon + TableNote.Replace("tx_ceiling_initial 2, tx_ceiling_cap 4", "tx_ceiling_initial 1, tx_ceiling_cap 2") + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung and one above the answered WN 2 Long: a trial. Nothing is heard; at 171150 dts.ack_wait expires, a failed trial: the peer is capped at WN 2 Long for 1 transmission (tx_ceiling_initial), the next failure's length doubling to 2. FSN 0 is retransmitted at WN 2 Long, keeping its size (C-0549), and the ceiling ends with it. The ACK-ONLY (RX LWE 1) at 236000 answers it: WN 2 Long is the answered rung. 'pong' (FSN 1, requested at 240000) goes at WN 4 Long, a trial again (the ceiling has ended), and fails at its dts.ack_wait expiry: capped at WN 2 Long for 2 transmissions (min(2, tx_ceiling_cap 2)). Its retransmission goes at WN 2 Long and is answered (RX LWE 2), and 'last' (FSN 2) still goes at WN 2 Long, the second transmission of the doubled ceiling, where a ceiling of 1 would have let it try WN 4 Long. Each request after an answer cancels sis.soft_link_idle (A-0320) and restarts dts.ttd; the answer that confirms the queue's last C_PDU cancels dts.ttd and starts the idle wait (A-0321: three answer waits, 180000).");
+        long t = CallerOpening(b, d);
+        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+        byte[] pong = ArqCpdu(240000, "pong"u8.ToArray());
+        byte[] last = ArqCpdu(400000, "last"u8.ToArray());
+
+        // Trial 1 at WN 4 Long, fails.
+        var tx = DataTx(A4L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A4L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        t += 60000;
+        b.TimerExpired(t, "dts.ack_wait/0.0.1.3").ExpectTimerStart("csma.lbt_wait", 3000);
+        t += 3000;
+        int w = d.Next();
+        b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
+        t += w;
+        tx = DataTx(A2L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        b.BurstStarted(235000).BytesReceived(236000, Ack(1))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(237000, snrTenthDb: 60);
+
+        // Trial 2 at WN 4 Long, fails; doubled ceiling.
+        b.SisBytes(240000, 1, ArqRequest("pong"u8.ToArray()))
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
+        w = d.Next();
+        b.TimerExpired(241000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t = 241000 + w;
+        tx = DataTx(A4L, 1, pong);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A4L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        t += 60000;
+        b.TimerExpired(t, "dts.ack_wait/0.0.1.3").ExpectTimerStart("csma.lbt_wait", 3000);
+        t += 3000;
+        w = d.Next();
+        b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
+        t += w;
+        tx = DataTx(A2L, 1, pong);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        long burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+
+        // Within the doubled ceiling: WN 2 Long.
+        if (burst + 5000 > 400000)
+        {
+            throw new InvalidOperationException("timeline overran");
+        }
+
+        b.SisBytes(400000, 1, ArqRequest("last"u8.ToArray()))
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000);
+        w = d.Next();
+        b.ExpectTimerStart("csma.cont_wait", w);
+        t = 400000 + w;
+        tx = DataTx(A2L, 2, last);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        return b;
+    }
+
+    private static ScenarioBuilder StepDownOnSilence()
+    {
+        var d = new Draws();
+        var b = new ScenarioBuilder(
+            "drc-tx-step-down-on-silence",
+            ["C-0929", "C-0894", "C-1282", "C-1281", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
+            "After tx_step_down_waits answer waits in a row with no answer, the sender steps down one rung by itself, below the peer's recommendation.",
+            ArqConfig(Table(), A2L, A4L),
+            ArqCommon + TableNote + "At 108000 'ping' (FSN 0) goes at WN 4 Long, a trial, and is answered by the ACK-ONLY at 116000 (RX LWE 1): WN 4 Long is now the answered rung and the trial succeeded. 'pong' (FSN 1, requested at 120000) goes at WN 4 Long, no longer a trial. Nothing is heard: the first dts.ack_wait expiry is one silent wait, and FSN 1 is retransmitted at WN 4 Long; the second in a row reaches tx_step_down_waits 2, so the sender steps down one rung by itself (plan 6.2, interp C-1282) and the next retransmission goes at WN 2 Long, below the recommendation, which going lower never exceeds (C-0894, plan 5.3), keeping its size (C-0549). The ACK-ONLY (RX LWE 2) answers it, which ends the step down. The connection is not lost: 2 answer waits, not 16 (C-1250).");
+        long t = CallerOpening(b, d);
+        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+        byte[] pong = ArqCpdu(120000, "pong"u8.ToArray());
+        var tx = DataTx(A4L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A4L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        b.BurstStarted(115000).BytesReceived(116000, Ack(1))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(117000, snrTenthDb: 60);
+        b.SisBytes(120000, 1, ArqRequest("pong"u8.ToArray()))
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
+        int w = d.Next();
+        b.TimerExpired(121000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t = 121000 + w;
+        foreach (Wf wf in (Wf[])[A4L, A4L])
+        {
+            tx = DataTx(wf, 1, pong);
+            b.TimerExpired(t, "csma.cont_wait");
+            Transmit(b, tx, wf);
+            t += tx.Duration;
+            b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+            t += 60000;
+            b.TimerExpired(t, "dts.ack_wait/0.0.1.3").ExpectTimerStart("csma.lbt_wait", 3000);
+            t += 3000;
+            w = d.Next();
+            b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
+            t += w;
+        }
+
+        tx = DataTx(A2L, 1, pong);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        long burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        return b;
+    }
+
+    private static ScenarioBuilder ClearedAtLinkEnd()
+    {
+        var b = new ScenarioBuilder(
+            "drc-tx-recommendation-cleared-at-link-end",
+            ["C-0459", "C-1287", "C-1280", "C-1284", "C-1286", "B-0159", "B-0284", "C-0652", "B-0408", "B-0213", "B-0400"],
+            "Ed4 C.6.5, p.C-72; C.7.6.2, pp.C-119 to C-120; B.3.1.4, p.B-9",
+            "A peer's recommendation stands until its connection ends: after the link is broken the next transmission to it goes at drc.default_speed again.",
+            new JsonObject
+            {
+                ["local_address"] = "0.0.1.2",
+                ["csma"] = new JsonObject { ["mode"] = "jitter" },
+                ["modem"] = Fixture(A2L, A4L),
+                ["cas"] = new JsonObject { ["max_links"] = 4, ["link_request_timeout_ms"] = 60000, ["link_request_retries"] = 2, ["first_data_timeout_ms"] = 120000 },
+                ["drc"] = new JsonObject { ["table"] = Table() },
+            },
+            "As cas/break-responder, with a table. " + TableNote + "At 2000 the peer's PHYSICAL LINK REQUEST (Ed4) carries MAX-SPEED WN 4 Long (0x885) in its EOW, recorded (interp C-1262); the request records the peer Ed4 (B-0408). No connection exists yet, so no answered rung limits the choice (interp C-1281): our PHYSICAL LINK ACCEPTED, a type 8 to 0.0.1.3 alone, goes at the MAX-SPEED rung WN 4 Long (one D_PDU, so for latency; no LOW-SPEED, so MAX-SPEED stands in, interp C-1284), its header SENDER-APPROACH 0xB04 (interp C-1286). Fixture WN 4 Long: 50 bytes and 2400 ms (test data), so the 25-byte type 8 needs one block, 3150 ms, EOT and reception window ceil(2550 / 500) = 6, and two PADDING with CAPABILITY fill the block (C-1154). The link is made when it ends, at 55150 (B-0213, B-0400). At 61000 the peer's PHYSICAL LINK BREAK breaks the link at once (B-0159, B-0284) and D_CONNECTION_TERMINATED reaches the DTS (C-0652), which ends the peer's recommendations (open question 4, interp C-1287). The PHYSICAL LINK BREAK CONFIRM, also a type 8 to 0.0.1.3, therefore goes at drc.default_speed, WN 2 Long (25 bytes and 4800 ms a block: EOT and window 10, the block full, no PADDING), with SENDER-APPROACH. Contention: seed 0 slots 15 then 4 (K-0080), LBT rule 1 after each burst addressed to us (K-0067). The soft link times are derived from the answer wait (A-0321), as in cas/break-responder.");
+        var request = Decode("90eb80000a6f10210300010000010000000a8bb212977d6864");
+        request = request with { Header = request.Header with { Eow = MaxSpeed(4, Interleaver.Long) } };
+        var accept = (ExpeditedNonArqData)Decode("90eb8f010a6f10310200010000010000000ad1b32269d8f546");
+        var confirm = (ExpeditedNonArqData)Decode("90eb8f010a6f10310200010100010000000a4dbe5002eea667");
+        b.BurstStarted(1000).BytesReceived(2000, Hex(Enc(request)));
+        b.BurstEnded(3000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
+        b.TimerExpired(7000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 45000);
+        b.TimerExpired(52000, "csma.cont_wait");
+        var t1 = Transmission(A4L, [eot => accept with { Header = H(P3, Us, Approach, eot), Fields = accept.Fields with { ReceptionWindow = eot } }], P3, _ => Capability);
+        Transmit(b, t1, A4L);
+        b.TransmitDone(52000 + t1.Duration).ExpectLinkState("0.0.1.3", LinkStateName.Linked)
+            .ExpectTimerStart("cas.first_data/0.0.1.3", 120000)
+            .ExpectTimerStart("sis.soft_link_min_hold/0.0.1.3", 616500)
+            .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 1233000)
+            .ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 616500);
+        b.BurstStarted(60000).BytesReceived(61000, "90eb80000a6f10210300010100010000000a17bf44d2b0eb8d")
+            .ExpectTimerCancel("cas.first_data/0.0.1.3").ExpectLinkState("0.0.1.3", LinkStateName.Unlinked)
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerCancel("sis.soft_link_min_hold/0.0.1.3").ExpectTimerCancel("sis.soft_link_max/0.0.1.3");
+        b.BurstEnded(62000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
+        b.TimerExpired(66000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 12000);
+        b.TimerExpired(78000, "csma.cont_wait");
+        var t2 = Transmission(A2L, [eot => confirm with { Header = H(P3, Us, Approach, eot), Fields = confirm.Fields with { ReceptionWindow = eot } }], P3, _ => Capability);
+        Transmit(b, t2, A2L);
+        b.TransmitDone(78000 + t2.Duration);
+        return b;
+    }
+
+    private static ScenarioBuilder Ed3BasicRateCeiling()
+    {
+        var b = new ScenarioBuilder(
+            "drc-tx-ed3-basic-rate-ceiling",
+            ["C-0959", "C-0960", "C-0427", "C-0431", "C-0432", "C-0433", "C-0435", "C-0441", "C-1288", "C-1280", "C-0419", "C-0938", "B-0408", "B-0232", "B-0213", "B-0400"],
+            "Ed4 C.6.2, pp.C-68 to C-70; C.7.6.3.2, p.C-122",
+            "To a peer recorded Ed3, its ED3-BASIC-RATE is the ceiling and the interleaver: our answer goes at the fastest of our waveforms not above its rate, with its interleaver.",
+            new JsonObject
+            {
+                ["local_address"] = "0.0.1.2",
+                ["csma"] = new JsonObject { ["mode"] = "jitter" },
+                ["modem"] = Fixture(A2L, A4S),
+                ["cas"] = new JsonObject { ["max_links"] = 4, ["link_request_timeout_ms"] = 60000, ["link_request_retries"] = 2, ["first_data_timeout_ms"] = 120000 },
+                ["drc"] = new JsonObject { ["table"] = Table() },
+            },
+            "As cas/make-called-accept, with a table and an Ed3 Caller. " + TableNote + "At 2000 the peer's PHYSICAL LINK REQUEST has the Ed4 bit clear (octet 10: Ed3, which uses the 8-bit family, B-0232), so it records the peer Ed3 (B-0408). Its EOW is ED3-BASIC-RATE (0x146): data rate 0100, 1200 bps (Table C-5, C-0432, C-0433), interleaving 01, short (Table C-6, C-0435), Other Parameters 10, ignored (C-0441). That is the peer's ceiling and interleaver (C-0959, C-0960): by open question 10 (interp C-1288) the fastest of our waveforms whose data rate is not above 1200 bit/s, WN 4 (WN 5 is 1600; M0LTE.Ms110d docs/waveforms.md), with the Short interleaver, which is on the ladder (open question 5, interp C-1280). Our PHYSICAL LINK ACCEPTED (octet 20, Ed4 and short-family bits clear, as the CAS answers an Ed3 request) goes at WN 4 Short. To a peer recorded Ed3 its header carries EMPTY (C-0419, C-0938) and there is no PADDING (C-1154). Fixture WN 4 Short: 25 bytes and 1200 ms a block (test data), so the 25-byte type 8 fills one block, 1950 ms, EOT and reception window ceil(1350 / 500) = 3. The link is made when it ends (B-0213, B-0400), with the soft link times derived from the answer wait (A-0321).");
+        var request = (ExpeditedNonArqData)Decode("90eb80000a6f10210300010000010000000a8bb212977d6864");
+        byte[] reqCpdu = CpduCodec.Encode(new PhysicalLinkRequest(false, false, false));
+        request = request with
+        {
+            Header = request.Header with { Eow = Eow(new Ed3BasicRateEow(4, 1, 2)) },
+            Fields = request.Fields with { CPduSize = reqCpdu.Length },
+            Segment = new Octets(reqCpdu),
+        };
+        var accept = (ExpeditedNonArqData)Decode("90eb8f010a6f10310200010000010000000ad1b32269d8f546");
+        byte[] accCpdu = CpduCodec.Encode(new PhysicalLinkAccepted(false, false, false));
+        b.BurstStarted(1000).BytesReceived(2000, Hex(Enc(request)));
+        b.BurstEnded(3000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
+        b.TimerExpired(7000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 45000);
+        b.TimerExpired(52000, "csma.cont_wait");
+        var t1 = Transmission(A4S, [eot => accept with
+        {
+            Header = H(P3, Us, 0, eot),
+            Fields = accept.Fields with { ReceptionWindow = eot, CPduSize = accCpdu.Length },
+            Segment = new Octets(accCpdu),
+        }]);
+        Transmit(b, t1, A4S);
+        b.TransmitDone(52000 + t1.Duration).ExpectLinkState("0.0.1.3", LinkStateName.Linked)
+            .ExpectTimerStart("cas.first_data/0.0.1.3", 120000)
+            .ExpectTimerStart("sis.soft_link_min_hold/0.0.1.3", 616500)
+            .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 1233000)
+            .ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 616500);
         return b;
     }
 }
