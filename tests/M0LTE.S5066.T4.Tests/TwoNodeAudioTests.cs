@@ -60,11 +60,16 @@ public class TwoNodeAudioTests
               { "do": "perf", "node": "b", "to": "0.0.1.1", "count": 10, "size": 200, "confirm": "client" },
               { "do": "info", "node": "a" }
             ]
-            """, TimeSpan.FromMinutes(30));
+            """, TimeSpan.FromMinutes(30), trace: true);
         result.GetProperty("pass").GetBoolean().Should().BeTrue();
     }
 
-    private async Task<JsonElement> RunAsync(string steps, TimeSpan timeout)
+    /// <summary>
+    /// Runs one scenario on two fresh nodes. With <paramref name="trace"/> the nodes run with
+    /// <c>--trace</c> (issue #86), and the whole log goes to the test output as always; set
+    /// S5066_T4_LOG to a file path to keep it there too.
+    /// </summary>
+    private async Task<JsonElement> RunAsync(string steps, TimeSpan timeout, bool trace = false)
     {
         string dir = Directory.CreateTempSubdirectory("s5066-t4-").FullName;
         (int sisA, int sisB, int audioA, int audioB) = FreePorts();
@@ -77,10 +82,11 @@ public class TwoNodeAudioTests
 
         var log = new StringBuilder();
         var processes = new List<Process>();
+        string flag = trace ? "--trace " : string.Empty;
         try
         {
-            processes.Add(Start("s5066d.dll", configA, "a", log));
-            processes.Add(Start("s5066d.dll", configB, "b", log));
+            processes.Add(Start("s5066d.dll", flag + configA, "a", log));
+            processes.Add(Start("s5066d.dll", flag + configB, "b", log));
             await WaitForListenAsync(sisA, processes[0]);
             await WaitForListenAsync(sisB, processes[1]);
             string json = Path.Combine(dir, "result.json");
@@ -124,6 +130,10 @@ public class TwoNodeAudioTests
             lock (log)
             {
                 _output.WriteLine(log.ToString());
+                if (Environment.GetEnvironmentVariable("S5066_T4_LOG") is { Length: > 0 } keep)
+                {
+                    File.WriteAllText(keep, log.ToString());
+                }
             }
 
             Directory.Delete(dir, recursive: true);

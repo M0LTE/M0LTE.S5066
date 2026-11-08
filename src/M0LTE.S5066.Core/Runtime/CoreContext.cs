@@ -39,6 +39,12 @@ internal sealed class CoreContext
     /// </summary>
     public IReadOnlyDictionary<uint, RxQuality> RxQuality { get; internal set; } = new SortedDictionary<uint, RxQuality>();
 
+    /// <summary>
+    /// A diagnostic sink (issue #86), or null. It sees internal state changes the T2 outputs do not
+    /// carry; it is never read by protocol code and changes no output.
+    /// </summary>
+    public Action<string>? Trace { get; set; }
+
     /// <summary>Set by the dispatcher: drains the FIFO on the MAC's request during AfterInput.</summary>
     internal Action? DrainHandler { get; set; }
 

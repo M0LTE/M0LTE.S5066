@@ -19,6 +19,13 @@ public sealed record NodeHostOptions
     public Action<string>? Log { get; init; }
 
     /// <summary>
+    /// A sink for the per-burst trace (issue #86), or null for none: each D_PDU sent and received,
+    /// timers started, fired and cancelled, link, MAC and inter-sublayer changes, and each burst's
+    /// planned and actual timing. Diagnostics only; it changes nothing the node does.
+    /// </summary>
+    public Action<string>? Trace { get; init; }
+
+    /// <summary>
     /// The interp S-0029 write bound. Fixed in production at <see cref="SisServer.DefaultWriteBound"/>;
     /// tests shorten it.
     /// </summary>
@@ -56,6 +63,7 @@ public sealed class NodeHost : IAsyncDisposable
     private Task? _loop;
     private bool _shutdownRequested;
     private TaskCompletionSource? _shutdownDone;
+    private readonly HostTrace? _trace;
 
     /// <summary>
     /// Creates a host. The configuration's <c>time.*</c> is replaced with the UTC second at which
@@ -80,6 +88,15 @@ public sealed class NodeHost : IAsyncDisposable
         Epoch = second;
         Config = config with { Time = new TimeConfig(second.Year, second.DayOfYear, (int)second.TimeOfDay.TotalSeconds) };
         _node = new Node(Config, prngSeed, modem);
+        if (_options.Trace is { } sink)
+        {
+            _trace = new HostTrace(sink, modem);
+            _node.Trace = line => _trace.CoreLine(_node.Now, line);
+            if (modem is Ms110dHostModem m)
+            {
+                m.Trace = line => _trace.Modem(Now, line);
+            }
+        }
     }
 
     /// <summary>The UTC instant of host and core time 0.</summary>
@@ -296,6 +313,7 @@ public sealed class NodeHost : IAsyncDisposable
 
             if (input is not null)
             {
+                _trace?.Input(input, now);
                 _node.Handle(input);
                 Dispatch(_node.DrainOutputs());
                 continue;
@@ -330,6 +348,7 @@ public sealed class NodeHost : IAsyncDisposable
     {
         foreach (CoreOutput o in outputs)
         {
+            _trace?.Output(o, _node.Now);
             OutputProduced?.Invoke(o);
             switch (o)
             {

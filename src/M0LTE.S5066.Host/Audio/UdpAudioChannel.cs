@@ -35,6 +35,9 @@ public sealed class UdpAudioChannel : IAudioChannel, IDisposable
         _peer = peer;
     }
 
+    /// <summary>A sink for timing trouble (issue #86): the sender falling behind real time, or received audio queueing up unprocessed. Null for none.</summary>
+    public Action<string>? Trace { get; set; }
+
     /// <inheritdoc/>
     public void Start(Action<ReadOnlyMemory<float>> received)
     {
@@ -84,6 +87,12 @@ public sealed class UdpAudioChannel : IAudioChannel, IDisposable
             {
                 Thread.Sleep(2);
                 continue;
+            }
+
+            long behind = (clock.ElapsedMilliseconds / 20) - ticks;
+            if (behind > 5)
+            {
+                Trace?.Invoke($"audio tx {behind * 20} ms behind real time");
             }
 
             ticks++;
@@ -136,6 +145,32 @@ public sealed class UdpAudioChannel : IAudioChannel, IDisposable
         }
     }
 
+    // Receive lag (trace only): wall time since the first datagram less the audio received since.
+    // The least value seen is the start offset; growth beyond it is audio arriving or being handled late.
+    private long _rxSamples;
+    private Stopwatch? _rxClock;
+    private double _rxMinLagMs = double.MaxValue;
+    private double _rxLastReportedMs;
+
+    private void NoteReceiveLag(int samples)
+    {
+        if (Trace is not { } trace)
+        {
+            return;
+        }
+
+        _rxClock ??= Stopwatch.StartNew();
+        double lag = _rxClock.Elapsed.TotalMilliseconds - (_rxSamples * 1000.0 / IAudioChannel.SampleRate);
+        _rxSamples += samples;
+        _rxMinLagMs = Math.Min(_rxMinLagMs, lag);
+        double excess = lag - _rxMinLagMs;
+        if (Math.Abs(excess - _rxLastReportedMs) >= 100)
+        {
+            _rxLastReportedMs = excess;
+            trace($"audio rx {excess:0} ms behind real time");
+        }
+    }
+
     private async Task ReceiveLoopAsync()
     {
         while (!_stop.IsCancellationRequested)
@@ -155,6 +190,7 @@ public sealed class UdpAudioChannel : IAudioChannel, IDisposable
                 continue;
             }
 
+            NoteReceiveLag(r.Buffer.Length / 4);
             float[] samples = MemoryMarshal.Cast<byte, float>(r.Buffer.AsSpan(0, r.Buffer.Length & ~3)).ToArray();
             lock (_rxGate)
             {

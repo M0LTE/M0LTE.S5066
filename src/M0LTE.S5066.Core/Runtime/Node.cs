@@ -30,6 +30,17 @@ public sealed class Node
         _dispatcher = new Dispatcher(_context, new SisSublayer(_context), new CasSublayer(_context), dts, mac);
     }
 
+    /// <summary>
+    /// A diagnostic sink for internal state changes (primitives between sublayers, MAC states, ARQ
+    /// window edges), or null (issue #86). One ASCII line each, without a time; the caller knows the
+    /// time of the input being handled. Never part of the T2 outputs.
+    /// </summary>
+    public Action<string>? Trace
+    {
+        get => _context.Trace;
+        set => _context.Trace = value;
+    }
+
     /// <summary>The time of the last input handled, in ms since creation.</summary>
     public long Now => _context.Now;
 

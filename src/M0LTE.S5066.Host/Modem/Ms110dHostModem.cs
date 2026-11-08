@@ -57,6 +57,9 @@ public sealed class Ms110dHostModem : IHostModem
         _demod.BurstCompleted += OnBurstCompleted;
     }
 
+    /// <summary>A sink for the per-burst trace (issue #86): modulation and playout timing. Null for none.</summary>
+    public Action<string>? Trace { get; set; }
+
     /// <summary>
     /// The plan for a burst, converted from <see cref="Ms110dBurstPlan.Plan"/> so it is never early
     /// (core-architecture.md 12.5 rule 1; C-0891): preamble, one block and the flush (the leading
@@ -105,11 +108,13 @@ public sealed class Ms110dHostModem : IHostModem
             EndLockedBurst(BurstEndReason.SignalLost, null);
         }
 
+        long asked = System.Diagnostics.Stopwatch.GetTimestamp();
         _ = Task.Run(() =>
         {
             try
             {
                 float[] samples = _modulate(settings, bits);
+                Trace?.Invoke($"modulated {samples.Length} samples ({samples.Length / SamplesPerMs:0} ms of audio) in {System.Diagnostics.Stopwatch.GetElapsedTime(asked).TotalMilliseconds:0} ms; queued for playout");
                 _audio.Play(samples, OnPlayed);
             }
             catch (Exception e)
