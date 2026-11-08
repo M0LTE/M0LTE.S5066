@@ -93,7 +93,13 @@ public sealed class NodeHost : IAsyncDisposable
         {
             _trace = new HostTrace(sink, modem);
             _node.Trace = line => _trace.CoreLine(_node.Now, line);
-            if (modem is Ms110dHostModem m)
+            IHostModem inner = modem;
+            while (inner is IHostModemWrapper wrapper)
+            {
+                inner = wrapper.Inner;
+            }
+
+            if (inner is Ms110dHostModem m)
             {
                 m.Trace = line => _trace.Modem(Now, line);
             }

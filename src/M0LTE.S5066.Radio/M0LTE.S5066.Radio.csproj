@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    s5066d's radio medium: an ALSA sound card, CM108 HID GPIO PTT and an energy busy detector,
+    from the published pdn-soundmodem library (as pdn-mailcast uses it), under the host's
+    IAudioChannel and IHostModem ports. Kept apart from M0LTE.S5066.Host so that package needs no
+    sound card code. Not packed: it is part of the console host only.
+
+    Licence: pdn-soundmodem is AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only (some of
+    its files are GPL-only; its LICENSING.md lists them). This project and s5066d, which link it,
+    are therefore distributed under the AGPL-3.0-or-later combined with those GPL-3.0 terms (both
+    licences allow the combination, AGPL section 13), and not under the commercial licence the
+    libraries M0LTE.S5066.Core, Host and Client are also offered under.
+  -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <!-- Links pdn-soundmodem (see the licence note in M0LTE.S5066.Radio.csproj and the README). -->
+    <PackageLicenseExpression>AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only</PackageLicenseExpression>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <PackageReference Include="pdn-soundmodem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Radio.Tests" />
+  </ItemGroup>
+
+</Project>

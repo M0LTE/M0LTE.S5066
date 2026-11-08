@@ -58,6 +58,12 @@ jobs:
           set -euo pipefail
           ls artifacts
           test "$(ls artifacts/*.nupkg | wc -l)" = 3
+          # pdn-soundmodem (AGPL AND GPL-3.0-only) must not reach a package offered commercially too.
+          for p in artifacts/*.nupkg; do
+            if unzip -p "$p" "*.nuspec" | grep -qiE "pdn-soundmodem|M0LTE\.S5066\.Radio"; then
+              echo "$p depends on pdn-soundmodem or M0LTE.S5066.Radio"; exit 1
+            fi
+          done
 
       # Get a short-lived nuget.org API key via Trusted Publishing, immediately before push
       # (the key is valid for ~1 hour). NUGET_USER is the nuget.org profile name, not an email.

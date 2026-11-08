@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- s5066d's radio medium, with fake devices: nothing here opens a sound card or keys a radio. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Radio/M0LTE.S5066.Radio.csproj" />
+  </ItemGroup>
+
+</Project>
