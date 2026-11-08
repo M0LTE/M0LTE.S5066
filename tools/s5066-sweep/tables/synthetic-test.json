@@ -1,0 +1,27 @@
+// A made-up drc.table for building and testing the stack sweep before P7-5's calibration exists.
+// Its numbers are rough guesses shaped like AWGN thresholds, not measurements: never publish a
+// result run on it. Schema: s5066-conformance docs/corpus-format.md 6.1.
+{
+  "ladder": [
+    { "wn": 2, "interleaver": "long" },
+    { "wn": 4, "interleaver": "long" },
+    { "wn": 6, "interleaver": "long" },
+    { "wn": 7, "interleaver": "long" },
+    { "wn": 8, "interleaver": "long" }
+  ],
+  "thresholds": [
+    { "wn": 2, "interleaver": "long", "bulk": [-100, 40, 100, 140, 180], "latency": [-100, 60, 120, 160, 200] },
+    { "wn": 4, "interleaver": "long", "bulk": [-100, 40, 100, 140, 180], "latency": [-100, 60, 120, 160, 200] },
+    { "wn": 6, "interleaver": "long", "bulk": [-100, 40, 100, 140, 180], "latency": [-100, 60, 120, 160, 200] },
+    { "wn": 7, "interleaver": "long", "bulk": [-100, 40, 100, 140, 180], "latency": [-100, 60, 120, 160, 200] },
+    { "wn": 8, "interleaver": "long", "bulk": [-100, 40, 100, 140, 180], "latency": [-100, 60, 120, 160, 200] }
+  ],
+  "smoothing_weight": 8,
+  "clean_run": 2,
+  "rx_error_limit_ppt": 500,
+  "rx_ceiling_initial": 2,
+  "rx_ceiling_cap": 8,
+  "tx_step_down_waits": 2,
+  "tx_ceiling_initial": 2,
+  "tx_ceiling_cap": 8
+}

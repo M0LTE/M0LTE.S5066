@@ -21,6 +21,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="M0LTE.S5066.Host.Tests" />
+    <!-- The stack sweep (P7-8) drives Nodes on a virtual clock with the host's own input order (InputScheduler). -->
+    <InternalsVisibleTo Include="s5066-sweep" />
   </ItemGroup>
 
 </Project>

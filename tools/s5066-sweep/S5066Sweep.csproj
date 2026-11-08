@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    s5066-sweep: the stack sweep harness (core-architecture.md 9, phase 7 item P7-8). Two Nodes, each with
+    an in-process synchronous MS110D modem, joined by M0LTE.HfChannel's continuous channel on a virtual
+    clock; also the real-time cross-check (two s5066d processes over UDP audio through the same channel).
+    A statistical tool (T4), not byte-exact work. Runbook: docs/stack-sweep.md.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>s5066-sweep</AssemblyName>
+    <RootNamespace>M0LTE.S5066.Sweep</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <ProjectReference Include="../../src/s5066d/s5066d.csproj" />
+    <PackageReference Include="M0LTE.HfChannel" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="sweep-node.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="tables/*.json" CopyToOutputDirectory="PreserveNewest" LinkBase="tables" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.T4.Tests" />
+  </ItemGroup>
+
+</Project>
