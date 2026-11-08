@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- s5066-test: the 5066 test client (plan 11.6, decision D8). Talks to any node over the SIS, on M0LTE.S5066.Client only. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>s5066-test</AssemblyName>
+    <RootNamespace>M0LTE.S5066.TestClient</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.T4.Tests" />
+  </ItemGroup>
+
+</Project>

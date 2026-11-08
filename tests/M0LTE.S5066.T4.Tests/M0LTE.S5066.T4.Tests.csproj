@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    T4 (plan 11.1): two s5066d processes over UDP audio through the real M0LTE.Ms110d modem, driven by
+    s5066-test headless. Real time and processes, so kept apart from the deterministic core tests.
+    Also the s5066-test unit tests.
+  -->
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/s5066d/s5066d.csproj" />
+    <ProjectReference Include="../../tools/s5066-test/S5066Test.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../src/s5066d/bench-node1.json" Link="bench/bench-node1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../src/s5066d/bench-node2.json" Link="bench/bench-node2.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
