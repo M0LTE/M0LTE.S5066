@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.S5066.Client</PackageId>
+    <Title>M0LTE.S5066.Client</Title>
+    <Description>A .NET client for the STANAG 5066 Edition 4 Subnetwork Interface Sublayer over TCP (Annex S): bind, send with delivery confirmation, receive, flow control and management messages.</Description>
+    <PackageTags>stanag-5066;stanag;hf;data-link;sis</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Host.Tests" />
+  </ItemGroup>
+
+</Project>

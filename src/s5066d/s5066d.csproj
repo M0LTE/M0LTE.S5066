@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>s5066d</AssemblyName>
+    <RootNamespace>M0LTE.S5066.Daemon</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+  </ItemGroup>
+
+</Project>

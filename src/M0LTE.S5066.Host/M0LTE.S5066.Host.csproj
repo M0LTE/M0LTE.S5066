@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.S5066.Host</PackageId>
+    <Title>M0LTE.S5066.Host</Title>
+    <Description>Hosts one STANAG 5066 Edition 4 node in real time: the SIS server on TCP 5066 (Annex S), the real-time driver for the sans-IO core, a modem port with an M0LTE.Ms110d adapter, and in-process loopback media for tests.</Description>
+    <PackageTags>stanag-5066;stanag;hf;data-link;sis</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <EmbeddedResource Include="../../conformance/corpus/t2/defaults.json" LogicalName="M0LTE.S5066.Host.defaults.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
+    <PackageReference Include="M0LTE.Ms110d" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Host.Tests" />
+  </ItemGroup>
+
+</Project>

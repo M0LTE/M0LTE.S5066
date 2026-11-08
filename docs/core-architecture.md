@@ -19,6 +19,7 @@ Conventions in this document: type sketches are C# and are indicative, not final
 9. Work breakdown, phases 3 to 6
 10. Choices the standard does not make (NOT STATED)
 11. Proposed changes to the corpus format and harness contract
+12. The host: driving the core in real time (P6-3a), with the client library and chat sample (12.10)
 
 ---
 
@@ -637,3 +638,118 @@ To be made in the conformance repository (minor version bump before 1.0.0) along
 5. **New settings** of section 7.2, each in the PR that first needs it, as the format already requires.
 
 No change is proposed to the input or output kinds. The ten inputs and eight outputs are sufficient for phases 3 to 6; phase 8 adds the station hook pair (section 10 item 13).
+
+---
+
+## 12. The host: driving the core in real time (P6-3a)
+
+Added by P6-3a. The core of sections 1 to 8 owns no clock, thread, socket or modem. The host (plan D3, `M0LTE.S5066.Host`) is the code that gives it those, for one node, without changing a single trace rule: a real node fed the inputs of a T2 trace in real time behaves as the trace says. The host is modem-agnostic; the M0LTE.Ms110d adapter (12.6) is one implementation of its modem port.
+
+### 12.1 Shape
+
+`NodeHost` holds one `Node`, one modem (12.5) and one SIS server (12.7). Every call on the `Node` happens on one serialising loop: an async loop task that takes one input at a time and runs it to completion, so the core never needs a lock. Other threads (socket readers, the audio thread, the modem's transmit completion) never touch the core; they post events into the loop's queues and return.
+
+```
+ socket readers --SisConnect/SisBytes/SisDisconnect--+
+ modem threads  --BurstStarted/BytesReceived/...-----+--> queues --> loop --> Node.Handle --> outputs
+ timer table    --TimerExpired (at the deadline)-----+                                          |
+       ^                                                                                         |
+       +------ TimerStart / TimerCancel <------------------------------------------------------- +
+               Transmit, TerminateReceive, SetMaxInputBlocks --> modem
+               SisBytesOut, SisClose --> SIS server;  LinkState --> host event (status, logs)
+```
+
+### 12.2 Clock
+
+- Host time is a monotonic millisecond count (a `TimeProvider` timestamp, never the wall clock, which can step). It is the core's `T` directly: host time 0 is core time 0.
+- At start the host reads UTC once, floors it to a whole second and writes that second into `time.epoch_year`, `time.epoch_day` and `time.epoch_second` of the configuration it gives the core (section 3.1), whatever its file says. Host time 0 is that whole second, so the first input is at the sub-second offset, never negative. TTDs on the wire are then real UTC (A-0162, A-0163) with no other conversion in the core.
+- Events are stamped with host time when the loop receives them, never with a time the event claims for itself (a modem's sample index, for example). M0LTE.Ms110d's design reaches the same rule from the other side: every timestamp handed to the stack is on the host clock (its docs/design-5066-support.md 3.1). A stamp is never earlier than the `T` of the input the loop handled last, so `T` never decreases (corpus-format.md 4.4).
+
+### 12.3 Timers
+
+The host keeps the harness's timer table: name to (deadline, start sequence), filled from `TimerStart` (deadline = the input's `T` plus `ms`; a restart replaces the entry and takes a new sequence number) and emptied by `TimerCancel` and by expiry. A due timer is handed to the core as `TimerExpired` with `T` equal to its deadline, even when the loop reaches it late, because the core checks the deadline (section 3.3). The loop sleeps until the earlier of the next deadline and the next posted event. The timer table is the only timer: no per-timer OS timer is created, so a restart or cancel costs nothing and cannot race.
+
+### 12.4 Same-millisecond ordering
+
+The loop always hands the core the pending input with the smallest key (T, class, sequence), where the classes are those of corpus-format.md 4.5: 0 configuration, 1 timer expiries (sequence = the order of their last `TimerStart`), 2 modem events, 3 SIS events (sequence = arrival order within each). A due timer competes with posted events through the same key, and a timer that an input starts with a deadline already passed (a loop running late) is picked up before any later event. So, whenever events arrive in the same millisecond as each other or as a deadline, the order is the one a trace must list, and before an input at `T` every timer due at or before `T` has expired, as harness-contract.md 2 checks. A configuration change made at run time goes in as class 0 with the whole merged record (section 2.1).
+
+### 12.5 The modem port
+
+The core's `IModemPort` has one pure call, `PlanBurst`. The host's modem port extends it with what a real modem does, all in plan 5.1's terms:
+
+```csharp
+public interface IHostModem : IModemPort
+{
+    void Start(IModemEvents events);                     // events may be raised from any thread
+    void Transmit(ReadOnlyMemory<byte> bytes, int wn, Interleaver il, int k, bool eom);   // returns at once
+    void TerminateReceive();                             // D.5.4.6 d; not used in phases 3 to 6
+    void SetMaxInputBlocks(int n);                       // D.5.4.6 c; not used in phases 3 to 6
+}
+public interface IModemEvents
+{
+    void BurstStarted();
+    void BytesReceived(ReadOnlyMemory<byte> bytes);      // one decoded block
+    void BurstEnded(BurstEndReason reason, int wn, Interleaver il, int k, int? snrTenthDb, int blocks);
+    void TransmitDone();
+    void ChannelBusy(bool busy);                         // the optional external busy input (plan 7.3, P5-4)
+}
+```
+
+Rules every modem port follows:
+
+1. `PlanBurst` is pure and never early. Each of its durations is rounded up to a whole millisecond (preamble, block and flush separately), so every EOT computed from it (section 5.6) is at or after the true end (C-0891).
+2. `BurstStarted` is raised once per burst the modem has locked to, not for a candidate it may still reject; it is the core's DCD rising. Then `BytesReceived` once per decoded block, in order, then exactly one `BurstEnded`. A burst that never locked raises nothing.
+3. Half duplex: while it transmits, the modem raises no receive events.
+4. `Transmit` starts one burst and returns. `TransmitDone` is raised once per `Transmit`, when the last sample has left the output device (with its known output latency). The core never asks for a second burst before the first is done (section 5.7).
+5. Bytes are bytes: the bit order on the air is the modem port's business (C-0150).
+6. `ChannelBusy` is the external busy input. A modem may raise it from a detector of its own; a host may wire another source to the same event. Nothing else is DCD.
+
+The modem events go into class 2 in the order the modem raised them.
+
+### 12.6 The M0LTE.Ms110d adapter
+
+`Ms110dHostModem` consumes the published M0LTE.Ms110d package (0.6.0) and an audio channel (9600 Hz mono floats in and out; the host resamples if its device runs at another rate). Choices, all ours unless a row is cited:
+
+- Bytes go to the modulator LSB first, and decoded blocks are packed back the same way (C-0150).
+- Waveform numbers map one to one (plan 5.3); interleavers by name, ultra short, short, medium and long. Very short and very long are never sent (plan 5.3); asking for them is a configuration error. K is the `k` of the `Transmit` (7 throughout, plan 5.3). EOM as the `Transmit` says; the 110D EOT marker is always appended.
+- `PlanBurst` is `Ms110dBurstPlan.Plan` converted per rule 1: preamble from the preamble symbols, block from the symbols of one interleaver block, flush from the rest of the audio (the leading mini-probe, the EOT marker and the pulse-shaping tail), each rounded up to a ms at 9600 samples/s. With the tail in the flush, `DurationMs` is the length of the modulated audio rounded up by under 3 ms, so `TransmitDone` lands at the planned end. The modem counts the 32-bit EOM inside the blocks (the core always asks for EOM, section 5.6), so a burst whose bytes fill its last block exactly gets one more block; `DurationMs` and the EOTs stay right because the planner stamps from `PlanBurst(totalBytes)` (section 5.6). M0LTE.Ms110d 0.6.0 implements 3 kHz waveforms 0 to 8 and 13; asking for another is a configuration error.
+- `BurstStarted` is the demodulator's `BurstStarted` event (WID accepted). `BytesReceived` is each `BlockDecoded`, delivered at once; the bits after the EOM in the last block reach the core too and are ignored by its sync search (C-0973). `BurstEnded` maps `Eom` and `MaxInputDataBlocks` to eom, `Terminated` to terminated, and `SignalLost`, `SignalAbsent` and `NewPreamble` to signal_lost; its waveform, interleaver and K come from the lock and the SNR is the burst SNR in tenths of a dB, rounded.
+- A burst that never locked raises nothing (the demodulator may report a completed burst with no lock). A `Transmit` while a burst is locked ends it at once as signal_lost with the blocks so far, so the core still sees exactly one `BurstEnded` (rule 2); the demodulator's own later events for that burst are dropped.
+- Receive is gated while transmitting and the demodulator is reset after each transmission, as pdn-soundmodem does. The reset happens on the audio thread, before the next received chunk, because the demodulator is only ever called from there.
+- The adapter raises no `ChannelBusy`.
+
+### 12.7 The SIS server
+
+- Listens on a configured endpoint, by default 127.0.0.1 port 5066 (S-0007, S-0008, S-0009; localhost by default, plan 10.1).
+- Accepts every connection, never refusing one for count: the 16-client limit is the SAP table's, enforced at bind (S-0010, S-0015). Connection numbers start at 1 and are never reused.
+- Posts `SisConnect`, then `SisBytes` with whatever chunks the socket gives (the core's decoder is chunking-independent), then `SisDisconnect` when the socket ends for any reason, including a close the core asked for (the core ignores a disconnect for a connection it has closed).
+- Writes each `SisBytesOut` through a per-connection queue drained by its own writer, so a slow client never blocks the loop or another client.
+- A client that does not read (S-0026, interp S-0029): if the oldest unwritten output to a connection has waited 30 s, the host closes the connection, which the core sees as a disconnect, so the client is unbound and its SAP freed (S-0016). 30 s is fixed in code (no setting; plan 3.2 principle 5): three times the 10 s keep-alive answer bound (S-0041), long enough for a busy host and short enough that a dead reader does not hold memory or a SAP for long.
+- `SisClose` from the core: the host flushes what is queued for that connection, within the same 30 s bound, then closes it.
+
+### 12.8 Loopback for tests
+
+Two in-process media let several hosts talk in one process, both test aids in the host library so phase 6's T4 and `s5066-test` can use them too:
+
+- `LoopbackMedium`, byte level: each `Transmit` reaches every other modem on the medium as one burst of blocks, timed in real time by a plan from the node's `modem.*` fixture (the T2 arithmetic, corpus-format.md 5): carrier detect after the preamble, a block at the end of each block time, the end of the burst after the flush, and `TransmitDone` to the sender then. A modem transmitting or already receiving does not hear a burst; a test can drop bursts per receiver. With small fixture numbers an ARQ exchange takes well under a second.
+- `AudioMedium`, audio: every 20 ms each station hears the sum of what the others play plus a little Gaussian noise, so two hosts run over the real M0LTE.Ms110d adapter. A confirmed ARQ U_PDU at WN 6 short takes about 10 s.
+
+The audio port is `IAudioChannel`: received audio is a continuous real-time stream of chunks, silence included, and a burst is played whole with a callback once its last sample is out. Besides the in-process medium, `UdpAudioChannel` carries the same stream as 20 ms datagrams of 32-bit floats, so two `s5066d` processes, or a host and an audio bridge, can be joined without a sound card. A sound card belongs to P6-3b (pdn-soundmodem).
+
+### 12.9 Console host
+
+`s5066d` loads one JSON file (`HostConfig`): the corpus configuration keys of corpus-format.md section 6, merged over the corpus `defaults.json` built into the host, with `modem.*` ignored by a real modem and `time.*` overwritten (12.2), plus a `host` object:
+
+| Key | Meaning |
+|---|---|
+| `host.sis_listen` | SIS endpoint, `address:port`; default `127.0.0.1:5066` (S-0007 to S-0009) |
+| `host.modem.kind` | `ms110d` |
+| `host.modem.audio_listen`, `host.modem.audio_peer` | UDP audio endpoints (12.8) |
+
+When the file has no `prng_seed`, the host draws one from the operating system, so two nodes started from copies of one file do not share CSMA jitter. It has no amateur radio or AX.25 anything; the node address comes from `local_address`. `src/s5066d/example.json` is a starting point.
+
+### 12.10 The client library and the chat sample
+
+`M0LTE.S5066.Client` (`SisClient`) is the application side of Annex S over TCP. It reads its connection all the time and queues what arrives without bound, so a slow application never stops it reading (S-0024, S-0025); it answers every keep-alive at once and sends unprompted ones at most every 120 s (S-0041, S-0043, interp S-0044, S-0045); it holds U_PDUs back while flow is off and treats flow as on after each bind (S-0020, S-0021, interp S-0027); and it refuses a U_PDU over the bind's MTU, since splitting is the client's job (A-0003). A send that asks for confirmation completes on the matching S_UNIDATA_REQUEST_CONFIRM or S_UNIDATA_REQUEST_REJECTED: the oldest waiting send to the same SAP and address whose U_PDU starts with the copy returned (the copy may be the first bytes only, S-0127, S-0129), so answers may come in any order. It also parses the node information message (docs/management-messages.md).
+
+`samples/HfChat` (`hfchat`) is HF Operator Chat (Annex O, matrix `O.tsv`) on the client: SAP 5, priority 12, ASCII lines ending CR LF within the MTU, ARQ with node confirmation to one node and non-ARQ to a group or the broadcast address, with source, time and confirmation shown and a short history. Its NOT STATED choices are interp O-0024 to O-0026.
