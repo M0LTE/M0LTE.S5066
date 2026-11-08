@@ -133,6 +133,13 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>The EOW scheduler of this node's headers (P7-3).</summary>
     internal EowScheduler Eows => _eows;
 
+    /// <summary>
+    /// The rate selection state kept in a peer's DtsPeers entry (P7-7; core-architecture.md 6 rule 11):
+    /// the EOWs received from it and the sender's own evidence, or null for a peer with no entry.
+    /// Set by <see cref="DtsPeers"/>.
+    /// </summary>
+    public Func<uint, (ReceivedEows Received, SenderRate Sender)?> RateStateOf { get; set; } = _ => null;
+
     /// <summary>The queued normal-delivery requests, in arrival order.</summary>
     internal IReadOnlyList<DUnidataRequest> PendingNonArq =>
         _entries.Where(e => !e.Expedited).Select(e => e.Request!).ToList();
@@ -609,7 +616,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             throw new InvalidOperationException("the planner was asked to build with nothing it can place");
         }
 
-        (Speed speed, long capacity) = Shape();
+        (Speed speed, int position, long capacity) = Shape();
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape.BytesPerBlock, BlocksWithin(shape, Budget) * shape.BytesPerBlock);
         if (chosenControl.Count == 0 && chosen.Count == 0)
@@ -618,6 +625,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         Transmit t = Emit(chosenControl, chosen, speed);
+        RecordSent(speed, position);
         _mac.QueueState(Placeable());
         ReconcileTimer();
         return t;
@@ -629,19 +637,19 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// last announced for it (C-0353, C-1052). Dropping can change which item goes first, and so
     /// the capacity, so it repeats until nothing more is dropped.
     /// </summary>
-    private (Speed Speed, long Capacity) Shape()
+    private (Speed Speed, int Position, long Capacity) Shape()
     {
-        Speed speed = _context.Config.Drc.DefaultSpeed;
-        BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         while (true)
         {
+            (Speed speed, int position) = ChooseWaveform();
+            BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
             int first = FirstItemSize() ?? throw new InvalidOperationException("nothing can be placed");
             long capacity = Capacity(shape, first);
             long longest = shape.PreambleMs + ((capacity / shape.BytesPerBlock) * shape.BlockMs) + shape.FlushMs;
             List<Entry> late = _entries.Where(e => e.CommitEnd is long end && _context.Now + longest > end).ToList();
             if (late.Count == 0)
             {
-                return (speed, capacity);
+                return (speed, position, capacity);
             }
 
             // Dropped without a rejection: the TTL has not expired (C-1052). A normal request has been
@@ -657,7 +665,260 @@ internal sealed class TransmitQueue : ITransmissionSource
 
             if (!Placeable())
             {
-                return (speed, 0);
+                return (speed, position, 0);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <c>ChooseWaveform</c> (core-architecture.md 5.3; 9, phase 7, P7-7): the waveform and interleaver
+    /// of a transmission starting now, and its ladder position. With an empty <c>drc.table</c> it is
+    /// <c>drc.default_speed</c> throughout, the fixed-rate baseline (design shape item 6; open
+    /// question 13). Otherwise it is the lowest rung, by ladder order, over every destination the
+    /// queue could place a D_PDU for now (C-0894, C-0930; open question 6; interp C-1283): a group or
+    /// broadcast destination counts as <c>drc.default_speed</c> (C-0937; plan 6.2), an individual
+    /// peer as <see cref="PeerPosition"/> gives. WN 0, for an Ed3 peer's 75 bps ceiling, is below
+    /// every rung (open question 11).
+    /// </summary>
+    private (Speed Speed, int Position) ChooseWaveform()
+    {
+        DrcConfig drc = _context.Config.Drc;
+        DrcTable table = drc.Table;
+        if (table.IsEmpty)
+        {
+            return (drc.DefaultSpeed, 0);
+        }
+
+        int defaultPosition = RateChoice.Map(table, drc.DefaultSpeed);
+        int lowest = int.MaxValue;
+        Speed? wn0 = null;
+        foreach ((uint dst, bool group) in Addressees())
+        {
+            (int position, Speed? slowest) = group ? (defaultPosition, null) : PeerPosition(dst, defaultPosition);
+            if (position == SenderRate.Wn0)
+            {
+                // Of two WN 0 ceilings the one with the longer interleaver is the more robust.
+                wn0 = wn0 is null || slowest!.Interleaver > wn0.Interleaver ? slowest : wn0;
+            }
+
+            lowest = Math.Min(lowest, position);
+        }
+
+        if (wn0 is not null)
+        {
+            return (wn0, SenderRate.Wn0);
+        }
+
+        int chosen = lowest == int.MaxValue ? defaultPosition : lowest;
+        return (table.Ladder[chosen], chosen);
+    }
+
+    /// <summary>
+    /// The ladder position for one individual peer (P7-7). The received recommendation first: to a
+    /// peer recorded Ed3, its ED3-BASIC-RATE as ceiling and interleaver (C-0959, C-0960; open
+    /// question 10), WN 0 used as it is (open question 11); to any other peer, MAX-SPEED for a bulk
+    /// transmission and LOW-SPEED otherwise (open question 7), each falling back to the other when
+    /// only one has come and never above MAX-SPEED (C-0894; interp C-1284), mapped onto the ladder
+    /// (open question 5; interp C-1280); nothing received (or a peer of unknown edition, which can
+    /// have no usable recommendation, interp C-1284), <c>drc.default_speed</c>. Then the sender's own
+    /// evidence (interp C-1281, C-1282): never above a failed-trial ceiling, never more than one rung
+    /// above the rung that last drew an answer, and down one rung for each step down after silence,
+    /// never below the lowest rung (going lower never exceeds a recommendation, plan 5.3).
+    /// </summary>
+    private (int Position, Speed? Wn0) PeerPosition(uint peer, int defaultPosition)
+    {
+        DrcTable table = _context.Config.Drc.Table;
+        Speed defaultSpeed = _context.Config.Drc.DefaultSpeed;
+        (ReceivedEows Received, SenderRate Sender)? state = RateStateOf(peer);
+        ReceivedEows? rx = state?.Received;
+        int position = defaultPosition;
+        switch (_context.Peers.EditionOf(peer))
+        {
+            case KnownEdition.Ed3:
+                if (rx?.Ed3BasicRate is Ed3BasicRateEow ed3)
+                {
+                    Speed named = RateChoice.Ed3Named(ed3);
+                    if (named.Wn == 0)
+                    {
+                        return (SenderRate.Wn0, named);
+                    }
+
+                    position = RateChoice.Map(table, named);
+                }
+
+                break;
+            case KnownEdition.Ed4:
+                int? max = rx?.MaxSpeed is SpeedInterleaver m && RateChoice.Named(m, defaultSpeed) is Speed ms ? RateChoice.Map(table, ms) : null;
+                int? low = rx?.LowSpeed is SpeedInterleaver l && RateChoice.Named(l, defaultSpeed) is Speed ls ? RateChoice.Map(table, ls) : null;
+                int bulkPosition = max ?? low ?? defaultPosition;
+                Speed bulkRung = table.Ladder[bulkPosition];
+                bool bulk = DataBytesTo(peer) > _context.Modem.PlanBurst(bulkRung.Wn, bulkRung.Interleaver, 0).BytesPerBlock;
+                position = bulk ? bulkPosition : low ?? max ?? defaultPosition;
+                if (max is int ceiling)
+                {
+                    position = Math.Min(position, ceiling);
+                }
+
+                break;
+        }
+
+        if (state?.Sender is SenderRate s)
+        {
+            if (s.Ceiling is int c)
+            {
+                position = Math.Min(position, c);
+            }
+
+            if (s.AnsweredRung is int answered)
+            {
+                position = Math.Min(position, answered + 1);
+            }
+
+            position = Math.Max(0, position - s.StepDown);
+        }
+
+        return (position, null);
+    }
+
+    /// <summary>
+    /// Every destination the queue holds a D_PDU for that a build now could place, in a fixed order
+    /// (interp C-1283): MANAGEMENT and WARNING, expedited first copies, owed acknowledgements,
+    /// retransmissions, first transmissions of data and non-ARQ repeats. The state holds of
+    /// <see cref="Select"/> are not applied, so the set may be larger than the transmission's
+    /// addressees but never smaller: the speed never exceeds an addressee's (C-0894).
+    /// </summary>
+    private List<(uint Dst, bool Group)> Addressees()
+    {
+        var list = new List<(uint, bool)>();
+        void Add(uint dst, bool group)
+        {
+            if (!list.Contains((dst, group)))
+            {
+                list.Add((dst, group));
+            }
+        }
+
+        foreach (ControlItem c in _control)
+        {
+            Add(c.Dst, false);
+        }
+
+        foreach (Entry e in _entries)
+        {
+            if (e.HasUnplacedSegment || e.OwedRepeat() is not null)
+            {
+                Add(e.Dst, e.DstIsGroup);
+            }
+        }
+
+        foreach (ArqLink link in _links.Values)
+        {
+            if (link.AckOwed && !link.Suspended)
+            {
+                Add(link.Peer, false);
+            }
+        }
+
+        foreach (ArqFrame f in FailedFrames(_control))
+        {
+            Add(f.Owner.Peer, false);
+        }
+
+        foreach (ArqCPdu a in _arq)
+        {
+            if (a.HasUnplacedSegment && LinkOf(a.Peer) is ArqLink link && !link.Suspended)
+            {
+                Add(a.Peer, false);
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// The encoded bytes of the data D_PDUs the queue holds for an individual peer, new or
+    /// retransmitted, ARQ or not (open question 7; interp C-1285): retransmissions, the unplaced rest
+    /// of each ARQ C_PDU cut at the peer's segment size, and every copy still owed of each non-ARQ
+    /// C_PDU to the peer's individual address. Window limits are not applied.
+    /// </summary>
+    private long DataBytesTo(uint peer)
+    {
+        long total = 0;
+        int maxSegment = MaxSegmentTo(peer, false);
+        if (_links.TryGetValue(peer, out ArqLink? link))
+        {
+            foreach (ArqFrame f in link.Outstanding)
+            {
+                if (f.State == ArqFrameState.Failed)
+                {
+                    total += DataOnlySize(link, FrameLength(f));
+                }
+            }
+
+            foreach (ArqCPdu a in _arq)
+            {
+                if (a.Peer != peer || !a.HasUnplacedSegment)
+                {
+                    continue;
+                }
+
+                if (a.Dropped)
+                {
+                    total += DataOnlySize(link, 0);
+                    continue;
+                }
+
+                for (int left = a.Remaining; left > 0; left -= maxSegment)
+                {
+                    total += DataOnlySize(link, Math.Min(maxSegment, left));
+                }
+            }
+        }
+
+        foreach (Entry e in _entries)
+        {
+            if (e.DstIsGroup || e.Dst != peer)
+            {
+                continue;
+            }
+
+            if (e.Placed)
+            {
+                foreach (int length in e.OwedSizes())
+                {
+                    total += SizeOf(length, e.Expedited, peer);
+                }
+
+                continue;
+            }
+
+            for (int copy = 0; copy < Math.Max(1, e.Copies); copy++)
+            {
+                for (int left = e.CPdu.Length; left > 0; left -= maxSegment)
+                {
+                    total += SizeOf(Math.Min(maxSegment, left), e.Expedited, peer);
+                }
+            }
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// After a build (P7-7): each individual peer the transmission carried a D_PDU to has its sender
+    /// state told the rung, and whether ARQ data went, so an answer is awaited (open question 16). The
+    /// speed is kept for the node information message (interp S-0164). With an empty table only the
+    /// speed is kept.
+    /// </summary>
+    private void RecordSent(Speed speed, int position)
+    {
+        _context.LastTransmitSpeed = speed;
+        foreach (uint peer in _sentPeers)
+        {
+            _context.TransmitSpeeds[peer] = speed;
+            if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate s)
+            {
+                s.OnSent(position, _sentArqPeers.Contains(peer));
             }
         }
     }
@@ -679,7 +940,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             if (e.HasUnplacedSegment && (e.Placed || _expeditedIds.IsFree(_context.Now)))
             {
-                return SizeOf(e.NextSegmentLength(MaxSegment), true, e.Dst);
+                return SizeOf(e.NextSegmentLength(MaxSegmentTo(e.Dst, e.DstIsGroup)), true, e.Dst);
             }
         }
 
@@ -711,7 +972,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                     break;
                 }
 
-                return SizeOf(e.NextSegmentLength(MaxSegment), false, e.Dst);
+                return SizeOf(e.NextSegmentLength(MaxSegmentTo(e.Dst, e.DstIsGroup)), false, e.Dst);
             }
 
             var a = (ArqCPdu)c;
@@ -730,7 +991,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                 continue;
             }
 
-            return DataOnlySize(link, a.Dropped ? 0 : a.NextSegmentLength(MaxSegment));
+            return DataOnlySize(link, a.Dropped ? 0 : a.NextSegmentLength(MaxSegmentTo(a.Peer, false)));
         }
 
         foreach (Entry e in Normal())
@@ -783,7 +1044,6 @@ internal sealed class TransmitQueue : ITransmissionSource
         var chosen = new List<Piece>();
         var acks = new SortedDictionary<uint, List<AckPiece>>();
         long used = 0;
-        int maxSegment = MaxSegment;
 
         bool Fits(long size) => used + size <= capacity;
 
@@ -806,7 +1066,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
             else if (fresh!.Dropped)
             {
-                cut = fresh.NextSegmentLength(maxSegment);
+                cut = fresh.NextSegmentLength(MaxSegmentTo(link.Peer, false));
                 carried = 0;   // a DROP PDU carries no segment (C-0182, C-0183, C-1124)
             }
             else
@@ -848,7 +1108,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         // the maximum segment size, or the rest of the C_PDU.
         int AlignedLength(uint peer, ArqCPdu a, long pos, int overhead)
         {
-            int full = a.NextSegmentLength(maxSegment);
+            int full = a.NextSegmentLength(MaxSegmentTo(peer, false));
             if (_context.Peers.EditionOf(peer) != KnownEdition.Ed4)
             {
                 return full;   // never towards an Ed3 peer or one of unknown edition (C-0554, C-0870, C-0560)
@@ -897,6 +1157,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                     break;
                 }
 
+                int maxSegment = MaxSegmentTo(e.Dst, e.DstIsGroup);
                 int size = SizeOf(e.NextSegmentLength(maxSegment), true, e.Dst);
                 if (!Fits(size))
                 {
@@ -943,6 +1204,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                     continue;   // held behind expedited data to the same destination (C-0615, C-0737, C-1044), or by the peer's state (C-1215)
                 }
 
+                int maxSegment = MaxSegmentTo(e.Dst, e.DstIsGroup);
                 while (e.HasUnplacedSegment)
                 {
                     int size = SizeOf(e.NextSegmentLength(maxSegment), false, e.Dst);
@@ -1139,7 +1401,21 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     private long Budget => Math.Min(DtsConfig.MaxTransmissionLimitMs, _context.Config.Dts.MaxTransmissionMs);
 
-    private int MaxSegment => _context.Config.Dts.MaxSegmentSize;
+    /// <summary>
+    /// The largest new segment to a destination: <c>dts.max_segment_size</c> (C-0503, C-0523), and to an
+    /// individual peer that sent MAX-SEGMENT, never more than its value x 4 bytes (C-0475, C-0476). The
+    /// received values do not change during a build, so the size is fixed for the transmission (C-0549).
+    /// </summary>
+    private int MaxSegmentTo(uint dst, bool group)
+    {
+        int max = _context.Config.Dts.MaxSegmentSize;
+        if (!group && RateStateOf(dst)?.Received.MaxSegment is int units)
+        {
+            max = Math.Min(max, units * 4);
+        }
+
+        return max;
+    }
 
     private static long BlocksWithin(BurstPlan shape, long budgetMs)
     {

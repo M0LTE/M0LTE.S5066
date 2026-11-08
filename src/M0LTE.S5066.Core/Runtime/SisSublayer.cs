@@ -574,18 +574,19 @@ internal sealed class SisSublayer : ISisSublayer
 
     /// <summary>
     /// Our published node information (docs/management-messages.md; interp S-0164): this node's
-    /// address field (Fig S-19, SIZE 7), the transmit waveform number and interleaver, the peer count,
+    /// address field (Fig S-19, SIZE 7), the waveform number and interleaver of the last transmission (<c>drc.default_speed</c> before any; P7-7), the peer count,
     /// then one 13-byte record per peer in address order, at most <see cref="MaxNodeInfoPeers"/>. The
     /// peers are those the receiver has a quality record for (C-0833) and those the SIS has a soft
     /// link record for. A record: the address field; the soft link state (0 none, 1 being made or held
-    /// off, 2 established, 3 closing); the transmit waveform and interleaver to it; the waveform and
+    /// off, 2 established, 3 closing); the waveform and interleaver of the last transmission that carried a D_PDU to it (<c>drc.default_speed</c> when none; P7-7); the waveform and
     /// interleaver of the last burst heard from it (0xFF when never heard); that burst's SNR in tenths
     /// of a dB, signed 16-bit big-endian (0x8000 when not given or never heard); and the whole seconds
     /// since it, big-endian, saturating at 65534 (0xFFFF when never heard).
     /// </summary>
     private byte[] NodeInfoBody()
     {
-        Speed speed = _context.Config.Drc.DefaultSpeed;   // the transmit speed to every peer until phase 7
+        Speed defaultSpeed = _context.Config.Drc.DefaultSpeed;
+        Speed speed = _context.LastTransmitSpeed ?? defaultSpeed;   // the speed in use (P7-7)
         var peers = new SortedSet<uint>(_context.RxQuality.Keys);
         peers.UnionWith(_softLinks.Keys);
         List<uint> listed = peers.Take(MaxNodeInfoPeers).ToList();
@@ -601,8 +602,9 @@ internal sealed class SisSublayer : ISisSublayer
             body[at + 4] = !_softLinks.TryGetValue(peer, out SoftLink? link) ? (byte)0
                 : link.State != SoftLinkState.Established ? (byte)1
                 : link.Closing ? (byte)3 : (byte)2;
-            body[at + 5] = (byte)speed.Wn;
-            body[at + 6] = (byte)speed.Interleaver;
+            Speed toPeer = _context.TransmitSpeeds.TryGetValue(peer, out Speed? sent) ? sent : defaultSpeed;
+            body[at + 5] = (byte)toPeer.Wn;
+            body[at + 6] = (byte)toPeer.Interleaver;
             int snr = 0x8000;
             int age = 0xFFFF;
             if (_context.RxQuality.TryGetValue(peer, out RxQuality? q))

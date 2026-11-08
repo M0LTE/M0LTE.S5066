@@ -26,9 +26,9 @@ namespace M0LTE.S5066.Core.Runtime;
 /// </para>
 /// <para>
 /// The top-priority recommendations, the repeating set and the Ed3 recommendation are filled by
-/// P7-6 (<see cref="Recommender"/>, interp C-1271, C-1273), SENDER-APPROACH by P7-7. With an empty
-/// drc.table they stay empty and the only Ed4 EOW sent is CAPABILITY. The providers are settable so
-/// unit tests can show the order with synthetic content.
+/// P7-6 (<see cref="Recommender"/>, interp C-1271, C-1273), SENDER-APPROACH by P7-7 (set by
+/// DtsPeers, interp C-1286). With an empty drc.table they stay empty and the only Ed4 EOW sent is
+/// CAPABILITY. The providers are settable so unit tests can show the order with synthetic content.
 /// </para>
 /// </remarks>
 internal sealed class EowScheduler
