@@ -117,6 +117,15 @@ internal sealed record DLinkCleanState(uint Peer, bool Clean) : ToCas;
 /// <param name="Peer">The peer's address.</param>
 internal sealed record DPeerArqHeard(uint Peer) : ToCas;
 
+/// <summary>
+/// DTS to CAS, ours (interp B-0460): a complete C_PDU from the peer, received through regular ARQ, is
+/// held for in-order delivery behind a missing D_PDU (C-0178, C-1123). Sent each time one is so held;
+/// the C_PDU itself follows later in D_UNIDATA_INDICATION, when the gap is filled.
+/// </summary>
+/// <param name="Peer">The peer's address.</param>
+/// <param name="CPdu">The held C_PDU, which the DTS does not interpret.</param>
+internal sealed record DCpduHeld(uint Peer, ReadOnlyMemory<byte> CPdu) : ToCas;
+
 /// <summary>C_PHYSICAL_LINK_MAKE, SIS to CAS: make a physical link to the peer (B-0010, B-0196, A-0193).</summary>
 /// <param name="Peer">The peer's address.</param>
 internal sealed record CPhysicalLinkMake(uint Peer) : ToCas;

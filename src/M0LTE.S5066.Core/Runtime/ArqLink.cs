@@ -140,6 +140,7 @@ internal sealed class ArqLink
     public List<ReadOnlyMemory<byte>> Receive(int fsn, bool start, bool end, bool inOrder, bool drop, ReadOnlySpan<byte> segment)
     {
         var deliver = new List<ReadOnlyMemory<byte>>();
+        LastHeld = null;
         ArqUsed = true;
         _acknowledgement = null;   // the receive window may change
         int ahead = Seq.Distance(RxLwe, fsn);
@@ -167,6 +168,7 @@ internal sealed class ArqLink
 
         AdvanceRxLwe();
 
+        CPduRun? added = null;
         if (FindRun(serial) is CPduRun run)
         {
             if (run.Dropped)
@@ -182,6 +184,7 @@ internal sealed class ArqLink
             else
             {
                 _pendingInOrder.Add(run);
+                added = run;
             }
         }
 
@@ -195,8 +198,20 @@ internal sealed class ArqLink
             deliver.Add(Consume(r));
         }
 
+        if (added is not null && _pendingInOrder.Contains(added))
+        {
+            LastHeld = Join(added);   // complete, and held behind a gap (interp B-0460)
+        }
+
         return deliver;
     }
+
+    /// <summary>
+    /// The C_PDU the last <see cref="Receive"/> completed when it stays held for in-order delivery
+    /// behind a gap (C-0178, C-1123), or null. It has been received though not yet delivered, so it
+    /// ends the Called node's first-data wait (interp B-0460).
+    /// </summary>
+    public ReadOnlyMemory<byte>? LastHeld { get; private set; }
 
     /// <summary>
     /// The status of the receive window from RX LWE + 1 to RX UWE, one entry per FSN, true for a D_PDU
@@ -544,6 +559,20 @@ internal sealed class ArqLink
         }
 
         return new CPduRun(first, last, inOrder, dropped);
+    }
+
+    /// <summary>Joins the segments of a complete C_PDU in FSN order (C-0509, C-0516) without releasing them.</summary>
+    private byte[] Join(CPduRun run)
+    {
+        var bytes = new List<byte>();
+        for (long f = run.First; ; f++)
+        {
+            bytes.AddRange(_received[f].Data);
+            if (f == run.Last)
+            {
+                return bytes.ToArray();
+            }
+        }
     }
 
     /// <summary>Joins the segments in FSN order (C-0509, C-0516) and releases them.</summary>
