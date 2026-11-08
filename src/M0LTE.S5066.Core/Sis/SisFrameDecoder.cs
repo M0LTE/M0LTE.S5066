@@ -14,7 +14,9 @@ namespace M0LTE.S5066.Core.Sis;
 /// the body is skipped by its size field. A frame still arriving gives nothing, and a final lone 90
 /// is held. The counting of invalid primitives and the unbind after too many (S-0077) belong to the
 /// caller. Memory is bounded by one frame (at most 65540 bytes) plus what the caller has pushed and
-/// not yet drained, so the caller should drain after every push.
+/// not yet drained, so the caller should drain after every push. No size limit below the 16-bit
+/// field applies (interp S-0166): an over-MTU S_UNIDATA_REQUEST must arrive whole to be rejected
+/// with reason 4, so a corrupt size field holds the stream until its body has arrived.
 /// </remarks>
 public sealed class SisFrameDecoder
 {

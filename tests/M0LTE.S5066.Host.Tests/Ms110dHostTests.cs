@@ -51,6 +51,49 @@ public class Ms110dHostTests
     }
 
     [Fact]
+    public async Task Transmit_returns_before_modulation_and_gates_receive_at_once()
+    {
+        // Issue #80: modulation runs off the caller's thread (the host's loop), so the core is never
+        // held up by a long burst; receive is gated from the moment Transmit returns (12.5 rule 3).
+        using var release = new ManualResetEventSlim();
+        var modulating = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var audio = new FakeAudio();
+        var events = new RecordingModemEvents();
+        var modem = new Ms110dHostModem(audio, 0.5f, null, (settings, bits) =>
+        {
+            settings.WaveformNumber.Should().Be(6);
+            bits.Length.Should().Be(24);
+            modulating.TrySetResult();
+            release.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue();
+            return new float[960];
+        });
+        modem.Start(events);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        modem.Transmit(new byte[] { 1, 2, 3 }, 6, Interleaver.Short, 7, true);
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+        await modulating.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        audio.Played.Reader.Count.Should().Be(0, "the burst is still being modulated");
+        FluentActions.Invoking(() => modem.Transmit(new byte[] { 1 }, 6, Interleaver.Short, 7, true))
+            .Should().Throw<InvalidOperationException>("a burst is already being sent (12.5 rule 4)");
+
+        release.Set();
+        (float[] samples, Action played) = await audio.Played.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        samples.Length.Should().Be(960);
+        events.TransmitDones.Should().Be(0);
+        played();
+        events.TransmitDones.Should().Be(1);
+    }
+
+    [Fact]
+    public void A_bad_interleaver_still_throws_to_the_caller()
+    {
+        var modem = new Ms110dHostModem(new FakeAudio());
+        modem.Start(new RecordingModemEvents());
+        FluentActions.Invoking(() => modem.Transmit(new byte[] { 1 }, 6, Interleaver.VeryShort, 7, true)).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public async Task Two_hosts_exchange_a_confirmed_arq_u_pdu_over_modem_audio()
     {
         using var medium = new AudioMedium();
@@ -96,4 +139,41 @@ public class Ms110dHostTests
         Interleaver.Medium => Ms110dInterleaverKind.Medium,
         _ => Ms110dInterleaverKind.Long,
     };
+
+    private sealed class FakeAudio : IAudioChannel
+    {
+        public System.Threading.Channels.Channel<(float[] Samples, Action Played)> Played { get; } =
+            System.Threading.Channels.Channel.CreateUnbounded<(float[], Action)>();
+
+        public void Start(Action<ReadOnlyMemory<float>> received)
+        {
+        }
+
+        public void Play(float[] samples, Action played) => Played.Writer.TryWrite((samples, played));
+    }
+
+    private sealed class RecordingModemEvents : IModemEvents
+    {
+        private int _transmitDones;
+
+        public int TransmitDones => Volatile.Read(ref _transmitDones);
+
+        public void BurstStarted()
+        {
+        }
+
+        public void BytesReceived(ReadOnlyMemory<byte> bytes)
+        {
+        }
+
+        public void BurstEnded(BurstEndReason reason, int wn, Interleaver interleaver, int k, int? snrTenthDb, int blocks)
+        {
+        }
+
+        public void TransmitDone() => Interlocked.Increment(ref _transmitDones);
+
+        public void ChannelBusy(bool busy)
+        {
+        }
+    }
 }

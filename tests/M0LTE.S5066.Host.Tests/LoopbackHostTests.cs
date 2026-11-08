@@ -37,6 +37,30 @@ public class LoopbackHostTests
     }
 
     [Fact]
+    public async Task Shutdown_with_an_unbound_client_connected_is_quick_and_closes_every_client()
+    {
+        // Issue #80: the core closes only bound clients (interp A-0059), so the host closes the
+        // rest; shutdown no longer waits out the 5 s drain for a client that never bound.
+        var medium = new LoopbackMedium();
+        NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1");
+        using var idle = new System.Net.Sockets.TcpClient();
+        await idle.ConnectAsync(TestNodes.Endpoint(a));
+        await using SisClient bound = await SisClient.ConnectAsync(TestNodes.Endpoint(a));
+        byte? reason = null;
+        bound.Unbound += r => reason = r;
+        using var cts = new CancellationTokenSource(Timeout);
+        await bound.BindAsync(5, new ServiceType(1), cts.Token);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await a.DisposeAsync();
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+
+        (await idle.GetStream().ReadAsync(new byte[16], cts.Token)).Should().Be(0, "the unbound client is closed");
+        await bound.Closed.WaitAsync(cts.Token);
+        reason.Should().Be(6, "a bound client still hears S_UNBIND_INDICATION reason 6 first (interp A-0059)");
+    }
+
+    [Fact]
     public async Task A_non_arq_broadcast_reaches_every_other_node()
     {
         var medium = new LoopbackMedium();
