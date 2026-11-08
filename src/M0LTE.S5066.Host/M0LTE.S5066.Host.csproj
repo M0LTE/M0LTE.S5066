@@ -12,6 +12,8 @@
   <ItemGroup>
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <EmbeddedResource Include="../../conformance/corpus/t2/defaults.json" LogicalName="M0LTE.S5066.Host.defaults.json" />
+    <!-- The calibrated drc.table the host loads for M0LTE.Ms110d (core-architecture.md 9, phase 7, design shape item 6). -->
+    <EmbeddedResource Include="../../conformance/calibration/ms110d-cs-0.6.1/drc-table.json" LogicalName="M0LTE.S5066.Host.drc-table.json" />
   </ItemGroup>
 
   <ItemGroup>
