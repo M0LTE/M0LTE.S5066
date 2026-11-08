@@ -1123,6 +1123,12 @@ internal sealed class TransmitQueue : ITransmissionSource
             else if (full < a.Remaining && end % shape.BytesPerBlock != 0 && (end - 1) / shape.BytesPerBlock > pos / shape.BytesPerBlock)
             {
                 boundary = end / shape.BytesPerBlock * shape.BytesPerBlock;
+                if (chosenControl.Count == 0 && chosen.Count == 0 && capacity > budgetCapacity)
+                {
+                    // Stretched for this D_PDU alone (C-1042): end it where those blocks end once the
+                    // modem's end-of-message marker has its room, or the marker would take one more (interp C-1290).
+                    boundary = shape.CapacityOf(end / shape.BytesPerBlock);
+                }
             }
             else
             {

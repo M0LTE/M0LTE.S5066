@@ -37,6 +37,7 @@ public class EotEomScenarios
         Save("dts-rx", "eot-anchor-split-block", AnchorSplitBlock());
         Save("dts-tx", "eom-in-length-limit", EomInLengthLimit());
         Save("dts-tx", "eom-oversize-dpdu", EomOversizeDpdu());
+        Save("dts-tx", "eom-align-stretched", EomAlignStretched());
     }
 
     private static DpduHeader H(uint dst, uint src, int eot) => new(0, eot, DpduAddress.MinimumSize(dst, src), dst, src);
@@ -212,5 +213,93 @@ public class EotEomScenarios
         b.TimerExpired(30000, "csma.lbt_wait").ExpectTimerCancel("dts.ttd").ExpectTransmit(Hex(TxType7(20, cpdu, 0, cpdu.Length, 20)), 2, Interleaver.Long);
         b.TransmitDone(40350);
         return b;
+    }
+
+    /// <summary>
+    /// dts-tx-block-align-ed4 up to its data transmission, with eom_bytes 4 and a one-block limit. The
+    /// first segment's D_PDU (49 bytes at the maximum segment size) does not fit the 36 bytes one block
+    /// carries, so the transmission is stretched for it (C-1042); cut at the block boundary at 40 it
+    /// would still need two blocks, the EOM taking the second, so it is cut to end at 36 (C-1290).
+    /// </summary>
+    private static ScenarioBuilder EomAlignStretched()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "conformance", "corpus", "t2", "dts-tx", "block-align-ed4.jsonl");
+        if (!File.Exists(path))
+        {
+            path = Path.Combine(FindRepoRoot(), "conformance", "corpus", "t2", "dts-tx", "block-align-ed4.jsonl");
+        }
+
+        List<JsonObject> lines = File.ReadAllLines(path).Where(l => l.Length > 0).Select(l => (JsonObject)JsonNode.Parse(l)!).ToList();
+
+        // The template's data transmission at 108000: two DATA-ONLY D_PDUs, then PADDING. Its C_PDU is
+        // the two segments together (C_PCI, DATA S_PDU header and the 44-byte U_PDU, 50 bytes).
+        int at = lines.FindIndex(l => l["out"]?.GetValue<string>() == "transmit" && lines.IndexOf(l) > lines.FindIndex(x => x["t"]?.GetValue<long>() == 108000));
+        byte[] old = Convert.FromHexString(lines[at]["bytes"]!.GetValue<string>());
+        var d0 = (DataOnly)DpduCodec.DecodeFirst(old, PeerEdition.Ed4).Value!;
+        int n0 = Enc(d0).Length;
+        var d1 = (DataOnly)DpduCodec.DecodeFirst(old.AsSpan(n0), PeerEdition.Ed4).Value!;
+        byte[] cpdu = Cat(d0.Segment.Span.ToArray(), d1.Segment.Span.ToArray());
+        if (cpdu.Length != 50)
+        {
+            throw new InvalidOperationException("the template is not as described");
+        }
+
+        var first = new DataOnly(d0.Header with { Eot = 10 }, d0.Flags with { TxWinUwe = true }, 0, new Octets(cpdu.AsSpan(0, 17)), true);
+        if (Enc(first).Length != 36)
+        {
+            throw new InvalidOperationException("the D_PDU is not 36 bytes");
+        }
+
+        JsonObject header = lines[0];
+        var config = (JsonObject)header["config"]!.DeepClone();
+        config["modem"]!["eom_bytes"] = 4;
+        config["dts"]!["max_transmission_ms"] = 5550;
+        var b = new ScenarioBuilder(
+            "dts-tx-eom-align-stretched",
+            ["C-1290", "C-1155", "C-1042", "C-0551", "C-0553", "C-0871", "C-0872", "C-0176", "C-0185", "C-0186", "C-1122", "C-0104", "C-1043", "C-1154", "K-0094", "K-0095", "K-0074"],
+            "Ed4 C.5.4, p.C-65; C.7.5.3.1, p.C-112; C.7.5.4, p.C-113",
+            "A first ARQ segment that stretches the transmission past the configured length is cut so its D_PDU leaves room in its last block for the modem's end-of-message marker; cut at the block boundary, the marker would add a block.",
+            config,
+            "As dts-tx-block-align-ed4 up to its data transmission, with modem.eom_bytes 4 and dts.max_transmission_ms 5550, one block: 40-byte blocks carry 36 bytes once the marker has its room, and a burst of m bytes takes ceil((m + 4) / 40) blocks (corpus-format.md 5; interp C-1290). Everything before 108000 is unchanged: the 25-byte request needs one block. At 108000 the first segment at the maximum segment size, 30 bytes, is a 49-byte DATA-ONLY, which does not fit the 36 bytes the limit allows, so the transmission is stretched for it to ceil((49 + 4) / 40) = 2 blocks (C-0551, C-1042). It crosses the block boundary at 40 and is not the last segment, so towards the Ed4 peer it is cut (C-0553, C-1155); ending at 40 it would still need two blocks, since the marker would take a second, so it is cut to end where one block's room ends, 36 bytes, a 17-byte segment (interp C-1290). It now needs one block, so the transmission is one block, the configured length, and nothing else fits (C-1042, C-1155). FSN 0, C_PDU START, TX WIN UWE and TX WIN LWE, since it is the only FSN allocated (C-0176, C-0185, C-0186, C-1122), DELIVER IN ORDER as the SIS asked, EOW CAPABILITY (C-1260), EOT ceil(4950 / 500) = 10 (C-0104, C-1043). No room is left for fill (C-1154). The transmission lasts 5550 ms and ends at 113550, when dts.ack_wait/0.0.1.3 starts with dts.ack_wait_ms 60000; the other 33 bytes of the C_PDU are still queued, so csma.lbt_wait starts with lbt_wait_vdcd_ms 3000 after the own transmission (K-0074). Without the marker's room it would have been the 40-byte D_PDU and two blocks, 10350 ms, past the limit.");
+        foreach (JsonObject l in lines.Skip(1).Take(at - 1))
+        {
+            if (l["in"] is not null)
+            {
+                b.In(l["t"]!.GetValue<long>(), l["in"]!.GetValue<string>(), Keys(l, "t", "in"));
+            }
+            else
+            {
+                b.Out(l["out"]!.GetValue<string>(), Keys(l, "out"));
+            }
+        }
+
+        b.ExpectTransmit(Hex(Enc(first)), 2, Interleaver.Long);
+        b.TransmitDone(113550).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000).ExpectTimerStart("csma.lbt_wait", 3000);
+        return b;
+    }
+
+    private static JsonObject Keys(JsonObject line, params string[] skip)
+    {
+        var o = new JsonObject();
+        foreach (KeyValuePair<string, JsonNode?> kv in line)
+        {
+            if (!skip.Contains(kv.Key))
+            {
+                o[kv.Key] = kv.Value?.DeepClone();
+            }
+        }
+
+        return o;
+    }
+
+    private static string FindRepoRoot()
+    {
+        string? dir = AppContext.BaseDirectory;
+        while (dir is not null && !Directory.Exists(Path.Combine(dir, "conformance", "corpus")))
+        {
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return dir ?? throw new InvalidOperationException("conformance submodule not found");
     }
 }
