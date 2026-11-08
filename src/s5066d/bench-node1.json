@@ -2,7 +2,7 @@
 // Run both on one machine; they talk MS110D over UDP audio on ports 7300 and 7301.
 //
 // Only for a bench: the CSMA and timeout values below are much shorter than the standard's
-// defaults (example.json keeps those), so one confirmed message takes about 10 s instead of
+// defaults (example.json keeps those), so one confirmed message takes 11 to 13 s instead of
 // 30 to 90 s. The standard makes the wait after DCD long because DCD can drop early in a fade
 // [Ed4 K.4, p.K-12]; these short waits give no such margin, so do not use them on air.
 {
