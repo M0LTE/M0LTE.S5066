@@ -11,7 +11,8 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>0.1.0-alpha</Version>
+    <!-- Bump this in the same commit as the v<version> tag; publish.yml refuses a tag that does not match. -->
+    <Version>0.1.0</Version>
     <Authors>Tom Fanning M0LTE</Authors>
     <Company>M0LTE</Company>
     <Copyright>Copyright (c) 2026 Tom Fanning M0LTE</Copyright>
