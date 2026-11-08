@@ -113,12 +113,12 @@ public sealed class NodeHost : IAsyncDisposable
     /// exception from the core stops the host. A hosted node meets every exchange sooner or later, so
     /// the host asks at load for the settings the standard leaves to the operator with no value
     /// (interp B-0454): <c>csma.mode</c> (decision D7, needed by every transmission),
-    /// <c>csma.node_slot_position</c> when slotted (K-0104), <c>cas.max_links</c> (B-0193, needed when
+    /// <c>csma.node_slot_position</c> when slotted, in 1 to <c>csma.num_cont_slots</c> (K-0104), <c>cas.max_links</c> (B-0193, needed when
     /// any peer calls), <c>cas.link_request_retries</c> (B-0222) and <c>cas.break_retries</c> (B-0288).
     /// The timers the core derives when null (B-0420, A-0321, C-1120) need nothing here.
     /// </summary>
     /// <param name="config">The node configuration.</param>
-    /// <exception cref="MissingSettingException">A setting a node needs is not set; the message names it.</exception>
+    /// <exception cref="ConfigException">A setting a node needs is not set (<see cref="MissingSettingException"/>) or the slot position is out of range; the message names it.</exception>
     public static void CheckConfig(NodeConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -130,6 +130,12 @@ public sealed class NodeHost : IAsyncDisposable
         if (config.Csma.Mode == CsmaMode.Slotted && config.Csma.NodeSlotPosition is null)
         {
             throw new MissingSettingException("csma.node_slot_position", $"not set; slotted mode needs this node's slot, 1 to {config.Csma.NumContSlots}");
+        }
+
+        if (config.Csma.Mode == CsmaMode.Slotted && config.Csma.NodeSlotPosition is int p && (p < 1 || p > config.Csma.NumContSlots))
+        {
+            // The core checks the range only at the first slotted contention (K-0104).
+            throw new ConfigException("csma.node_slot_position", $"must be 1 to csma.num_cont_slots ({config.Csma.NumContSlots}), got {p}");
         }
 
         if (config.Cas.MaxLinks is null)

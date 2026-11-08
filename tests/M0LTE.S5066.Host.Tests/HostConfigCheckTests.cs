@@ -46,6 +46,22 @@ public class HostConfigCheckTests
         HostConfig.Parse(file.ToJsonString()).Node.Csma.NodeSlotPosition.Should().Be(2);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1000)]
+    public void Slotted_mode_with_a_slot_position_out_of_range_is_refused_at_load(int position)
+    {
+        // K-0104: 1 to NUM_CONT_SLOTS; the core checks it only at the first slotted contention.
+        JsonObject file = LoopbackFile();
+        file["csma"]!["mode"] = "slotted";
+        file["csma"]!["node_slot_position"] = position;
+
+        Action load = () => HostConfig.Parse(file.ToJsonString());
+
+        load.Should().Throw<ConfigException>()
+            .Where(e => e.Setting == "csma.node_slot_position" && e.Message.Contains($"got {position}", StringComparison.Ordinal) && !e.Message.Contains('\n', StringComparison.Ordinal));
+    }
+
     [Fact]
     public void The_timers_the_core_derives_need_nothing_in_the_file()
     {
