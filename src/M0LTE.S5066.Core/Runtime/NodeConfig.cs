@@ -263,4 +263,12 @@ public sealed class MissingSettingException : ConfigException
         : base(setting, "the setting is null and the core needs it")
     {
     }
+
+    /// <summary>Creates the exception with its own message, for a host that refuses a file at load (issue #83).</summary>
+    /// <param name="setting">The dotted key.</param>
+    /// <param name="message">What is missing and what to do.</param>
+    public MissingSettingException(string setting, string message)
+        : base(setting, message)
+    {
+    }
 }

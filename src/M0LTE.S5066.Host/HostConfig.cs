@@ -31,7 +31,7 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
     public static HostConfig Load(string path) => Parse(File.ReadAllText(path));
 
     /// <summary>Parses the text of a host configuration file.</summary>
-    /// <exception cref="ConfigException">A key is unknown or a value is wrong.</exception>
+    /// <exception cref="ConfigException">A key is unknown, a value is wrong, or a setting a hosted node needs is not set (<see cref="NodeHost.CheckConfig(NodeConfig)"/>, issue #83).</exception>
     public static HostConfig Parse(string json)
     {
         JsonObject file = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true }) as JsonObject
@@ -46,6 +46,7 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
         bool seeded = file.ContainsKey("prng_seed");
         JsonObject merged = Merge(Defaults(), file, "");
         NodeConfig node = ConfigReader.Read(merged);
+        NodeHost.CheckConfig(node);
         ulong seed = seeded ? ConfigReader.ReadSeed(merged) : BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8));
 
         IPEndPoint sis = DefaultSisEndpoint;

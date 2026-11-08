@@ -9,7 +9,10 @@
   "local_address": "0.0.1.1",
   "csma": { "mode": "jitter" },
   "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
-  "cas": { "max_links": 4 },
+  // The standard leaves these counts to the operator and gives no value [Ed4 B.7.2.1 Step 3,
+  // p.B-28; B.7.2.8 Step 3, p.B-36], so s5066d refuses a file without them. An unanswered link
+  // request or link break is sent again this many times before the node gives up.
+  "cas": { "max_links": 4, "link_request_retries": 3, "break_retries": 3 },
   "host": {
     "sis_listen": "127.0.0.1:5066",
     "modem": { "kind": "ms110d", "audio_listen": "0.0.0.0:7300", "audio_peer": "127.0.0.1:7301" }

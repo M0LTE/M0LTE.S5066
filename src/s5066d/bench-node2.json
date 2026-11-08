@@ -10,8 +10,9 @@
   // 4 contention slots of 200 ms; wait 2 s after DCD and 0.5 s after VDCD before talking.
   "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 200, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 500 },
   "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
-  // Link requests time out after 8 s, five tries.
-  "cas": { "max_links": 4, "link_request_timeout_ms": 8000, "link_request_retries": 5 },
+  // Link requests time out after 8 s and are repeated five times; link breaks are repeated
+  // three times, each waiting 8 s (unset, so one acknowledgement wait).
+  "cas": { "max_links": 4, "link_request_timeout_ms": 8000, "link_request_retries": 5, "break_retries": 3 },
   // Transmissions of at most 6 s; wait 8 s for an acknowledgement.
   "dts": { "max_transmission_ms": 6000, "ack_wait_ms": 8000 },
   "host": {
