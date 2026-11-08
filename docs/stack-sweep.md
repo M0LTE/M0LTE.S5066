@@ -20,7 +20,7 @@ dotnet run -c Release --project tools/s5066-sweep -- <command> [options]
 - `run --channel poor --snr 18 --config fixed:wn4-long [--duration-s 600] [--timeline 1] [--json r.json]`: one run, with a summary; `--timeline 1` prints every transmission and link change.
 - `plan --profile baseline`: the runs of a sweep and its size.
 - `sweep --profile baseline --out DIR [--workers N] [--shard i/n]`: runs a sweep. One JSON file per run in `DIR/runs/`, written when the run finishes; `DIR/plan.json` fixes the grid; `DIR/progress.log` has one line per run with the speed and the time to go.
-- `merge --profile baseline --out DIR`: writes `DIR/aggregate/`: `curve-<channel>.tsv` (per set SNR and configuration over the seeds: goodput mean, minimum and maximum, retransmission %, links lost, chat delivered and latency, transmissions per rung), `baseline.tsv` (per channel the fixed rung with the highest goodput summed over the sweep, open question 14, and each point's best fixed rung), `turnaround.tsv`, `overshoot.tsv`, `merge.json` (missing and failed runs) and a copy of `plan.json`.
+- `merge --profile baseline --out DIR`: writes `DIR/aggregate/`: `curve-<channel>.tsv` (per set SNR and configuration over the seeds: goodput mean, minimum and maximum, retransmission %, links lost as each node saw them and summed over both nodes, chat delivered and latency, transmissions per rung), `baseline.tsv` (per channel the fixed rung with the highest goodput summed over the sweep, open question 14, and each point's best fixed rung), `turnaround.tsv`, `overshoot.tsv`, `merge.json` (missing and failed runs) and a copy of `plan.json`.
 - `realtime --channel awgn --snr 30 --config fixed:wn6-short --duration-s 300`: the real-time cross-check. Two `s5066d` processes over UDP audio with the same channel in the audio path, the same traffic over TCP SIS, then the same settings on the virtual clock; prints both and compares goodput and the gaps. Needs a quiet machine; it runs in real time.
 
 Grid options replace a profile's parts: `--channels awgn,poor-ssb --snrs 0:30:3 --configs fixed:wn2-long,fixed:wn6-long --seeds 1,2,3 --duration-s 1800 --warmup-s 60 --table <name or path>` (the table for every adaptive config). A sweep's `merge` takes the same options as its `sweep`.
@@ -47,7 +47,7 @@ S5066_LONG_TESTS=1 dotnet run -c Release --project tests/M0LTE.S5066.T4.Tests --
 
 ## Speed
 
-Measured on studybox (8 cores, 2026-11-08), Release, both nodes' demodulators counted: 0.15 to 0.26 core-seconds per channel-second for single runs on a quiet box, 0.35 to 0.48 with four workers while another sweep shared the box. Fading and the SSB band-pass cost a little more than AWGN. A run uses well under 100 MB.
+Measured on studybox (8 cores, 2026-11-08), Release, both nodes' demodulators counted: 0.15 to 0.26 core-seconds per channel-second for single runs on a quiet box, 0.35 to 0.48 with four workers while another sweep shared the box. Fading and the SSB band-pass cost a little more than AWGN. A run uses about 100 MB (peak resident size, runtime included).
 
 For planning take 0.3, and 0.5 as the pessimistic figure. That makes the `baseline` profile about 135 to 225 core-hours, not the 700 of the calibration plan (whose estimate came from the modem's own SNR sweep, before this was measured), and the `adaptive` profile about 15 to 25.
 

@@ -134,7 +134,11 @@ internal sealed class NodeStats
 
     public long LinksMade { get; set; }
 
-    /// <summary>A link that went from linked to breaking or unlinked without a clean close.</summary>
+    /// <summary>
+    /// A link that went from linked to breaking or unlinked without showing closing first. A clean close
+    /// of a clean link also goes straight to breaking (and the peer to unlinked), so this counts every
+    /// link end that did not pass through closing; the sweep workload never closes a link on purpose.
+    /// </summary>
     public long LinksLost { get; set; }
 
     public long LinksClosed { get; set; }
@@ -195,6 +199,7 @@ internal sealed class RunResult
 
     public double RetransmissionRate { get; set; }
 
+    /// <summary>Links lost as each node saw them, summed over both nodes: one link lost on both sides counts 2.</summary>
     public long LinksLost { get; set; }
 
     /// <summary>The far node's predicted end (EOT) less the true end of the sender's transmission, per rung (issue #66).</summary>

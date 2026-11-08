@@ -70,8 +70,10 @@ internal static class SweepRunner
             string path = Path.Combine(runs, job.Id + ".json");
             if (r.Error is null)
             {
-                File.WriteAllText(path + ".tmp", r.ToJson());
-                File.Move(path + ".tmp", path, overwrite: true);
+                // The temporary name carries the process, so a shard started twice by mistake cannot trip over its own twin.
+                string tmp = $"{path}.{Environment.ProcessId}.tmp";
+                File.WriteAllText(tmp, r.ToJson());
+                File.Move(tmp, path, overwrite: true);
                 File.Delete(Path.Combine(runs, job.Id + ".failed"));   // a retry that worked clears the earlier failure
             }
             else
