@@ -16,7 +16,7 @@ internal static class TestNodes
         {
           "local_address": "{{address}}",
           "prng_seed": "{{seed}}",
-          "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 30, "lbt_wait_dcd_ms": 300, "lbt_wait_vdcd_ms": 100 },
+          "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 50, "lbt_wait_dcd_ms": 300, "lbt_wait_vdcd_ms": 100 },
           "modem": {
             "preamble_ms": 40, "flush_ms": 10,
             "waveforms": [ { "wn": 6, "interleaver": "short", "block_bytes": 64, "block_ms": 20 } ]

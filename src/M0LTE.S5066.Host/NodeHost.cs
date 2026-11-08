@@ -175,23 +175,34 @@ public sealed class NodeHost : IAsyncDisposable
     /// <see cref="CheckConfig(NodeConfig)"/>, then that <paramref name="modem"/> can plan a burst at
     /// <c>drc.default_speed</c>, the speed of every transmission until phase 7 (core-architecture.md
     /// 5.3): the core plans one only when it first transmits, and a speed the modem refuses then
-    /// stops the node (issue #83).
+    /// stops the node (issue #83). Then that <c>csma.cont_slot_width_ms</c> is longer than the
+    /// preamble at that speed, the least channel-sensing delay the modem can have (K-0048, issue #86).
     /// </summary>
     /// <param name="config">The node configuration.</param>
     /// <param name="modem">The modem the node will run on.</param>
-    /// <exception cref="ConfigException">A setting is missing or the modem cannot send at the default speed.</exception>
+    /// <exception cref="ConfigException">A setting is missing, the modem cannot send at the default speed, or the contention slot is no longer than its preamble.</exception>
     public static void CheckConfig(NodeConfig config, IModemPort modem)
     {
         CheckConfig(config);
         ArgumentNullException.ThrowIfNull(modem);
         Speed speed = config.Drc.DefaultSpeed;
+        BurstPlan plan;
         try
         {
-            modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+            plan = modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         }
         catch (ArgumentException e)
         {
             throw new ConfigException("drc.default_speed", $"wn {speed.Wn} {InterleaverNames.ToName(speed.Interleaver)} is not a speed this modem can send ({e.Message})");
+        }
+
+        // K-0048: a slot must outlast the channel-sensing delay, so a node in a later slot hears an
+        // earlier one before it starts. The modem declares carrier only once the preamble is in, so
+        // the preamble is the least that delay can be; audio and radio delays come on top. Narrower
+        // slots make two contending nodes collide whatever slots they pick (issue #86).
+        if (config.Csma.ContSlotWidthMs <= plan.PreambleMs)
+        {
+            throw new ConfigException("csma.cont_slot_width_ms", $"{config.Csma.ContSlotWidthMs} is not longer than this modem's {plan.PreambleMs} ms preamble at drc.default_speed, so contending nodes cannot hear each other in time (K-0048); allow the preamble plus audio and radio delays");
         }
     }
 

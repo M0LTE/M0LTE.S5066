@@ -133,6 +133,47 @@ public class HostConfigCheckTests
         make.Should().Throw<ConfigException>().Where(e => e.Setting == "drc.default_speed");
     }
 
+    [Theory]
+    [InlineData(200, false)]
+    [InlineData(720, false)]
+    [InlineData(721, true)]
+    [InlineData(1000, true)]
+    public void A_contention_slot_no_longer_than_the_110d_preamble_is_refused_when_the_host_is_made(int width, bool accepted)
+    {
+        // K-0048, issue #86: the slot must outlast the channel-sensing delay, which is at least the
+        // 720 ms preamble the 110D modem needs before it declares carrier. The old bench files had 200.
+        JsonObject file = LoopbackFile();
+        file["csma"]!["cont_slot_width_ms"] = width;
+        HostConfig c = HostConfig.Parse(file.ToJsonString());
+        var medium = new AudioMedium();
+
+        Action make = () => _ = new NodeHost(c.Node, c.PrngSeed, new Ms110dHostModem(medium.CreateChannel()));
+
+        if (accepted)
+        {
+            make.Should().NotThrow();
+        }
+        else
+        {
+            make.Should().Throw<ConfigException>()
+                .Where(e => e.Setting == "csma.cont_slot_width_ms" && e.Message.Contains("720 ms preamble", StringComparison.Ordinal) && !e.Message.Contains('\n', StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task A_run_time_change_to_a_slot_no_longer_than_the_preamble_is_refused()
+    {
+        // K-0048 on the loopback modem: its preamble is 40 ms.
+        var medium = new LoopbackMedium();
+        await using NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1");
+        NodeConfig bad = a.Config with { Csma = a.Config.Csma with { ContSlotWidthMs = 40 } };
+
+        Action change = () => a.UpdateConfig(bad);
+
+        change.Should().Throw<ConfigException>().Where(e => e.Setting == "csma.cont_slot_width_ms");
+        a.Config.Csma.ContSlotWidthMs.Should().Be(50);
+    }
+
     [Fact]
     public async Task An_unanswered_link_request_fails_the_link_and_the_node_keeps_running()
     {

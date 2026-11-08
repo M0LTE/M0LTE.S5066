@@ -200,6 +200,12 @@ internal sealed class SisSublayer : ISisSublayer
         switch (name.Kind)
         {
             case TimerKind.SisSoftLinkIdle:
+                if (HeardDuringIdle(peer, link) is long remaining)
+                {
+                    _context.Timers.Start(IdleTimer(peer), remaining);
+                    break;
+                }
+
                 OnIdle(peer, link);
                 break;
             case TimerKind.SisSoftLinkMinHold:
@@ -1059,7 +1065,28 @@ internal sealed class SisSublayer : ISisSublayer
             return;
         }
 
+        link.IdleSince = _context.Now;
         _context.Timers.Start(IdleTimer(peer), ms);
+    }
+
+    /// <summary>
+    /// The idle wait ran out, but the peer was heard during it (a valid D_PDU header from it in a
+    /// burst that ended after the wait began, C-0833): the link is not idle, since the peer may be
+    /// part way through a C_PDU whose segments have not all arrived. Returns the time left until one
+    /// idle wait after the burst it was last heard in, from which the wait now counts; null when it
+    /// was not heard (interp A-0320; issue #86).
+    /// </summary>
+    private long? HeardDuringIdle(uint peer, SoftLink link)
+    {
+        if (!_context.RxQuality.TryGetValue(peer, out RxQuality? q) || q.LastHeard <= link.IdleSince)
+        {
+            return null;
+        }
+
+        // A run-time change may have shortened the wait to less than the silence already passed.
+        long remaining = q.LastHeard + _context.Config.SoftLinkIdleMs() - _context.Now;
+        link.IdleSince = q.LastHeard;
+        return remaining > 0 ? remaining : null;
     }
 
     /// <summary>The idle wait is over (A-0011): close, unless a called node's minimum hold is still running, when the close waits for it (A-0197).</summary>
@@ -1338,6 +1365,9 @@ internal sealed class SisSublayer : ISisSublayer
 
         /// <summary>The idle wait ended during a called node's minimum hold, so the close waits for it (A-0197).</summary>
         public bool IdleDue { get; set; }
+
+        /// <summary>The time the running idle wait counts from: when it was started, or the burst the peer was last heard in (interp A-0320).</summary>
+        public long IdleSince { get; set; }
 
         /// <summary><c>sis.soft_link_max_ms</c> has passed since the link was made (A-0014).</summary>
         public bool Overdue { get; set; }
