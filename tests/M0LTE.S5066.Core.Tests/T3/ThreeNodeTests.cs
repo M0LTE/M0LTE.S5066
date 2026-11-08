@@ -14,8 +14,8 @@ namespace M0LTE.S5066.Core.Tests.T3;
 /// (A-0014, interp A-0322) and for higher priority traffic (A-0198, interp A-0323). Nodes 1 and 2 keep
 /// a second link between themselves, and send ARQ to node 0 too. Every node broadcasts non-ARQ U_PDUs
 /// meanwhile. Links are made, closed when idle (A-0011) and made again, and every soft link close is a
-/// clean close (B-0239). A client whose U_PDU is rejected (A-0207) sends it again, as a client would;
-/// rejections the SIS does not report yet (P6-1) are read from the C_UNIDATA_REQUEST_REJECTED.
+/// clean close (B-0239). A client whose U_PDU is rejected (A-0207, A-0223) sends it again, as a client
+/// would, from the S_UNIDATA_REQUEST_REJECTED its SIS reports (P6-1).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -210,21 +210,6 @@ public class ThreeNodeTests(ITestOutputHelper output)
         }
 
         sim.Rejected = (node, t, rej) => Resend(node, t, Convert.ToHexString(rej.UPdu.Span), rej.Reason.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-        // The SIS reports to its client only the rejections of a soft link close (A-0207) and of a
-        // failed call so far; the others (the connection lost, the TTL expired) are P6-1's (A-0223).
-        // Until then the client learns of them here, from the C_UNIDATA_REQUEST_REJECTED itself.
-        for (int n = 0; n < 3; n++)
-        {
-            int node = n;
-            parts[n].SilentReject = (t, key, reason) =>
-            {
-                if (reason is CReason.NoConnection or CReason.TtlExpired)
-                {
-                    Resend(node, t, key, reason.ToString());
-                }
-            };
-        }
 
         for (int n = 0; n < 3; n++)
         {
@@ -587,9 +572,6 @@ public class ThreeNodeTests(ITestOutputHelper output)
         /// <summary>Every C_UNIDATA_REQUEST_REJECTED: the time, the U_PDU (as hex) and the reason.</summary>
         public List<(long T, string UPdu, CReason Reason)> Rejected { get; } = [];
 
-        /// <summary>Called for every C_UNIDATA_REQUEST_REJECTED with the time, the U_PDU (as hex) and the reason.</summary>
-        public Action<long, string, CReason>? SilentReject { get; set; }
-
         /// <summary>Every link made or refused, in order: the peer, made, and refused with the peer's reason 4.</summary>
         public List<(uint Peer, bool Made, bool PeerTooMany)> LinkEvents { get; } = [];
 
@@ -675,7 +657,6 @@ public class ThreeNodeTests(ITestOutputHelper output)
                 case CUnidataRequestRejected j:
                     string key = parts.Handles.GetValueOrDefault(j.Handle, "?");
                     parts.Rejected.Add((parts.Context.Now, key, j.Reason));
-                    parts.SilentReject?.Invoke(parts.Context.Now, key, j.Reason);
                     break;
             }
 

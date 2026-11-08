@@ -305,10 +305,13 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// A clean close of the link holds back a C_PDU that has not started transmission (B-0246, B-0247,
     /// B-0252, B-0253; interp B-0421): every one when new data is stopped, those below the stated
-    /// priority on Higher Priority. The PHYSICAL LINK BREAK REQUEST of the close itself is exempt.
+    /// priority on Higher Priority. The PHYSICAL LINK BREAK REQUEST of the close itself is exempt, and
+    /// so are client confirmations, DATA C_PDUs carrying a DATA DELIVERY CONFIRM or FAIL S_PDU (B-0246;
+    /// interp B-0318), which the SIS marks.
     /// </summary>
     private static bool HeldByClose(ArqLink link, ArqCPdu a) =>
-        !a.Placed && link.Close is ClosePolicy p && a.Request.Handle != link.CloseExemptHandle && p.Holds(a.Priority);
+        !a.Placed && link.Close is ClosePolicy p && a.Request.Handle != link.CloseExemptHandle
+        && !a.Request.ClientConfirmation && p.Holds(a.Priority);
 
     /// <summary>
     /// A clean close of the link with the peer is asked for (interp B-0421): the policy is merged with

@@ -240,7 +240,7 @@ internal sealed class CasSublayer : ICasSublayer
 
         byte[] cpdu = CpduCodec.Encode(new CpduData(r.SPdu));
         _context.Enqueue(new DUnidataRequest(r.Dst, r.DstIsGroup, r.Arq, r.Priority, r.Ttd, r.DeliverInOrder,
-                                             r.MinRetransmissions, cpdu, r.Handle));
+                                             r.MinRetransmissions, cpdu, r.Handle, r.ClientConfirmation));
     }
 
     /// <summary>

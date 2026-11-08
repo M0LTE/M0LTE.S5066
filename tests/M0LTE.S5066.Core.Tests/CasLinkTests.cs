@@ -188,9 +188,10 @@ public class CasLinkTests
         var rig = new Rig();
         rig.ArqRequest(X, confirm: 1);
         rig.Deliver(new DExpeditedUnidataRequestRejected(rig.Cas.PendingHandleOf(X)!.Value, DReason.NoConnection));
-        rig.Outputs.Should().HaveCount(2);
+        rig.Outputs.Should().HaveCount(3);
         rig.Outputs[0].Should().Be(new LinkState(X, LinkStateName.Unlinked));
         rig.Outputs[1].Should().BeOfType<SisBytesOut>().Which.Bytes.Span[5].Should().Be((byte)SisPrimitiveType.UnidataRequestRejected);
+        rig.Outputs[2].Should().Be(new TimerCancel(new TimerName(TimerKind.SisConfirmWait)), "its confirmation wait ends (interp A-0342)");
     }
 
     [Fact]
@@ -357,6 +358,9 @@ public class CasLinkTests
 
             Run(new SisBytes(Context.Now, 1, SisCodec.Encode(new SisUnidataRequest(priority, 9, new SisAddress(dst), ServiceType.Default, ttl, new byte[] { 1 }))));
         }
+
+        /// <summary>The bound client on conn 1 sends a primitive.</summary>
+        public void Client(SisPrimitive primitive) => Run(new SisBytes(Context.Now, 1, SisCodec.Encode(primitive)));
 
         /// <summary>The DTS reports our pending link C_PDU to the peer sent (C-1100).</summary>
         public void Sent(uint peer)
