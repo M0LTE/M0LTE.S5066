@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using M0LTE.Dsp;
 using M0LTE.Radio.Audio;
+using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host.Audio;
 
 namespace M0LTE.S5066.Radio;
@@ -22,6 +23,12 @@ namespace M0LTE.S5066.Radio;
 /// output is drained, so the radio is unkeyed only once the tail has played.</item>
 /// <item><see cref="Keyed"/> is raised before the key and after the unkey, so a busy detector
 /// can leave out our own transmission.</item>
+/// <item>The radio is never left keyed by this class: it is unkeyed on every way out of a keyup,
+/// whatever is thrown; a transmit guard on a timer unkeys it if a keyup is still keyed
+/// <see cref="GuardMargin"/> after its own length (a hung playback device) and stops the channel;
+/// <see cref="Dispose"/> unkeys first, before it waits for or closes anything; and
+/// <see cref="EmergencyUnkey"/> is there for a process going down without Dispose. A keyup longer
+/// than any burst the node can plan (<see cref="MaxBurstMs"/>) is never keyed.</item>
 /// </list>
 /// </remarks>
 public sealed class RadioAudioChannel : IAudioChannel, IDisposable
@@ -38,6 +45,13 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
     private readonly BlockingCollection<(float[] Samples, Action Played)> _bursts = new();
     private readonly object _rxGate = new();
     private readonly CancellationTokenSource _stop = new();
+    private readonly TimeSpan _guardMargin;
+    private readonly object _pttGate = new();
+    private bool _pttKeyed;
+    private bool _pttShut;
+    private int _keyGeneration;
+    private volatile bool _guardTripped;
+    private int _disposed;
     private Action<ReadOnlyMemory<float>>? _received;
     private Thread? _capture;
     private Thread? _transmit;
@@ -50,6 +64,12 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
     /// <param name="txTailMs">Silence after the burst, before the unkey.</param>
     /// <param name="log">A sink for one-line log messages, or null.</param>
     public RadioAudioChannel(IAudioInput input, IAudioOutput output, IPttControl ptt, int txDelayMs, int txTailMs, Action<string>? log = null)
+        : this(input, output, ptt, txDelayMs, txTailMs, log, GuardMargin)
+    {
+    }
+
+    /// <summary>Creates the channel with another transmit guard margin, for tests.</summary>
+    internal RadioAudioChannel(IAudioInput input, IAudioOutput output, IPttControl ptt, int txDelayMs, int txTailMs, Action<string>? log, TimeSpan guardMargin)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -74,8 +94,22 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
         _txDelayMs = txDelayMs;
         _txTailMs = txTailMs;
         _log = log;
+        _guardMargin = guardMargin;
         _decimator = new Decimator(_rate, _factor);
     }
+
+    /// <summary>
+    /// The longest burst, in ms of modem audio, that is ever keyed: the core's cap on a
+    /// transmission (127.5 s, C-0106), which also covers the longest single D_PDU at the slowest
+    /// waveform (about 116 s), plus 2.5 s for rounding. TXDELAY and the tail come on top.
+    /// </summary>
+    public const int MaxBurstMs = DtsConfig.MaxTransmissionLimitMs + 2500;
+
+    /// <summary>
+    /// How long past its own length a keyup may still be keyed before the transmit guard unkeys
+    /// the radio: the playback buffer (120 ms) drained, with room for a loaded Pi.
+    /// </summary>
+    public static readonly TimeSpan GuardMargin = TimeSpan.FromSeconds(3);
 
     /// <summary>Raised with true just before the radio is keyed and with false just after it is unkeyed, on the transmit thread.</summary>
     public event Action<bool>? Keyed;
@@ -129,17 +163,36 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
         return keyup;
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Unkeys the radio and keeps it unkeyed, then stops: a burst in progress is cut short within
+    /// 100 ms, and the devices are closed.
+    /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        // First, before waiting for or closing anything: whatever happens below, the radio is off.
+        EmergencyUnkey();
         _stop.Cancel();
         _bursts.CompleteAdding();
-        _transmit?.Join(TimeSpan.FromSeconds(5));
+        bool transmitEnded = _transmit?.Join(TimeSpan.FromSeconds(5)) ?? true;
         (_input as IDisposable)?.Dispose();
         _capture?.Join(TimeSpan.FromSeconds(2));
-        (_output as IDisposable)?.Dispose();
+        if (transmitEnded)
+        {
+            (_output as IDisposable)?.Dispose();
+        }
+        else
+        {
+            // Closing the device under a write that never returns could crash the process; the
+            // radio is already unkeyed, and the process is going.
+            _log?.Invoke("radio: the playback device did not stop; left open");
+        }
+
         (_ptt as IDisposable)?.Dispose();
-        _stop.Dispose();
     }
 
     private void CaptureLoop()
@@ -176,85 +229,225 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
                 }
             }
         }
-        catch (Exception e) when (!_stop.IsCancellationRequested && e is IOException or InvalidOperationException or ObjectDisposedException)
-        {
-            Fail($"the capture device stopped: {e.Message}", e);
-        }
         catch (Exception) when (_stop.IsCancellationRequested)
         {
             // Closed under the read at shutdown.
+        }
+        catch (Exception e) when (e is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            Fail($"the capture device stopped: {e.Message}", e);
+        }
+        catch (Exception e)
+        {
+            // Anything else on this thread (the demodulator, the busy detector, the recording)
+            // stops the channel rather than the process, which could leave a burst keyed.
+            Fail($"the receive path stopped: {e.Message}", e);
         }
     }
 
     private void TransmitLoop()
     {
-        foreach ((float[] keyup, Action played) in _bursts.GetConsumingEnumerable())
+        try
         {
-            bool keyed = false;
+            foreach ((float[] keyup, Action played) in _bursts.GetConsumingEnumerable())
+            {
+                bool carryOn = Send(keyup, out Exception? failure);
+
+                // TransmitDone reaches the modem between two receive callbacks, as IAudioChannel asks.
+                lock (_rxGate)
+                {
+                    played();
+                }
+
+                if (!carryOn)
+                {
+                    Fail(failure!.Message, failure);
+                    return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            // Anything unexpected on this thread (a handler, a bug) stops the channel rather than
+            // the process, with the radio unkeyed.
+            UnkeyPtt();
+            Fail($"the transmit path stopped: {e.Message}", e);
+        }
+    }
+
+    /// <summary>
+    /// Sends one keyup: key, write, drain, unkey. The radio is unkeyed on every way out, and the
+    /// transmit guard unkeys it from another thread if the keyup overruns. False when the channel
+    /// must stop, with the reason.
+    /// </summary>
+    private bool Send(float[] keyup, out Exception? failure)
+    {
+        failure = null;
+        if (_stop.IsCancellationRequested)
+        {
+            // Stopping: a burst still queued is never keyed.
+            return true;
+        }
+
+        long longest = (long)_rate * (MaxBurstMs + _txDelayMs + _txTailMs) / 1000;
+        if (keyup.Length > longest)
+        {
+            _log?.Invoke($"radio: burst not sent, {keyup.Length / (_rate / 1000)} ms is longer than any burst the node can plan ({MaxBurstMs} ms plus txdelay and tail)");
+            return true;
+        }
+
+        bool keyed = false;
+        try
+        {
+            Keyed?.Invoke(true);
+            int generation;
             try
             {
-                Keyed?.Invoke(true);
-                _ptt.Key();
-                keyed = true;
+                keyed = KeyPtt(out generation);
+            }
+            catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException or ObjectDisposedException)
+            {
+                // Unkeyed anyway, in case the write half happened.
+                UnkeyPtt();
+                _log?.Invoke($"radio: burst not sent, PTT failed: {e.Message}");
+                return true;
+            }
 
+            if (!keyed)
+            {
+                // The PTT has been shut off (stopping, or the guard tripped).
+                return !_guardTripped;
+            }
+
+            TimeSpan allowed = TimeSpan.FromSeconds(keyup.Length / (double)_rate) + _guardMargin;
+            using (var guard = new Timer(_ => Trip(generation, allowed), null, allowed, Timeout.InfiniteTimeSpan))
+            {
                 // In 100 ms pieces, so a stop cuts a long burst short at once rather than closing
                 // the device under a write in progress.
                 int piece = _rate / 10;
-                for (int at = 0; at < keyup.Length && !_stop.IsCancellationRequested; at += piece)
+                for (int at = 0; at < keyup.Length && !_stop.IsCancellationRequested && !_guardTripped; at += piece)
                 {
                     _output.Write(keyup.AsSpan(at, Math.Min(piece, keyup.Length - at)));
                 }
 
-                if (!_stop.IsCancellationRequested)
+                if (!_stop.IsCancellationRequested && !_guardTripped)
                 {
                     _output.Drain();
                 }
             }
-            catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException or ObjectDisposedException)
+
+            if (_guardTripped)
             {
-                if (!_stop.IsCancellationRequested)
-                {
-                    _log?.Invoke(keyed ? $"radio: burst cut short, the playback device failed: {e.Message}" : $"radio: burst not sent, PTT failed: {e.Message}");
-                }
-
-                if (keyed && !_stop.IsCancellationRequested)
-                {
-                    Unkey();
-                    Keyed?.Invoke(false);
-                    lock (_rxGate)
-                    {
-                        played();
-                    }
-
-                    Fail($"the playback device stopped: {e.Message}", e);
-                    return;
-                }
+                failure = new TimeoutException($"transmit guard: the radio was still keyed {allowed.TotalSeconds:0.#} s after the key, so it was unkeyed");
+                return false;
             }
 
+            return true;
+        }
+        catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException or ObjectDisposedException)
+        {
+            if (_stop.IsCancellationRequested)
+            {
+                return true;
+            }
+
+            _log?.Invoke($"radio: burst cut short, the playback device failed: {e.Message}");
+            failure = new IOException($"the playback device stopped: {e.Message}", e);
+            return false;
+        }
+        finally
+        {
+            // On every way out, whatever was thrown: a CM108 holds its pin where it was last set.
             if (keyed)
             {
-                Unkey();
+                UnkeyPtt();
             }
 
             Keyed?.Invoke(false);
-
-            // TransmitDone reaches the modem between two receive callbacks, as IAudioChannel asks.
-            lock (_rxGate)
-            {
-                played();
-            }
         }
     }
 
-    private void Unkey()
+    /// <summary>Keys the radio unless the PTT has been shut off; the generation names this keyup for the guard.</summary>
+    private bool KeyPtt(out int generation)
+    {
+        lock (_pttGate)
+        {
+            generation = ++_keyGeneration;
+            if (_pttShut)
+            {
+                return false;
+            }
+
+            _pttKeyed = true;
+            _ptt.Key();
+            return true;
+        }
+    }
+
+    private void UnkeyPtt()
+    {
+        lock (_pttGate)
+        {
+            _pttKeyed = false;
+            TryUnkey();
+        }
+    }
+
+    /// <summary>Under the PTT lock: unkeys, logging a failure rather than throwing.</summary>
+    private void TryUnkey()
     {
         try
         {
             _ptt.Unkey();
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException)
+        catch (Exception e)
         {
             _log?.Invoke($"radio: unkey failed: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The transmit guard, on a timer thread: if the keyup it was set for is still keyed, unkey
+    /// and shut the PTT off for good, whatever the transmit thread is stuck in.
+    /// </summary>
+    private void Trip(int generation, TimeSpan allowed)
+    {
+        lock (_pttGate)
+        {
+            if (!_pttKeyed || generation != _keyGeneration)
+            {
+                return;
+            }
+
+            _guardTripped = true;
+            _pttShut = true;
+            _pttKeyed = false;
+            TryUnkey();
+        }
+
+        var e = new TimeoutException($"transmit guard: the radio was still keyed {allowed.TotalSeconds:0.#} s after the key, so it was unkeyed");
+        Fail(e.Message, e);
+    }
+
+    /// <summary>
+    /// Unkeys the radio and keeps it unkeyed, from any thread, at once: for a process that is
+    /// going down (an unhandled exception, an exit) without the orderly <see cref="Dispose"/>.
+    /// Never throws.
+    /// </summary>
+    public void EmergencyUnkey()
+    {
+        try
+        {
+            lock (_pttGate)
+            {
+                _pttShut = true;
+                _pttKeyed = false;
+                _ptt.Unkey();
+            }
+        }
+        catch
+        {
+            // Last resort: nothing more can be done from here.
         }
     }
 
