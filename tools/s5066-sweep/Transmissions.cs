@@ -64,6 +64,8 @@ internal sealed class TxRecord
         byte[] rx = Blocks.SelectMany(b => b.Bytes).ToArray();
         int ok = 0;
         long? predicted = null;
+        long? latest = null;
+        long? earliest = null;
         foreach (SentDpdu d in AllDpdus)
         {
             if (!d.Padding && rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
@@ -74,8 +76,11 @@ internal sealed class TxRecord
             int headerEnd = d.Offset + d.HeaderLength;
             if (d.Eot > 0 && rx.Length >= headerEnd && rx.AsSpan(d.Offset, d.HeaderLength).SequenceEqual(Bytes.AsSpan(d.Offset, d.HeaderLength)))
             {
-                long p = Anchor(d.Offset) + (d.Eot * 500L);
-                predicted = predicted is long q ? Math.Min(q, p) : p;
+                (long blockStart, long share) = Anchor(d.Offset);
+                long announced = blockStart + (d.Eot * 500L);
+                latest = Math.Max(latest ?? announced, announced);
+                earliest = Math.Min(earliest ?? (announced + share), announced + share);
+                predicted = Math.Max(latest.Value, earliest.Value);   // as DtsReceiver with block_ms (interp C-1289)
             }
         }
 
@@ -89,7 +94,7 @@ internal sealed class TxRecord
     }
 
     /// <summary>The receiver's EOT anchor for a D_PDU starting at this byte, as DtsReceiver computes it with block_ms (interp C-1289).</summary>
-    private long Anchor(int byteIndex)
+    private (long BlockStart, long Share) Anchor(int byteIndex)
     {
         Ms110dInterleaverKind kind = Rung.Il switch
         {
@@ -105,13 +110,13 @@ internal sealed class TxRecord
             if (byteIndex < seen + bytes.Length)
             {
                 long into = byteIndex - seen;
-                return time - blockMs + (((into * blockMs) + bytes.Length - 1) / bytes.Length);
+                return (time - blockMs, ((into * blockMs) + bytes.Length - 1) / bytes.Length);
             }
 
             seen += bytes.Length;
         }
 
-        return Blocks[^1].Time;
+        return (Blocks[^1].Time, 0);
     }
 
     private long BlockTimeCovering(int byteIndex)
