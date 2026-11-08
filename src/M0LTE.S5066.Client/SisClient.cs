@@ -106,7 +106,10 @@ public sealed class SisClient : IAsyncDisposable
     /// <summary>Completes when the connection has closed, for any reason.</summary>
     public Task Closed => _closed.Task;
 
-    /// <summary>The node unbound this client (S_UNBIND_INDICATION); the argument is the reason.</summary>
+    /// <summary>
+    /// The node unbound this client (S_UNBIND_INDICATION); the argument is the reason. Raised after
+    /// <see cref="Binding"/> is cleared and before sends waiting for confirmation fail.
+    /// </summary>
     public event Action<byte>? Unbound;
 
     /// <summary>The node sent S_DATA_FLOW_ON (true) or S_DATA_FLOW_OFF (false).</summary>
@@ -418,8 +421,9 @@ public sealed class SisClient : IAsyncDisposable
                 _bind?.TrySetException(new SisBindRejectedException(r.Reason));
                 break;
             case SisUnbindIndication u:
-                OnUnbound();
-                Raise(Unbound, u.Reason);
+                // Handlers run before the sends waiting for confirmation fail, so code awaiting a
+                // send sees the Unbound event already raised.
+                OnUnbound(() => Raise(Unbound, u.Reason));
                 break;
             case SisDataFlowOff:
                 lock (_gate)
@@ -507,7 +511,7 @@ public sealed class SisClient : IAsyncDisposable
         }
     }
 
-    private void OnUnbound()
+    private void OnUnbound(Action? beforeFailingSends = null)
     {
         PendingSend[] pending;
         lock (_gate)
@@ -518,6 +522,7 @@ public sealed class SisClient : IAsyncDisposable
             _pending.Clear();
         }
 
+        beforeFailingSends?.Invoke();
         foreach (PendingSend p in pending)
         {
             p.Result.TrySetException(new InvalidOperationException("unbound before the send was confirmed"));
