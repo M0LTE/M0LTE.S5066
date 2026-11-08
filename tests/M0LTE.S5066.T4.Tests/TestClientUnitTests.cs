@@ -21,7 +21,7 @@ public class TestClientUnitTests
     public void A_file_header_and_result_round_trip()
     {
         byte[] hash = SHA256.HashData([1, 2, 3]);
-        byte[] h = Wire.FileHeader(5, 3, 1, hash, "aéb.txt");
+        byte[] h = Wire.FileHeader(5, 3, 1, hash, "a\u00e9b.txt");
         Wire.TryReadFileHeader(h, out long size, out int segs, out byte[] h2, out string name).Should().BeTrue();
         (size, segs, name).Should().Be((3L, 1, "a_b.txt"));
         h2.Should().Equal(hash);
@@ -66,7 +66,7 @@ public class TestClientUnitTests
     {
         // O-0002, O-0003, O-0004.
         Station.EncodeChat("hi", 10).Should().Equal((byte)'h', (byte)'i', 13, 10);
-        FluentActions.Invoking(() => Station.EncodeChat("café", 10)).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => Station.EncodeChat("caf\u00e9", 10)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => Station.EncodeChat("123456789", 10)).Should().Throw<ArgumentException>();
         Station.DecodeChat([(byte)'a', 7, 13, 10]).Should().Be("a?");
     }
