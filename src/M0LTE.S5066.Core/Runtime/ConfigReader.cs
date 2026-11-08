@@ -343,6 +343,9 @@ public static class ConfigReader
             throw new ConfigException("drc.table.rx_error_limit_ppt", "must be 0 to 1000");
         }
 
+        CapAtLeastInitial(table, "rx_ceiling_initial", "rx_ceiling_cap");
+        CapAtLeastInitial(table, "tx_ceiling_initial", "tx_ceiling_cap");
+
         return new DrcTable(
             ladder,
             thresholds,
@@ -354,6 +357,15 @@ public static class ConfigReader
             Positive(table, "tx_step_down_waits"),
             Positive(table, "tx_ceiling_initial"),
             Positive(table, "tx_ceiling_cap"));
+
+        // corpus-format.md 6.1: a cap is at least its initial length.
+        static void CapAtLeastInitial(JsonObject t, string initial, string cap)
+        {
+            if (Int(t, initial, "drc.table.") is int i && Int(t, cap, "drc.table.") is int c && c < i)
+            {
+                throw new ConfigException("drc.table." + cap, "must be at least " + initial);
+            }
+        }
 
         static int? Positive(JsonObject t, string key) =>
             Int(t, key, "drc.table.") is int v && v < 1 ? throw new ConfigException("drc.table." + key, "must be at least 1") : Int(t, key, "drc.table.");

@@ -217,6 +217,8 @@ public class RecommendationTests
             """{"smoothing_weight": 0}""",
             """{"rx_error_limit_ppt": 1001}""",
             """{"clean_run": 0}""",
+            """{"rx_ceiling_initial": 4, "rx_ceiling_cap": 3}""",
+            """{"tx_ceiling_initial": 4, "tx_ceiling_cap": 3}""",
         })
         {
             FluentActions.Invoking(() => ConfigReader.Read(Config(bad))).Should().Throw<ConfigException>(bad);
