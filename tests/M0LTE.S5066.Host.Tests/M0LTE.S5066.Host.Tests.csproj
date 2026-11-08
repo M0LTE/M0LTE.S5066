@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Socket and real-time tests of the host and client, kept apart from the deterministic core tests. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+  </ItemGroup>
+
+</Project>
