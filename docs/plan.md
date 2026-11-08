@@ -287,6 +287,8 @@ A transmission is a sequence of D_PDUs sent as one modem burst. The rules we fol
 
 ### 6.2 Our algorithm (implementation choice, to be tuned by measurement)
 
+Amended 2026-11-08: the phase 7 design in `docs/core-architecture.md` section 9 supersedes the receiver-side thresholds below. The modem's SNR estimate is post-equaliser and saturates on fading (M0LTE.Ms110d `docs/snr-calibration.md`), so thresholds are calibrated as block error rate against the estimate per waveform and interleaver, and moves up on fading need a clean run and a trial. The rest of this section stands.
+
 **Receiver side**, per peer:
 
 - Keep a smoothed SNR from `BurstEnded.snrDb` and a frame error rate from data CRC results.
@@ -504,7 +506,7 @@ The work slots into phases 6 (SIS client part), 8 (monitor) and 9 (on-air trials
 
 ## 12. Implementation phases
 
-The authoritative work breakdown for phases 3 to 6 is in `docs/core-architecture.md`, which moves CSMA and a thin SIS/CAS slice into phase 3, CAS-1 linking into phase 4, and block alignment and PADDING into phase 4 (they need a peer known to be Ed4). The table below is the original outline.
+The authoritative work breakdown for phases 3 to 7 is in `docs/core-architecture.md` section 9, which moves CSMA and a thin SIS/CAS slice into phase 3, CAS-1 linking into phase 4, and block alignment and PADDING into phase 4 (they need a peer known to be Ed4). The table below is the original outline.
 
 Each phase ends with its tests green, its conformance matrix rows filled, and a short demo. Work runs on branches with draft PRs pushed early, so it can be handed over.
 

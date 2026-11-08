@@ -19,7 +19,7 @@ Open from phase 3: the reception window commitment drops the last repeat of a U_
 | 4. DTS ARQ | done: P4-1 to P4-7 (#39 to #45) |
 | 5. CAS and MAC | done: P5-1 to P5-5 (#55 to #59), also #61 (time-based link loss), #64 (channel capture) and #70 to #73 (the P5-5 findings) |
 | 6. SIS and host | done: P6-1 (#75), P6-2, P6-3a (#79), host hardening (#80), #83, P6-3b (pdn-soundmodem), P6-4 (s5066-test and the T4 test) |
-| 7. Rate selection | not started |
+| 7. Rate selection | work breakdown proposed (core-architecture.md 9, P7-1 to P7-10) |
 | 8. Station and packaging | s5066d radio medium (CM108 sound card and PTT) built, not yet on the bench |
 | 9. On air | not started |
 | 10. Applications | not started |
