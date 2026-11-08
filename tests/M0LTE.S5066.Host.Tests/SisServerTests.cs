@@ -160,9 +160,9 @@ public class SisServerTests
     [Fact]
     public async Task A_client_that_stops_reading_is_disconnected_after_the_write_bound()
     {
-        // S-0026, interp S-0029. The bound is 30 s in production; a test bound of 1 s.
+        // S-0026, interp S-0029. The bound is 30 s in production; a test bound of 1 s, and no byte bound.
         var events = new RecordingEvents();
-        await using var server = new SisServer(new IPEndPoint(IPAddress.Loopback, 0), events, TimeSpan.FromSeconds(1), null);
+        await using var server = new SisServer(new IPEndPoint(IPAddress.Loopback, 0), events, TimeSpan.FromSeconds(1), long.MaxValue, null);
         server.Start();
         using var client = new TcpClient { ReceiveBufferSize = 4096 };
         await client.ConnectAsync(server.LocalEndpoint);
@@ -177,6 +177,77 @@ public class SisServerTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         (await events.Disconnected.Reader.ReadAsync(cts.Token)).Should().Be(conn);
+    }
+
+    [Fact]
+    public async Task A_flooding_client_that_does_not_read_is_closed_at_the_byte_bound()
+    {
+        // S-0026, interp S-0029 (issue #80): more than the byte bound waiting closes the connection
+        // at once, long before the 30 s time bound. Production bound 1 MiB; a test bound of 256 KB.
+        SisServer.DefaultQueueByteBound.Should().Be(1024 * 1024);
+        var events = new RecordingEvents();
+        var log = new ConcurrentQueue<string>();
+        await using var server = new SisServer(new IPEndPoint(IPAddress.Loopback, 0), events, TimeSpan.FromSeconds(30), 256 * 1024, log.Enqueue);
+        server.Start();
+        using var client = new TcpClient { ReceiveBufferSize = 4096 };
+        await client.ConnectAsync(server.LocalEndpoint);
+        int conn = await events.Connected.Reader.ReadAsync();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        byte[] chunk = new byte[64 * 1024];
+        for (int i = 0; i < 1024; i++)
+        {
+            server.Send(conn, chunk);
+        }
+
+        using var cts = new CancellationTokenSource(Timeout);
+        (await events.Disconnected.Reader.ReadAsync(cts.Token)).Should().Be(conn);
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
+        log.Should().ContainSingle(l => l.Contains("S-0029") && l.Contains("bytes"));
+    }
+
+    [Fact]
+    public async Task A_reading_client_far_below_the_byte_bound_is_not_closed()
+    {
+        // The byte bound counts only what is waiting: 4 MB through a client that reads is fine.
+        var events = new RecordingEvents();
+        await using var server = new SisServer(new IPEndPoint(IPAddress.Loopback, 0), events, TimeSpan.FromSeconds(30), 256 * 1024, null);
+        server.Start();
+        using var client = new TcpClient();
+        await client.ConnectAsync(server.LocalEndpoint);
+        int conn = await events.Connected.Reader.ReadAsync();
+        Task<byte[]> read = ReadToEndAsync(client.GetStream());
+
+        byte[] chunk = new byte[16 * 1024];
+        for (int i = 0; i < 256; i++)
+        {
+            server.Send(conn, chunk);
+            await Task.Delay(1);
+        }
+
+        server.Close(conn);
+        (await read).Length.Should().Be(256 * chunk.Length);
+    }
+
+    [Fact]
+    public async Task The_accept_loop_logs_and_keeps_accepting_after_an_unexpected_failure()
+    {
+        // Issue #80: an accept error such as EMFILE gives one log line and the loop goes on.
+        var events = new RecordingEvents();
+        var log = new ConcurrentQueue<string>();
+        await using var server = new SisServer(new IPEndPoint(IPAddress.Loopback, 0), events, TimeSpan.FromSeconds(30), log.Enqueue);
+        int calls = 0;
+        server.Accept = (listener, ct) => Interlocked.Increment(ref calls) == 1
+            ? ValueTask.FromException<Socket>(new SocketException((int)SocketError.TooManyOpenSockets))
+            : listener.AcceptSocketAsync(ct);
+        server.AcceptRetry = TimeSpan.FromMilliseconds(50);
+        server.Start();
+
+        using var client = new TcpClient();
+        await client.ConnectAsync(server.LocalEndpoint);
+        using var cts = new CancellationTokenSource(Timeout);
+        (await events.Connected.Reader.ReadAsync(cts.Token)).Should().Be(1);
+        log.Should().ContainSingle(l => l.StartsWith("SIS accept failed", StringComparison.Ordinal));
     }
 
     [Fact]

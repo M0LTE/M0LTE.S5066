@@ -180,6 +180,31 @@ public class ClientDutyTests
     }
 
     [Fact]
+    public async Task A_throwing_handler_does_not_stop_the_client_reading()
+    {
+        // Issue #80: an application handler that throws must not end the read loop.
+        await using var node = await ScriptedNode.StartAsync();
+        await using SisClient client = await BoundAsync(node);
+        var failures = new List<Exception>();
+        var flows = new List<bool>();
+        client.HandlerFailed += failures.Add;
+        client.Unbound += _ => throw new InvalidOperationException("app bug in Unbound");
+        client.FlowChanged += _ => throw new InvalidOperationException("app bug in FlowChanged");
+        client.FlowChanged += flows.Add;
+        client.UnmatchedRejection += _ => throw new InvalidOperationException("app bug in UnmatchedRejection");
+
+        await node.SendAsync(new SisDataFlowOff());
+        await node.SendAsync(new SisUnidataRequestRejected(1, 5, Peer, new byte[] { 9 }));
+        await node.SendAsync(new SisUnbindIndication(6));
+        await node.SendAsync(new SisKeepAlive());
+
+        (await node.ReadAsync()).Should().Be(new SisKeepAlive(), "the client still reads, and answers the keep-alive");
+        flows.Should().Equal([false], "a later handler of the same event still runs");
+        failures.Select(e => e.Message).Should().Equal("app bug in FlowChanged", "app bug in UnmatchedRejection", "app bug in Unbound");
+        client.Closed.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task A_u_pdu_over_the_mtu_is_refused_by_the_client()
     {
         // A-0003: the client splits messages; the bind gives the MTU.

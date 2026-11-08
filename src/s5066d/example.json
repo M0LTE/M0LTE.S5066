@@ -1,3 +1,10 @@
+// s5066d example configuration (core-architecture.md 12.9). Keys not set here take the
+// corpus defaults built into the host.
+//
+// CSMA is left at the standard's defaults [Ed4 K Table 7, p.K-12]: 16 contention slots of
+// 3 s, a 30 s listen-before-talk wait after DCD and 3 s after VDCD. Those suit a real HF net,
+// but they make every exchange slow: expect 30 to 90 s for one confirmed message between two
+// nodes. For two nodes on a bench, use bench-node1.json and bench-node2.json instead.
 {
   "local_address": "0.0.1.1",
   "csma": { "mode": "jitter" },

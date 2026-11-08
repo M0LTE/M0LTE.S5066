@@ -13,6 +13,7 @@ namespace M0LTE.S5066.Host.Modem;
 /// <item>Bytes go to the modulator least significant bit first and decoded blocks are packed back the same way (C-0150).</item>
 /// <item>Waveform numbers map one to one; interleavers ultra short, short, medium and long. Very short and very long are not 110D interleavers and are refused (plan 5.3).</item>
 /// <item>Receive is gated while transmitting, and the demodulator is reset after each transmission (12.5 rule 3).</item>
+/// <item>Modulation runs on a worker thread, never on the caller's (the host's loop), so a long burst never holds up the core (issue #80).</item>
 /// <item>The adapter raises no <see cref="IModemEvents.ChannelBusy"/>.</item>
 /// </list>
 /// </remarks>
@@ -25,6 +26,8 @@ public sealed class Ms110dHostModem : IHostModem
     private readonly Ms110dDemodulator _demod;
     private readonly object _gate = new();
     private readonly float _amplitude;
+    private readonly Func<Ms110dTxSettings, byte[], float[]> _modulate;
+    private readonly Action<string>? _log;
     private IModemEvents? _events;
     private bool _transmitting;
     private bool _resetPending;
@@ -34,11 +37,20 @@ public sealed class Ms110dHostModem : IHostModem
     /// <summary>Creates the adapter.</summary>
     /// <param name="audio">The audio path.</param>
     /// <param name="amplitude">Transmit amplitude, a fraction of full scale (the modulator's default is 0.5).</param>
-    public Ms110dHostModem(IAudioChannel audio, float amplitude = 0.5f)
+    /// <param name="log">A sink for one-line log messages, or null.</param>
+    public Ms110dHostModem(IAudioChannel audio, float amplitude = 0.5f, Action<string>? log = null)
+        : this(audio, amplitude, log, static (settings, bits) => new Ms110dModulator(settings).Modulate(bits))
+    {
+    }
+
+    /// <summary>Creates the adapter with a stand-in modulator, for tests.</summary>
+    internal Ms110dHostModem(IAudioChannel audio, float amplitude, Action<string>? log, Func<Ms110dTxSettings, byte[], float[]> modulate)
     {
         ArgumentNullException.ThrowIfNull(audio);
         _audio = audio;
         _amplitude = amplitude;
+        _log = log;
+        _modulate = modulate;
         _demod = new Ms110dDemodulator(new Ms110dDemodOptions());
         _demod.BurstStarted += OnBurstStarted;
         _demod.BlockDecoded += OnBlockDecoded;
@@ -71,11 +83,17 @@ public sealed class Ms110dHostModem : IHostModem
         _audio.Start(OnAudio);
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Starts one burst and returns at once (core-architecture.md 12.5 rule 4). Receive is gated
+    /// and a locked burst ended here, on the caller's thread; the audio is modulated on a worker
+    /// thread and then played, so the host's loop never waits for the modulator (issue #80).
+    /// </summary>
     public void Transmit(ReadOnlyMemory<byte> bytes, int wn, Interleaver interleaver, int k, bool eom)
     {
-        var modulator = new Ms110dModulator(Settings(wn, interleaver, k, eom) with { Amplitude = _amplitude });
-        float[] samples = modulator.Modulate(ToBits(bytes.Span));
+        // Settings and bits here, so a bad waveform or interleaver throws to the caller and the
+        // caller may reuse its buffer once this returns.
+        Ms110dTxSettings settings = Settings(wn, interleaver, k, eom) with { Amplitude = _amplitude };
+        byte[] bits = ToBits(bytes.Span);
         lock (_gate)
         {
             if (_transmitting)
@@ -87,15 +105,19 @@ public sealed class Ms110dHostModem : IHostModem
             EndLockedBurst(BurstEndReason.SignalLost, null);
         }
 
-        _audio.Play(samples, () =>
+        _ = Task.Run(() =>
         {
-            lock (_gate)
+            try
             {
-                _transmitting = false;
-                _resetPending = true;
+                float[] samples = _modulate(settings, bits);
+                _audio.Play(samples, OnPlayed);
             }
-
-            _events?.TransmitDone();
+            catch (Exception e)
+            {
+                // Nothing went out. Report the burst done anyway, so the core is not left waiting.
+                _log?.Invoke($"modem: burst not sent: {e.Message}");
+                OnPlayed();
+            }
         });
     }
 
@@ -136,6 +158,17 @@ public sealed class Ms110dHostModem : IHostModem
         }
 
         return bytes;
+    }
+
+    private void OnPlayed()
+    {
+        lock (_gate)
+        {
+            _transmitting = false;
+            _resetPending = true;
+        }
+
+        _events?.TransmitDone();
     }
 
     private static int CeilMs(int samples) => (int)Math.Ceiling(samples / SamplesPerMs);

@@ -57,7 +57,8 @@ public sealed class SisBindRejectedException(byte reason)
 /// Received U_PDUs and management messages are queued without bound in <see cref="Received"/> and
 /// <see cref="ManagementMessages"/>, so a slow application never stops the client reading: the
 /// node may disconnect a client that does not read (S-0026). Events are raised on the reading
-/// task; keep handlers short.
+/// task; keep handlers short. An exception thrown by a handler is caught and passed to
+/// <see cref="HandlerFailed"/>, so it never stops the client reading.
 /// </remarks>
 public sealed class SisClient : IAsyncDisposable
 {
@@ -105,7 +106,10 @@ public sealed class SisClient : IAsyncDisposable
     /// <summary>Completes when the connection has closed, for any reason.</summary>
     public Task Closed => _closed.Task;
 
-    /// <summary>The node unbound this client (S_UNBIND_INDICATION); the argument is the reason.</summary>
+    /// <summary>
+    /// The node unbound this client (S_UNBIND_INDICATION); the argument is the reason. Raised after
+    /// <see cref="Binding"/> is cleared and before sends waiting for confirmation fail.
+    /// </summary>
     public event Action<byte>? Unbound;
 
     /// <summary>The node sent S_DATA_FLOW_ON (true) or S_DATA_FLOW_OFF (false).</summary>
@@ -113,6 +117,13 @@ public sealed class SisClient : IAsyncDisposable
 
     /// <summary>An S_UNIDATA_REQUEST_REJECTED that matches no send waiting for confirmation.</summary>
     public event Action<SisUnidataRequestRejected>? UnmatchedRejection;
+
+    /// <summary>
+    /// A handler of <see cref="Unbound"/>, <see cref="FlowChanged"/> or <see cref="UnmatchedRejection"/>
+    /// threw; the argument is the exception. The client goes on reading. An exception from a handler
+    /// of this event is dropped.
+    /// </summary>
+    public event Action<Exception>? HandlerFailed;
 
     /// <summary>Connects to a node's SIS (S-0007; another port may be given, S-0008).</summary>
     public static async Task<SisClient> ConnectAsync(string host = "127.0.0.1", int port = DefaultPort, CancellationToken cancellationToken = default)
@@ -354,9 +365,18 @@ public sealed class SisClient : IAsyncDisposable
                 }
             }
         }
-        catch (Exception e) when (e is SocketException or OperationCanceledException or ObjectDisposedException)
+        catch (Exception e)
         {
+            // A socket error or a close, or a fault of our own: either way the connection is done
+            // and everything waiting on it must hear so.
             error = e;
+            try
+            {
+                _socket.Shutdown(SocketShutdown.Both);
+            }
+            catch (Exception e2) when (e2 is SocketException or ObjectDisposedException)
+            {
+            }
         }
 
         var closed = new IOException("the SIS connection closed", error);
@@ -401,8 +421,9 @@ public sealed class SisClient : IAsyncDisposable
                 _bind?.TrySetException(new SisBindRejectedException(r.Reason));
                 break;
             case SisUnbindIndication u:
-                OnUnbound();
-                Unbound?.Invoke(u.Reason);
+                // Handlers run before the sends waiting for confirmation fail, so code awaiting a
+                // send sees the Unbound event already raised.
+                OnUnbound(() => Raise(Unbound, u.Reason));
                 break;
             case SisDataFlowOff:
                 lock (_gate)
@@ -413,7 +434,7 @@ public sealed class SisClient : IAsyncDisposable
                     }
                 }
 
-                FlowChanged?.Invoke(false);
+                Raise(FlowChanged, false);
                 break;
             case SisDataFlowOn:
                 lock (_gate)
@@ -421,7 +442,7 @@ public sealed class SisClient : IAsyncDisposable
                     _flowOn.TrySetResult();
                 }
 
-                FlowChanged?.Invoke(true);
+                Raise(FlowChanged, true);
                 break;
             case SisKeepAlive:
                 // Answered at once, whatever the 120 s limit (S-0041, interp S-0044).
@@ -455,14 +476,42 @@ public sealed class SisClient : IAsyncDisposable
                 }
                 else
                 {
-                    UnmatchedRejection?.Invoke(r);
+                    Raise(UnmatchedRejection, r);
                 }
 
                 break;
         }
     }
 
-    private void OnUnbound()
+    /// <summary>Calls each handler of an event in turn, catching what it throws (issue #80).</summary>
+    private void Raise<T>(Action<T>? handlers, T arg)
+    {
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (Action<T> h in handlers.GetInvocationList().Cast<Action<T>>())
+        {
+            try
+            {
+                h(arg);
+            }
+            catch (Exception e)
+            {
+                try
+                {
+                    HandlerFailed?.Invoke(e);
+                }
+                catch (Exception)
+                {
+                    // Dropped, as documented.
+                }
+            }
+        }
+    }
+
+    private void OnUnbound(Action? beforeFailingSends = null)
     {
         PendingSend[] pending;
         lock (_gate)
@@ -473,6 +522,7 @@ public sealed class SisClient : IAsyncDisposable
             _pending.Clear();
         }
 
+        beforeFailingSends?.Invoke();
         foreach (PendingSend p in pending)
         {
             p.Result.TrySetException(new InvalidOperationException("unbound before the send was confirmed"));

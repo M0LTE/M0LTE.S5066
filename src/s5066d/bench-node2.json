@@ -1,0 +1,21 @@
+// s5066d two-node bench configuration, node 2 of 2 (the other is bench-node1.json).
+// Run both on one machine; they talk MS110D over UDP audio on ports 7300 and 7301.
+//
+// Only for a bench: the CSMA and timeout values below are much shorter than the standard's
+// defaults (example.json keeps those), so one confirmed message takes 11 to 13 s instead of
+// 30 to 90 s. The standard makes the wait after DCD long because DCD can drop early in a fade
+// [Ed4 K.4, p.K-12]; these short waits give no such margin, so do not use them on air.
+{
+  "local_address": "0.0.1.2",
+  // 4 contention slots of 200 ms; wait 2 s after DCD and 0.5 s after VDCD before talking.
+  "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 200, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 500 },
+  "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
+  // Link requests time out after 8 s, five tries.
+  "cas": { "max_links": 4, "link_request_timeout_ms": 8000, "link_request_retries": 5 },
+  // Transmissions of at most 6 s; wait 8 s for an acknowledgement.
+  "dts": { "max_transmission_ms": 6000, "ack_wait_ms": 8000 },
+  "host": {
+    "sis_listen": "127.0.0.1:5067",
+    "modem": { "kind": "ms110d", "audio_listen": "127.0.0.1:7301", "audio_peer": "127.0.0.1:7300" }
+  }
+}
