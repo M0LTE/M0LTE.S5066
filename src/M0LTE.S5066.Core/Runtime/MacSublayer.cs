@@ -266,6 +266,12 @@ internal sealed class MacSublayer : IMacSublayer
         _burstEnd = _burstEnd is long b ? Math.Min(b, predictedEndTime) : predictedEndTime;
 
     /// <summary>
+    /// The burst's estimate from block-anchored EOTs, combined by the DTS (interp C-1289): it
+    /// replaces the current burst's estimate. Earlier bursts' estimates still bind (C-0844).
+    /// </summary>
+    public void EotEstimate(long predictedEndTime) => _burstEnd = predictedEndTime;
+
+    /// <summary>
     /// A valid header was heard (C-0868, K-0068). Group destinations (non-ARQ to multicast or
     /// broadcast) may be present without spoiling condition (a); any other destination is
     /// "directly addressed" (K-0072), to this node or to another.

@@ -63,7 +63,7 @@ public class EotEomScenarios
     };
 
     private const string RxCommon =
-        "Conn 1 binds SAP 5 for non-ARQ and gets S_BIND_ACCEPTED (A-0041, A-0047). Every received D_PDU is a single-segment NON-ARQ-DATA (type 7, address size 4, C_PDU ID as stated, reception window 20) from 0.0.1.3 to 0.0.1.9 whose segment is a DATA C_PDU holding a DATA S_PDU from SAP 9 to SAP 9 with U_PDU \"hi\" (31 bytes, as in dts-rx-vdcd-end-after-burst-end). burst_started gives block_ms (corpus 0.31.0), so each EOT counts from the latest instant its D_PDU can have started on air: the arrival time of the bytes_received holding its first byte, less block_ms, plus ceil(offset x block_ms / bytes in that bytes_received) (interp C-1289); the burst's estimate is the earliest end time (C-0843). After the burst, conn 1's S_UNIDATA_REQUEST (priority 0 to SAP 5 at 0.0.1.3, U_PDU \"hello\", no confirmation) is queued: no SIS output (A-0095, K-0096), dts.ttd starts at its TTD (C-1050), and with the channel busy until the estimate csma.vdcd_end runs to it (K-0073, K-0111). At its expiry VDCD clears last and the D_PDUs heard were addressed to another node, so rule 3 gives lbt_wait_vdcd_ms 3000 (K-0071, K-0073). ";
+        "Conn 1 binds SAP 5 for non-ARQ and gets S_BIND_ACCEPTED (A-0041, A-0047). Every received D_PDU is a single-segment NON-ARQ-DATA (type 7, address size 4, C_PDU ID as stated, reception window 20) from 0.0.1.3 to 0.0.1.9 whose segment is a DATA C_PDU holding a DATA S_PDU from SAP 9 to SAP 9 with U_PDU \"hi\" (31 bytes, as in dts-rx-vdcd-end-after-burst-end). burst_started gives block_ms (corpus 0.31.0), so the block holding each D_PDU's first byte started on air no later than the arrival time of its bytes_received less block_ms. From there each EOT announces the end block start + EOT x 500 (C-1043), and adding first ceil(offset x block_ms / bytes in that bytes_received), the D_PDU's share of the block, gives a bound that also holds for a sender counting from the byte's place. The burst's estimate is the later of the latest announced end (C-0889) and the earliest bound (C-0843) (interp C-1289). After the burst, conn 1's S_UNIDATA_REQUEST (priority 0 to SAP 5 at 0.0.1.3, U_PDU \"hello\", no confirmation) is queued: no SIS output (A-0095, K-0096), dts.ttd starts at its TTD (C-1050), and with the channel busy until the estimate csma.vdcd_end runs to it (K-0073, K-0111). At its expiry VDCD clears last and the D_PDUs heard were addressed to another node, so rule 3 gives lbt_wait_vdcd_ms 3000 (K-0071, K-0073). ";
 
     private static ScenarioBuilder RxOpening(ScenarioBuilder b)
     {
@@ -87,14 +87,14 @@ public class EotEomScenarios
             "Ed4 C.7.5.1.1, p.C-110; C.4.2.3, p.C-13; K.2.2.5, p.K-3",
             "With the block duration from the modem, a received EOT counts from the start of the D_PDU's block (the block's arrival less one block), plus the D_PDU's share of the block, not from the arrival of its header.",
             RxConfig(),
-            RxCommon + "burst_started at 1000 gives block_ms 4800. The block at 6000 holds 62 bytes: D_PDU A (C_PDU ID 1, EOT 20) at offset 0, anchor 6000 - 4800 + 0 = 1200, end 11200; D_PDU B (C_PDU ID 2, EOT 20) at offset 31, anchor 1200 + ceil(31 x 4800 / 62) = 3600, end 13600. The block at 10800 holds D_PDU C (C_PDU ID 3, EOT 10) at offset 0 of 31 bytes: anchor 6000, end 11000. The estimate is 11000 (C-0843), against 15800 under C-1024 alone. The burst ends at 10800 (eom, 2 blocks) with nothing queued, so no output. The request at 10900 starts dts.ttd and csma.vdcd_end 100 ms; at 11000 rule 3 gives csma.lbt_wait 3000.");
+            RxCommon + "burst_started at 1000 gives block_ms 4800. The block at 6000 holds 62 bytes, so it started by 6000 - 4800 = 1200: D_PDU A (C_PDU ID 1, EOT 20) at offset 0 announces 11200 and bounds at 11200; D_PDU B (C_PDU ID 2, EOT 20) at offset 31 announces 11200 and bounds at 11200 + ceil(31 x 4800 / 62) = 13600. The block at 10800 started by 6000 and holds D_PDU C (C_PDU ID 3, EOT 10) at offset 0 of 31 bytes: it announces and bounds at 11000. Latest announced 11200, earliest bound 11000, so the estimate is 11200, against 15800 under C-1024 alone (the true end, 10750, is 450 ms earlier). The burst ends at 10800 (eom, 2 blocks) with nothing queued, so no output. The request at 10900 starts dts.ttd and csma.vdcd_end 300 ms; at 11200 rule 3 gives csma.lbt_wait 3000.");
         RxOpening(b);
         b.BurstStarted(1000, 4800);
         b.BytesReceived(6000, Hex(Cat(RxType7(1, 20), RxType7(2, 20))));
         b.BytesReceived(10800, Hex(RxType7(3, 10)));
         b.BurstEnded(10800, blocks: 2);
-        b.SisBytes(10900, 1, Hello).ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 100);
-        b.TimerExpired(11000, "csma.vdcd_end").ExpectTimerStart("csma.lbt_wait", 3000);
+        b.SisBytes(10900, 1, Hello).ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 300);
+        b.TimerExpired(11200, "csma.vdcd_end").ExpectTimerStart("csma.lbt_wait", 3000);
         return b;
     }
 
@@ -114,7 +114,7 @@ public class EotEomScenarios
             "Ed4 C.7.5.1.1, p.C-110; C.4.2.3, p.C-13; C.7.7.3.2, p.C-124",
             "A D_PDU whose header completes in the block after the one holding its first byte counts its EOT from that first block, plus the byte's share of it rounded up.",
             RxConfig(),
-            RxCommon + "burst_started at 1000 gives block_ms 1000. The block at 2100 holds 11 zero bytes and the first 10 bytes of D_PDU A (C_PDU ID 1, EOT 5); the block at 3100 holds its other 21 bytes, completing its header and data (C-0973, D-0007). Its first byte is at offset 11 of the 21-byte block that arrived at 2100: anchor 2100 - 1000 + ceil(11 x 1000 / 21) = 1100 + 524 = 1624, end 1624 + 2500 = 4124 (C-1289), against 3100 + 2500 = 5600 under C-1024 alone. The burst ends at 3200 (eom, 2 blocks) with nothing queued, so no output. The request at 3300 starts dts.ttd and csma.vdcd_end 824 ms; at 4124 rule 3 gives csma.lbt_wait 3000.");
+            RxCommon + "burst_started at 1000 gives block_ms 1000. The block at 2100 holds 11 zero bytes and the first 10 bytes of D_PDU A (C_PDU ID 1, EOT 5); the block at 3100 holds its other 21 bytes, completing its header and data (C-0973, D-0007). Its first byte is at offset 11 of the 21-byte block that arrived at 2100, which started by 1100: it announces 1100 + 2500 = 3600 and bounds at 3600 + ceil(11 x 1000 / 21) = 3600 + 524 = 4124. With one header the estimate is the later, 4124 (C-1289), against 3100 + 2500 = 5600 under C-1024 alone. The burst ends at 3200 (eom, 2 blocks) with nothing queued, so no output. The request at 3300 starts dts.ttd and csma.vdcd_end 824 ms; at 4124 rule 3 gives csma.lbt_wait 3000.");
         RxOpening(b);
         b.BurstStarted(1000, 1000);
         b.BytesReceived(2100, Hex(block0));

@@ -45,13 +45,17 @@ internal sealed record HeardBurst(long Start, long End);
 /// <para>
 /// Per D_PDU, in byte order (core-architecture.md 3.5 rule 3), the header effects happen as soon as
 /// the header is complete and valid, even if its data has not all arrived: an EOT &gt; 0 gives the
-/// end time <c>anchor + eot * 500</c> (C-0842, K-0021; EOT 0 gives nothing, C-0105). When the modem
-/// gave the block duration of the burst at <c>burst_started</c>, the anchor is the latest instant the
-/// D_PDU can have started on air: the time of the <c>bytes_received</c> holding its first byte, less
-/// one block (the modem cannot decode a block before all of it has been on air), plus the share of
-/// that block before the byte, rounded up (interp C-1289). Otherwise it is <c>t_rx</c>, the time of
-/// the <c>bytes_received</c> that completed the header, or the burst end for a header found only by
-/// the search at the burst end (C-1024). The (src, dst, group)
+/// end time (C-0842, K-0021; EOT 0 gives nothing, C-0105). When the modem gave the block duration
+/// of the burst at <c>burst_started</c> (interp C-1289), the block holding the D_PDU's first byte
+/// started on air no later than its <c>bytes_received</c> time less one block (the modem cannot
+/// decode a block before all of it has been on air). From there, <c>eot * 500</c> is the end the
+/// EOT announces under our reading of where a D_PDU starts (C-1043), and adding first the byte's
+/// share of the block, rounded up, gives an end that bounds a sender counting from the byte's place
+/// too. The burst's estimate is the later of the latest announced end (no EOT heard is overruled,
+/// C-0889) and the earliest bound (each is an upper bound on the true end, C-0843). Without the
+/// block duration each header gives <c>t_rx + eot * 500</c>, where <c>t_rx</c> is the time of the
+/// <c>bytes_received</c> that completed the header, or the burst end for a header found only by the
+/// search at the burst end, and the estimate is the earliest of them (C-1024). The (src, dst, group)
 /// triple goes to the MAC for the two-node rule (K-0068). This holds for every valid header,
 /// whoever it is addressed to (C-0832, C-0868). Then, once the whole D_PDU is there, one whose data
 /// CRC fails is discarded (C-0834, C-0836, C-0839) and the rest go to the state machine (C-0838).
@@ -89,6 +93,11 @@ internal sealed class DtsReceiver
     private int? _blockMs;
     private readonly List<(long Start, int Length, long T)> _blocks = [];
 
+    // With block_ms: the latest end announced under C-1043 and the earliest bound counting the byte's
+    // share of its block, over the burst's headers so far (interp C-1289).
+    private long? _latestAnnounced;
+    private long? _earliestBound;
+
     // Start offset of the D_PDU whose header effects have been applied but whose data is still
     // arriving, or -1. Stops the header effects being applied twice.
     private int _headerDoneAt = -1;
@@ -115,6 +124,8 @@ internal sealed class DtsReceiver
     {
         _burstStart = _context.Now;
         _blockMs = blockMs;
+        _latestAnnounced = null;
+        _earliestBound = null;
         Reset();
         _heardThisBurst.Clear();
         _toUsThisBurst.Clear();
@@ -252,7 +263,19 @@ internal sealed class DtsReceiver
         DpduHeader h = info.Header;
         if (h.Eot > 0)
         {
-            _mac.EotHeard(Anchor() + (h.Eot * 500L));
+            if (_blockMs is int blockMs)
+            {
+                (long blockStart, long share) = BlockAnchor(blockMs);
+                long announced = blockStart + (h.Eot * 500L);
+                long bound = announced + share;
+                _latestAnnounced = Math.Max(_latestAnnounced ?? announced, announced);
+                _earliestBound = Math.Min(_earliestBound ?? bound, bound);
+                _mac.EotEstimate(Math.Max(_latestAnnounced.Value, _earliestBound.Value));
+            }
+            else
+            {
+                _mac.EotHeard(_context.Now + (h.Eot * 500L));
+            }
         }
 
         _mac.DpduHeard(h.Src, h.Dst, info.GroupAddress);
@@ -269,27 +292,19 @@ internal sealed class DtsReceiver
     }
 
     /// <summary>
-    /// The instant a received EOT counts from, for the D_PDU at the search position. With the block
-    /// duration known (interp C-1289): the block holding the D_PDU's first byte arrived at T, so it
-    /// started on air no later than T - blockMs; the D_PDU's own bits start no later than its share
-    /// of the block after that, rounded up, so the end time stays an upper bound (C-0844) for a
-    /// sender that counts from the block start (C-1043) or from the byte's place in the block.
-    /// Without it, now: the time the bytes completing the header arrived, or the burst end (C-1024).
+    /// For the D_PDU at the search position (interp C-1289): the latest instant the block holding its
+    /// first byte can have started on air, its arrival time less one block, and the share of that
+    /// block before the byte, rounded up.
     /// </summary>
-    private long Anchor()
+    private (long BlockStart, long Share) BlockAnchor(int blockMs)
     {
-        if (_blockMs is not int blockMs)
-        {
-            return _context.Now;
-        }
-
         long offset = _streamBase + _pos;
         foreach ((long start, int length, long t) in _blocks)
         {
             if (offset >= start && offset < start + length)
             {
                 long into = offset - start;
-                return t - blockMs + (((into * blockMs) + length - 1) / length);
+                return (t - blockMs, ((into * blockMs) + length - 1) / length);
             }
         }
 
