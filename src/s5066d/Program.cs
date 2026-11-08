@@ -4,10 +4,17 @@ using M0LTE.S5066.Host;
 using M0LTE.S5066.Host.Audio;
 using M0LTE.S5066.Host.Modem;
 
-// s5066d: one STANAG 5066 node (core-architecture.md 12.9). Usage: s5066d <config.json>
-if (args.Length != 1 || args[0] is "-h" or "--help")
+// s5066d: one STANAG 5066 node (core-architecture.md 12.9). Usage: s5066d [--trace] <config.json>
+bool trace = args.Length == 2 && args[0] == "--trace";
+if (trace)
 {
-    Console.Error.WriteLine("usage: s5066d <config.json>");
+    args = args[1..];
+}
+
+if (args.Length != 1 || args[0] is "-h" or "--help" or "--trace")
+{
+    Console.Error.WriteLine("usage: s5066d [--trace] <config.json>");
+    Console.Error.WriteLine("  --trace  log every D_PDU, timer, state change and burst timing (issue #86)");
     return 2;
 }
 
@@ -29,11 +36,13 @@ if (config.Modem is not { AudioListen: { } listen, AudioPeer: { } peer })
 }
 
 using var audio = new UdpAudioChannel(listen, peer);
+Action<string>? traceSink = trace ? line => Console.WriteLine(line) : null;
+audio.Trace = traceSink is null ? null : line => traceSink($"trace {line}");
 NodeHost made;
 try
 {
     made = new NodeHost(config.Node, config.PrngSeed, new Ms110dHostModem(audio, log: line => Console.WriteLine(line)),
-        new NodeHostOptions { SisEndpoint = config.SisEndpoint, Log = line => Console.WriteLine(line) });
+        new NodeHostOptions { SisEndpoint = config.SisEndpoint, Log = line => Console.WriteLine(line), Trace = traceSink });
 }
 catch (ConfigException e)
 {

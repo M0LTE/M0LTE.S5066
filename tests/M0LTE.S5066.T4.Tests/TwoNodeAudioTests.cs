@@ -47,8 +47,9 @@ public class TwoNodeAudioTests
     [Fact]
     public async Task Long_two_nodes_over_audio_files_both_ways_and_perf_with_echo()
     {
-        // Several minutes; run locally with S5066_LONG_TESTS=1. As of 2026-11-08 it fails: a 10 kB file
-        // (five U_PDUs near the MTU) stalls and its last U_PDUs are rejected with reason 3 (issue #86).
+        // Five to six minutes; run locally with S5066_LONG_TESTS=1. The nodes run with --trace, so a failure
+        // leaves every D_PDU and timer in the output. Issue #86 (fixed): 200 ms contention slots made every
+        // contention a collision, and a receiver closed the link as idle while a C_PDU was still arriving.
         Assert.SkipUnless(Environment.GetEnvironmentVariable("S5066_LONG_TESTS") == "1", "long T4 test: set S5066_LONG_TESTS=1 to run");
         JsonElement result = await RunAsync("""
             [
@@ -60,11 +61,16 @@ public class TwoNodeAudioTests
               { "do": "perf", "node": "b", "to": "0.0.1.1", "count": 10, "size": 200, "confirm": "client" },
               { "do": "info", "node": "a" }
             ]
-            """, TimeSpan.FromMinutes(30));
+            """, TimeSpan.FromMinutes(30), trace: true);
         result.GetProperty("pass").GetBoolean().Should().BeTrue();
     }
 
-    private async Task<JsonElement> RunAsync(string steps, TimeSpan timeout)
+    /// <summary>
+    /// Runs one scenario on two fresh nodes. With <paramref name="trace"/> the nodes run with
+    /// <c>--trace</c> (issue #86), and the whole log goes to the test output as always; set
+    /// S5066_T4_LOG to a file path to keep it there too.
+    /// </summary>
+    private async Task<JsonElement> RunAsync(string steps, TimeSpan timeout, bool trace = false)
     {
         string dir = Directory.CreateTempSubdirectory("s5066-t4-").FullName;
         (int sisA, int sisB, int audioA, int audioB) = FreePorts();
@@ -77,10 +83,11 @@ public class TwoNodeAudioTests
 
         var log = new StringBuilder();
         var processes = new List<Process>();
+        string flag = trace ? "--trace " : string.Empty;
         try
         {
-            processes.Add(Start("s5066d.dll", configA, "a", log));
-            processes.Add(Start("s5066d.dll", configB, "b", log));
+            processes.Add(Start("s5066d.dll", flag + configA, "a", log));
+            processes.Add(Start("s5066d.dll", flag + configB, "b", log));
             await WaitForListenAsync(sisA, processes[0]);
             await WaitForListenAsync(sisB, processes[1]);
             string json = Path.Combine(dir, "result.json");
@@ -124,6 +131,10 @@ public class TwoNodeAudioTests
             lock (log)
             {
                 _output.WriteLine(log.ToString());
+                if (Environment.GetEnvironmentVariable("S5066_T4_LOG") is { Length: > 0 } keep)
+                {
+                    File.WriteAllText(keep, log.ToString());
+                }
             }
 
             Directory.Delete(dir, recursive: true);

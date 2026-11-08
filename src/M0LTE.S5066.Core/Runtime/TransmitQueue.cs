@@ -396,6 +396,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// </summary>
     public void OnTransmitDone()
     {
+        foreach (ArqLink l in _links.Values)
+        {
+            TraceLink(l, "tx-done");
+        }
+
         foreach (uint peer in _sentArqPeers)
         {
             if (_links.TryGetValue(peer, out ArqLink? link) && link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
@@ -516,6 +521,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
+        TraceLink(link, "ack");
         _mac.QueueState(Placeable());
         ReconcileTimer();
     }
@@ -528,6 +534,10 @@ internal sealed class TransmitQueue : ITransmissionSource
         link.Outstanding.Remove(f);   // the FSN may be reused (C-0767)
         f.Owner.Unacked--;
     }
+
+    /// <summary>One diagnostic line with the link's window edges (issue #86); nothing when no sink is set.</summary>
+    private void TraceLink(ArqLink l, string when) =>
+        _context.Trace?.Invoke($"arq {Dts.DpduAddress.ToDotted(l.Peer)} {when} tx lwe={l.TxLwe} uwe={l.TxUwe} outstanding={l.Outstanding.Count} failed={l.Outstanding.Count(f => f.State == ArqFrameState.Failed)} rx lwe={l.RxLwe} uwe={l.RxUwe}");
 
     private static TimerName AckWaitTimer(uint peer) => TimerName.ForPeer(TimerKind.DtsAckWait, peer);
 

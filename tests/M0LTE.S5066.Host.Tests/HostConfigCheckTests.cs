@@ -133,6 +133,52 @@ public class HostConfigCheckTests
         make.Should().Throw<ConfigException>().Where(e => e.Setting == "drc.default_speed");
     }
 
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(720, true)]
+    [InlineData(721, false)]
+    [InlineData(1000, false)]
+    public void A_contention_slot_no_longer_than_the_110d_preamble_is_accepted_with_one_warning_line(int width, bool warned)
+    {
+        // K-0048, issue #86: the slot must outlast the channel-sensing delay. With the 110D modem alone
+        // that is at least its 720 ms preamble (the old bench files had 200), but an external busy
+        // input (K-0006) can sense a burst sooner, so the host warns and does not refuse.
+        JsonObject file = LoopbackFile();
+        file["csma"]!["cont_slot_width_ms"] = width;
+        HostConfig c = HostConfig.Parse(file.ToJsonString());
+        var medium = new AudioMedium();
+        var log = new List<string>();
+
+        Action make = () => _ = new NodeHost(c.Node, c.PrngSeed, new Ms110dHostModem(medium.CreateChannel()), new NodeHostOptions { Log = log.Add });
+
+        make.Should().NotThrow();
+        NodeHost.ConfigWarnings(c.Node, new Ms110dHostModem(medium.CreateChannel())).Should().BeEquivalentTo(log);
+        if (warned)
+        {
+            log.Should().ContainSingle().Which.Should().Match(l => l.Contains("csma.cont_slot_width_ms", StringComparison.Ordinal) && l.Contains("720 ms preamble", StringComparison.Ordinal) && !l.Contains('\n', StringComparison.Ordinal));
+        }
+        else
+        {
+            log.Should().BeEmpty();
+        }
+    }
+
+    [Fact]
+    public async Task A_run_time_change_to_a_slot_no_longer_than_the_preamble_is_applied_with_a_warning()
+    {
+        // K-0048 on the loopback modem: its preamble is 40 ms.
+        var medium = new LoopbackMedium();
+        var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        await using NodeHost a = TestNodes.StartLoopbackHost(medium, "0.0.1.1", options: new NodeHostOptions { Log = log.Enqueue });
+        log.Should().NotContain(l => l.Contains("cont_slot_width_ms", StringComparison.Ordinal));
+        NodeConfig narrow = a.Config with { Csma = a.Config.Csma with { ContSlotWidthMs = 40 } };
+
+        a.UpdateConfig(narrow);
+
+        a.Config.Csma.ContSlotWidthMs.Should().Be(40);
+        log.Should().ContainSingle(l => l.Contains("cont_slot_width_ms 40", StringComparison.Ordinal) && l.Contains("40 ms preamble", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task An_unanswered_link_request_fails_the_link_and_the_node_keeps_running()
     {

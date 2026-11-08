@@ -183,6 +183,7 @@ internal sealed class Dispatcher
         {
             while (_context.TryDequeue(out InternalPrimitive p))
             {
+                _context.Trace?.Invoke($"prim {p}");
                 switch (p)
                 {
                     case ToSis s:

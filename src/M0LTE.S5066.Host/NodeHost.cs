@@ -19,6 +19,13 @@ public sealed record NodeHostOptions
     public Action<string>? Log { get; init; }
 
     /// <summary>
+    /// A sink for the per-burst trace (issue #86), or null for none: each D_PDU sent and received,
+    /// timers started, fired and cancelled, link, MAC and inter-sublayer changes, and each burst's
+    /// planned and actual timing. Diagnostics only; it changes nothing the node does.
+    /// </summary>
+    public Action<string>? Trace { get; init; }
+
+    /// <summary>
     /// The interp S-0029 write bound. Fixed in production at <see cref="SisServer.DefaultWriteBound"/>;
     /// tests shorten it.
     /// </summary>
@@ -56,6 +63,7 @@ public sealed class NodeHost : IAsyncDisposable
     private Task? _loop;
     private bool _shutdownRequested;
     private TaskCompletionSource? _shutdownDone;
+    private readonly HostTrace? _trace;
 
     /// <summary>
     /// Creates a host. The configuration's <c>time.*</c> is replaced with the UTC second at which
@@ -72,6 +80,7 @@ public sealed class NodeHost : IAsyncDisposable
         CheckConfig(config, modem);
         _options = options ?? new NodeHostOptions();
         _modem = modem;
+        LogWarnings(config);
 
         DateTimeOffset utc = TimeProvider.System.GetUtcNow();
         _startTimestamp = TimeProvider.System.GetTimestamp();
@@ -80,6 +89,15 @@ public sealed class NodeHost : IAsyncDisposable
         Epoch = second;
         Config = config with { Time = new TimeConfig(second.Year, second.DayOfYear, (int)second.TimeOfDay.TotalSeconds) };
         _node = new Node(Config, prngSeed, modem);
+        if (_options.Trace is { } sink)
+        {
+            _trace = new HostTrace(sink, modem);
+            _node.Trace = line => _trace.CoreLine(_node.Now, line);
+            if (modem is Ms110dHostModem m)
+            {
+                m.Trace = line => _trace.Modem(Now, line);
+            }
+        }
     }
 
     /// <summary>The UTC instant of host and core time 0.</summary>
@@ -158,23 +176,64 @@ public sealed class NodeHost : IAsyncDisposable
     /// <see cref="CheckConfig(NodeConfig)"/>, then that <paramref name="modem"/> can plan a burst at
     /// <c>drc.default_speed</c>, the speed of every transmission until phase 7 (core-architecture.md
     /// 5.3): the core plans one only when it first transmits, and a speed the modem refuses then
-    /// stops the node (issue #83).
+    /// stops the node (issue #83). A contention slot no longer than the modem's preamble is not
+    /// refused (see <see cref="ConfigWarnings"/>).
     /// </summary>
     /// <param name="config">The node configuration.</param>
     /// <param name="modem">The modem the node will run on.</param>
-    /// <exception cref="ConfigException">A setting is missing or the modem cannot send at the default speed.</exception>
+    /// <exception cref="ConfigException">A setting is missing, or the modem cannot send at the default speed.</exception>
     public static void CheckConfig(NodeConfig config, IModemPort modem)
     {
         CheckConfig(config);
         ArgumentNullException.ThrowIfNull(modem);
+        _ = PlanDefaultSpeed(config, modem);
+    }
+
+    /// <summary>
+    /// Settings <see cref="CheckConfig(NodeConfig, IModemPort)"/> accepts but that are probably wrong,
+    /// one line each; <see cref="NodeHost"/> writes them to <see cref="NodeHostOptions.Log"/> when it
+    /// is made and on <see cref="UpdateConfig"/>. Today one: a <c>csma.cont_slot_width_ms</c> no longer
+    /// than the modem's preamble at <c>drc.default_speed</c>. K-0048 wants the slot longer than the
+    /// whole channel-sensing delay, and the modem declares carrier only once the preamble is in, so
+    /// with the modem alone such slots make two contending nodes collide whatever slots they draw
+    /// (issue #86). It is a warning, not a refusal, because an external busy input (K-0006), ORed
+    /// into DCD, can sense a burst sooner than the modem, and the host cannot know that delay.
+    /// </summary>
+    /// <param name="config">The node configuration, already accepted by <see cref="CheckConfig(NodeConfig, IModemPort)"/>.</param>
+    /// <param name="modem">The modem the node will run on.</param>
+    /// <returns>The warnings, empty when there are none.</returns>
+    public static IReadOnlyList<string> ConfigWarnings(NodeConfig config, IModemPort modem)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(modem);
+        BurstPlan plan = PlanDefaultSpeed(config, modem);
+        var warnings = new List<string>();
+        if (config.Csma.ContSlotWidthMs <= plan.PreambleMs)
+        {
+            warnings.Add($"warning: csma.cont_slot_width_ms {config.Csma.ContSlotWidthMs} is not longer than this modem's {plan.PreambleMs} ms preamble at drc.default_speed; slots shorter than the time the far station needs to detect a burst cause collisions (K-0048), so use a longer slot unless an external busy input senses bursts sooner");
+        }
+
+        return warnings;
+    }
+
+    private static BurstPlan PlanDefaultSpeed(NodeConfig config, IModemPort modem)
+    {
         Speed speed = config.Drc.DefaultSpeed;
         try
         {
-            modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+            return modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         }
         catch (ArgumentException e)
         {
             throw new ConfigException("drc.default_speed", $"wn {speed.Wn} {InterleaverNames.ToName(speed.Interleaver)} is not a speed this modem can send ({e.Message})");
+        }
+    }
+
+    private void LogWarnings(NodeConfig config)
+    {
+        foreach (string line in ConfigWarnings(config, _modem))
+        {
+            _options.Log?.Invoke(line);
         }
     }
 
@@ -205,6 +264,7 @@ public sealed class NodeHost : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(config);
         CheckConfig(config, _modem);
+        LogWarnings(config);
         NodeConfig c = config with { Time = Config.Time };
         Post(InputClass.Config, t => new ConfigInput(t, c));
         Config = c;
@@ -296,6 +356,7 @@ public sealed class NodeHost : IAsyncDisposable
 
             if (input is not null)
             {
+                _trace?.Input(input, now);
                 _node.Handle(input);
                 Dispatch(_node.DrainOutputs());
                 continue;
@@ -330,6 +391,7 @@ public sealed class NodeHost : IAsyncDisposable
     {
         foreach (CoreOutput o in outputs)
         {
+            _trace?.Output(o, _node.Now);
             OutputProduced?.Invoke(o);
             switch (o)
             {

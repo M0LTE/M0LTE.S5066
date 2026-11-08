@@ -59,6 +59,7 @@ internal sealed class MacSublayer : IMacSublayer
     private static readonly TimerName VdcdEnd = TimerName.Of(TimerKind.CsmaVdcdEnd);
 
     private readonly CoreContext _context;
+    private MacState _state = MacState.Sense;
     private readonly SplitMix64 _prng;
 
     // Facts recorded by entry calls and OnTimer, consumed by AfterInput.
@@ -94,7 +95,19 @@ internal sealed class MacSublayer : IMacSublayer
         CheckSlotPosition(context.Config.Csma);
     }
 
-    public MacState State { get; private set; } = MacState.Sense;
+    public MacState State
+    {
+        get => _state;
+        private set
+        {
+            if (value != _state)
+            {
+                _context.Trace?.Invoke($"mac {_state} -> {value}");
+            }
+
+            _state = value;
+        }
+    }
 
     /// <summary>DCD from the modem: true between burst_started and burst_ended (K-0019, D-0018).</summary>
     public bool Dcd { get; private set; }
