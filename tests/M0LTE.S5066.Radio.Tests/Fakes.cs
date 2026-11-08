@@ -18,11 +18,35 @@ internal sealed class EventLog
         }
     }
 
+    /// <summary>The events so far, with each run of writes shown as one "write N" of their total.</summary>
     public string[] Snapshot()
     {
         lock (_events)
         {
-            return [.. _events];
+            var collapsed = new List<string>();
+            int run = -1;
+            foreach (string e in _events)
+            {
+                if (e.StartsWith("write ", StringComparison.Ordinal))
+                {
+                    int n = int.Parse(e["write ".Length..], System.Globalization.CultureInfo.InvariantCulture);
+                    if (run >= 0)
+                    {
+                        n += run;
+                        collapsed.RemoveAt(collapsed.Count - 1);
+                    }
+
+                    run = n;
+                    collapsed.Add($"write {n}");
+                }
+                else
+                {
+                    run = -1;
+                    collapsed.Add(e);
+                }
+            }
+
+            return [.. collapsed];
         }
     }
 }
@@ -87,6 +111,9 @@ internal sealed class FakeOutput(int sampleRate, EventLog log) : IAudioOutput
 
     public bool Fail { get; set; }
 
+    /// <summary>When set, each write takes as long as its audio lasts, as a real card's does.</summary>
+    public bool RealTime { get; set; }
+
     public float[] Written
     {
         get
@@ -111,6 +138,10 @@ internal sealed class FakeOutput(int sampleRate, EventLog log) : IAudioOutput
         }
 
         log.Add($"write {samples.Length}");
+        if (RealTime)
+        {
+            Thread.Sleep(samples.Length * 1000 / SampleRate);
+        }
     }
 
     public void Drain() => log.Add("drain");

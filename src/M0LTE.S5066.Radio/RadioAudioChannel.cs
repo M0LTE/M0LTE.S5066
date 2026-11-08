@@ -196,8 +196,19 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
                 Keyed?.Invoke(true);
                 _ptt.Key();
                 keyed = true;
-                _output.Write(keyup);
-                _output.Drain();
+
+                // In 100 ms pieces, so a stop cuts a long burst short at once rather than closing
+                // the device under a write in progress.
+                int piece = _rate / 10;
+                for (int at = 0; at < keyup.Length && !_stop.IsCancellationRequested; at += piece)
+                {
+                    _output.Write(keyup.AsSpan(at, Math.Min(piece, keyup.Length - at)));
+                }
+
+                if (!_stop.IsCancellationRequested)
+                {
+                    _output.Drain();
+                }
             }
             catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException or ObjectDisposedException)
             {

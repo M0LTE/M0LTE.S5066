@@ -80,6 +80,29 @@ public class RadioAudioChannelTests
     }
 
     [Fact]
+    public async Task Stopping_in_the_middle_of_a_long_burst_cuts_it_short_and_unkeys()
+    {
+        var log = new EventLog();
+        var output = new FakeOutput(CardRate, log) { RealTime = true };
+        var channel = new RadioAudioChannel(new FakeInput(CardRate), output, new FakePtt(log), 0, 0);
+        channel.Start(_ => { });
+        var played = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        channel.Play(new float[9600 * 20], () => played.TrySetResult());
+        while (!log.Snapshot().Contains("key"))
+        {
+            await Task.Delay(10);
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        channel.Dispose();
+
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "a 20 s burst is not played out at shutdown");
+        await played.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        log.Snapshot().Last().Should().Be("unkey");
+        log.Snapshot().Should().NotContain("drain");
+    }
+
+    [Fact]
     public async Task Received_audio_is_decimated_to_the_modems_rate_and_keeps_its_frequency()
     {
         var log = new EventLog();
