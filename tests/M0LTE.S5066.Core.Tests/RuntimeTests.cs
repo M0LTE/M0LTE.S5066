@@ -165,9 +165,9 @@ public class DispatcherTests
         rig.Dispatcher.Handle(new SisDisconnect(7, 1));
         rig.Log.Should().Equal(
             "sis.OnConfigChanged", "cas.OnConfigChanged", "dts.OnConfigChanged", "mac.OnConfigChanged", "mac.AfterInput",
-            "dts.OnBurstStarted", "mac.OnBurstStarted", "mac.AfterInput",
+            "dts.OnBurstStarted", "sis.OnReceiveStarted", "mac.OnBurstStarted", "mac.AfterInput",
             "dts.OnBytesReceived", "mac.AfterInput",
-            "dts.OnBurstEnded", "mac.OnBurstEnded", "mac.AfterInput",
+            "dts.OnBurstEnded", "sis.OnReceiveEnded", "mac.OnBurstEnded", "mac.AfterInput",
             "dts.OnTransmitDone", "mac.OnTransmitDone", "mac.AfterInput",
             "mac.OnChannelBusy", "mac.AfterInput",
             "sis.OnConnect", "mac.AfterInput",
@@ -203,7 +203,7 @@ public class DispatcherTests
             rig.Log.Add("mac.rereads-queue");
         };
         rig.Dispatcher.Handle(new BurstStarted(0));
-        rig.Log.Should().Equal("dts.OnBurstStarted", "mac.OnBurstStarted", "mac.AfterInput", "sis.On:rejected", "mac.rereads-queue");
+        rig.Log.Should().Equal("dts.OnBurstStarted", "sis.OnReceiveStarted", "mac.OnBurstStarted", "mac.AfterInput", "sis.On:rejected", "mac.rereads-queue");
 
         var rig2 = new ProbeRig();
         rig2.Sis.Reactions["OnConnect"] = () => rig2.Context.DrainPrimitives();

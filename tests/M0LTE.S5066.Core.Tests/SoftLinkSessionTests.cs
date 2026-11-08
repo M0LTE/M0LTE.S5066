@@ -107,6 +107,55 @@ public class SoftLinkSessionTests
         rig.Outputs.Should().Equal(new TimerCancel(First(X)), new TimerStart(Idle(X), 5000));
     }
 
+    private static BurstEnded EndOfBurst(long t) => new(t, BurstEndReason.Eom, 2, Interleaver.Long, 7, null, 1);
+
+    [Fact]
+    public void An_idle_wait_that_runs_out_during_a_received_burst_closes_the_link_only_at_its_end()
+    {
+        // Interp A-0320, issue #88: the burst may hold more of the peer's C_PDU, so the decision waits
+        // for its end. Nothing in it addressed this node, so the link is idle then.
+        var rig = Rig(idle: 5000);
+        CalledLink(rig);
+        rig.Input(new BurstStarted(4000));
+        rig.Expire(Idle(X));
+        rig.Outputs.Should().BeEmpty();
+        rig.Sis.SoftLinkOf(X).Should().Be("Established");
+        rig.Input(EndOfBurst(7000));
+        rig.Sis.SoftLinkOf(X).Should().Be("Closing");
+        rig.Outputs.Should().Contain(new TimerCancel(Max(X))).And.NotContain(o => o is TimerStart);
+    }
+
+    [Fact]
+    public void Arq_data_completed_during_the_burst_after_an_idle_expiry_restarts_the_wait_and_the_burst_end_changes_nothing()
+    {
+        // Interp A-0320: a C_PDU from the peer is ongoing communication whenever it arrives.
+        var rig = Rig(idle: 5000);
+        CalledLink(rig);
+        rig.Input(new BurstStarted(4000));
+        rig.Expire(Idle(X));
+        rig.Deliver(new DUnidataIndication(X, Us, false, true, CpduCodec.Encode(new CpduData(new byte[] { 0x01 }))));
+        rig.Outputs.Should().Equal(new TimerCancel(First(X)), new TimerStart(Idle(X), 5000));
+        rig.Input(EndOfBurst(6000));
+        rig.Outputs.Should().BeEmpty();
+        rig.Context.Timers.Deadline(Idle(X)).Should().Be(10000);
+        rig.Sis.SoftLinkOf(X).Should().Be("Established");
+    }
+
+    [Fact]
+    public void A_request_handed_over_during_the_burst_after_an_idle_expiry_keeps_the_link_open()
+    {
+        // A-0011, interp A-0320: with an ARQ U_PDU outstanding the link is not idle, so the pending
+        // decision is dropped and the burst end closes nothing.
+        var rig = Rig(idle: 5000);
+        CalledLink(rig);
+        rig.Input(new BurstStarted(4000));
+        rig.Expire(Idle(X));
+        rig.ArqRequest(X);
+        rig.Input(EndOfBurst(7000));
+        rig.Sis.SoftLinkOf(X).Should().Be("Established");
+        rig.Context.Timers.IsRunning(Idle(X)).Should().BeFalse();
+    }
+
     [Fact]
     public void The_maximum_session_time_closes_a_link_only_once_another_peer_waits()
     {
