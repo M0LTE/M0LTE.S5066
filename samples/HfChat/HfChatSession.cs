@@ -133,15 +133,15 @@ public sealed class HfChatSession
         ServiceType mode = to.Group
             ? new ServiceType(2, Confirm: 0, Order: 1, MinRetx: GroupRepeats)
             : new ServiceType(1, Confirm: 1, Order: 0);
-        Add($"me -> {to.Dotted}: {Decode(u)}");
+        Add($"me -> {Show(to)}: {Decode(u)}");
         SendResult r = await _client.SendAsync(new UnidataSend(to, Sap, u) { Priority = Priority, DeliveryMode = mode }, cancellationToken).ConfigureAwait(false);
         switch (r.Status)
         {
             case SendStatus.Confirmed:
-                Add($"delivered to {to.Dotted}");
+                Add($"delivered to {Show(to)}");
                 break;
             case SendStatus.Rejected:
-                Add($"NOT delivered to {to.Dotted} (reason {r.Reason})");
+                Add($"NOT delivered to {Show(to)} (reason {r.Reason})");
                 break;
         }
 
@@ -153,9 +153,18 @@ public sealed class HfChatSession
         await foreach (SisUnidataIndication u in _client.Received.ReadAllAsync().ConfigureAwait(false))
         {
             // Source and time of receipt shown with every message (O-0008, O-0009).
-            Add($"{u.SrcAddress.Dotted}{(u.DestAddress.Group ? " (to all)" : "")}: {Decode(u.UPdu.Span)}");
+            string to = !u.DestAddress.Group ? "" : u.DestAddress.Value == Broadcast.Value ? " (to all)" : $" (to {Show(u.DestAddress)})";
+            Add($"{Show(u.SrcAddress)}{to}: {Decode(u.UPdu.Span)}");
         }
     }
+
+    /// <summary>
+    /// An address as an operator reads it: a group address with the group flag as a 29th bit, so
+    /// 16.0.0.0 to 31.255.255.255 and the broadcast address 31.255.255.255 (C-0122, C-0123).
+    /// </summary>
+    public static string Show(SisAddress a) => a.Group
+        ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{16 + ((a.Value >> 24) & 15)}.{(a.Value >> 16) & 255}.{(a.Value >> 8) & 255}.{a.Value & 255}")
+        : a.Dotted;
 
     private void Add(string text)
     {

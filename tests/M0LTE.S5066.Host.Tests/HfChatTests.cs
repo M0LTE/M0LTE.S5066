@@ -25,6 +25,15 @@ public class HfChatTests
     }
 
     [Fact]
+    public void Group_addresses_are_shown_with_the_group_flag_as_a_29th_bit()
+    {
+        // C-0122, C-0123.
+        HfChatSession.Show(HfChatSession.Broadcast).Should().Be("31.255.255.255");
+        HfChatSession.Show(SisAddress.FromParts(0, 0, 0, 7, group: true)).Should().Be("16.0.0.7");
+        HfChatSession.Show(SisAddress.FromParts(0, 0, 1, 2)).Should().Be("0.0.1.2");
+    }
+
+    [Fact]
     public async Task A_one_to_one_message_goes_arq_with_node_confirmation_and_is_shown_with_its_source()
     {
         // O-0008, O-0010, O-0012, O-0014, O-0016.

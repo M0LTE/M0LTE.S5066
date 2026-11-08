@@ -27,7 +27,7 @@ HfChatSession chat = await HfChatSession.StartAsync(client);
 chat.Priority = priority;
 chat.GroupRepeats = repeats;
 chat.LineAdded += line => Console.WriteLine($"[{line.Time:HH:mm:ss}] {line.Text}");
-Console.WriteLine($"hfchat on SAP {HfChatSession.Sap}, MTU {chat.Mtu}. Commands: /to w.x.y.z, /all, /group w.x.y.z, /history, /quit");
+Console.WriteLine($"hfchat on SAP {HfChatSession.Sap}, MTU {chat.Mtu}. Commands: /to w.x.y.z, /all, /group w.x.y.z (16 to 31 for w), /history, /quit");
 
 SisAddress to = HfChatSession.Broadcast;
 while (Console.ReadLine() is { } line)
@@ -48,10 +48,13 @@ while (Console.ReadLine() is { } line)
     {
         to = HfChatSession.Broadcast;
     }
-    else if ((line.StartsWith("/to ", StringComparison.Ordinal) || line.StartsWith("/group ", StringComparison.Ordinal))
-        && SisAddress.TryParse(line[(line.IndexOf(' ') + 1)..], line.StartsWith("/group", StringComparison.Ordinal), 7, out SisAddress a))
+    else if (line.StartsWith("/to ", StringComparison.Ordinal) && SisAddress.TryParse(line[4..], false, 7, out SisAddress a))
     {
         to = a;
+    }
+    else if (line.StartsWith("/group ", StringComparison.Ordinal) && TryParseGroup(line[7..], out SisAddress g))
+    {
+        to = g;
     }
     else if (line.StartsWith('/'))
     {
@@ -64,6 +67,19 @@ while (Console.ReadLine() is { } line)
 }
 
 return 0;
+
+// A group address as written by an operator, 16.0.0.0 to 31.255.255.255 (C-0122).
+static bool TryParseGroup(string text, out SisAddress address)
+{
+    address = default;
+    int dot = text.IndexOf('.');
+    if (dot < 1 || !int.TryParse(text[..dot], NumberStyles.None, CultureInfo.InvariantCulture, out int w) || w is < 16 or > 31)
+    {
+        return false;
+    }
+
+    return SisAddress.TryParse((w - 16).ToString(CultureInfo.InvariantCulture) + text[dot..], true, 7, out address);
+}
 
 // Sends without holding up the keyboard; the outcome is shown as a history line.
 static async Task SendAsync(HfChatSession chat, SisAddress to, string text)
