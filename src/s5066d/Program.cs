@@ -112,6 +112,16 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
     stop.TrySetResult();
 };
+// SIGTERM (systemctl stop) is handled here rather than by the runtime's default, which ends the
+// process without running the disposals below: those unkey the radio, and a CM108 holds its PTT
+// pin where it was last set.
+using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+    System.Runtime.InteropServices.PosixSignal.SIGTERM,
+    context =>
+    {
+        context.Cancel = true;
+        stop.TrySetResult();
+    });
 AppDomain.CurrentDomain.ProcessExit += (_, _) => stop.TrySetResult();
 await Task.WhenAny(stop.Task, host.Completion);
 if (host.Completion.IsFaulted)

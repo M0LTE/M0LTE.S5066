@@ -1,0 +1,45 @@
+// s5066d radio bench configuration: the node on the FT-818, one of a pair (the other, on the
+// FT-450, is radio-ft450.json). Each runs on its own Raspberry Pi with a CM108 USB audio interface
+// wired to the radio's data jack; see docs/s5066d-radio.md.
+//
+// Only for a bench: the CSMA and timeout values are the short ones of bench-node1.json, so one
+// confirmed message takes seconds instead of 30 to 90 s. The standard makes the wait after DCD
+// long because DCD can drop early in a fade [Ed4 K.4, p.K-12]; these short waits give no such
+// margin, so do not use them on air.
+//
+// Replace the three device names before use: "aplay -l" and "arecord -l" list the sound cards,
+// and the CM108's hidraw node is the one whose /sys/class/hidraw/hidrawN/device/uevent names
+// vendor 0D8C.
+{
+  "local_address": "0.0.1.2",
+  // 4 contention slots of 1 s; wait 2 s after DCD and 0.5 s after VDCD before talking. A slot must
+  // outlast the time the far node takes to hear us start (K-0048). Here that is txdelay_ms of
+  // silence before the preamble, so these slots rely on busy_detect below, which senses the burst
+  // within about 0.1 s of its first audio; without it, use slots longer than txdelay_ms plus the
+  // 0.72 s preamble.
+  "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 1000, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 500 },
+  "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
+  "cas": { "max_links": 4, "link_request_retries": 5, "break_retries": 3 },
+  "dts": { "max_transmission_ms": 6000 },
+  "host": {
+    "sis_listen": "127.0.0.1:5066",
+    "modem": {
+      "kind": "ms110d",
+      "radio": {
+        "capture_device": "plughw:CARD=REPLACE_ME,DEV=0",
+        "playback_device": "plughw:CARD=REPLACE_ME,DEV=0",
+        "sample_rate": 48000,
+        "ptt_device": "/dev/hidrawREPLACE_ME",
+        "ptt_gpio": 3,
+        // Neither manual gives the radio's receive-to-transmit switching time; 300 ms is a safe
+        // start. Measure it (PTT edge to RF) and shorten.
+        "txdelay_ms": 300,
+        "txtail_ms": 20,
+        // The FT-818 data input in DIG mode takes up to 1.0 Vpp (10 kohm); set menu 25 DIG MIC so ALC shows
+        // only a few dots.
+        "tx_level": 0.2,
+        "busy_detect": true
+      }
+    }
+  }
+}
