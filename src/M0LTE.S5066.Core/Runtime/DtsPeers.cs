@@ -209,7 +209,7 @@ internal sealed class DtsPeers
             return;   // a failed data CRC with no ARQ machine to take the acknowledgement: discarded (C-0836, C-0839)
         }
 
-        OnEow(h, true);
+        OnEow(h, true, pdu is Management { ValidMessage: true } && EowCodec.Decode(h.Eow).Type is 1 or 2 or 5 or 6);
         switch (pdu)
         {
             case DataOnly or AckOnly or DataAck or Ed3DataOnly or Ed3AckOnly or Ed3DataAck
@@ -1035,8 +1035,11 @@ internal sealed class DtsPeers
     /// is not used, since our modem reports the received waveform (C-0943, C-0944). All under
     /// interp C-1262.</item>
     /// </list>
+    /// An Ed3 rate or frequency change request in a MANAGEMENT D_PDU (VALID MESSAGE set, EOW 1, 2, 5 or
+    /// 6) is refused and nothing in it is acted on (C-0920, interp C-0921, interp C-1071), so its EOW
+    /// is not recorded either; types 2, 5 and 6 there are still answered as unrecognised (C-1079).
     /// </summary>
-    private void OnEow(DpduHeader h, bool individual)
+    private void OnEow(DpduHeader h, bool individual, bool refused = false)
     {
         if (!individual)
         {
@@ -1046,6 +1049,11 @@ internal sealed class DtsPeers
         Eow eow = EowCodec.Decode(h.Eow);
         PeerTable editions = _context.Peers;
         bool ed3 = editions.EditionOf(h.Src) == KnownEdition.Ed3;
+        if (refused)
+        {
+            eow = eow is UnrecognisedEow ? eow : new EmptyEow();   // still answered if unrecognised (C-1079), never recorded
+        }
+
         switch (eow)
         {
             case UnrecognisedEow { EowType: not ChannelAnalysis.TokenEowType } u:

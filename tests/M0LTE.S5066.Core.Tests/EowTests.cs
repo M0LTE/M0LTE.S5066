@@ -282,6 +282,30 @@ public class EowTests
         types.Should().OnlyContain(t => t == 0 || t == 15);
     }
 
+    [Theory]
+    [InlineData(0x1A2)]
+    [InlineData(0x200)]
+    [InlineData(0x500)]
+    [InlineData(0x600)]
+    public void An_ed3_rate_or_frequency_change_management_message_is_acknowledged_and_refused_once(int eow)
+    {
+        // C-0919, C-0920, interp C-0921, interp C-1071: acknowledged, refused with WARNING reason 3 when new
+        // by frame ID, acted on in nothing; a repeat is acknowledged again but not refused again (C-1074).
+        var r = new PeersRig();
+        var m = new Management(new DpduHeader(eow, 10, 4, Us, X), false, true, false, 9, Octets.Empty);
+        r.Peers.OnDpdu(m);
+        r.Peers.OnDpdu(m);
+        var taken = new List<InternalPrimitive>();
+        while (r.Context.TryDequeue(out InternalPrimitive p))
+        {
+            taken.Add(p);
+        }
+
+        taken.Should().Equal(new DWarningTransmitted(X, 6, 3));
+        r.Tx.PendingControl.Select(c => c.Class).Should().Contain(ControlClass.Management).And.Contain(ControlClass.Warning);
+        r.Peers.ReceivedEowsOf(X)?.Ed3BasicRate.Should().BeNull();   // nothing in it is acted on (C-0921), so not recorded (C-1262)
+    }
+
     private static int Enc(Eow e) => EowCodec.Encode(e);
 
     private static List<int> Take(EowScheduler s, uint peer, int n) => Enumerable.Range(0, n).Select(_ => s.Next(peer, false)).ToList();
