@@ -25,6 +25,9 @@ public class P77Scenarios
     /// <summary>EOW CAPABILITY, Ed4 1, Duplex 0 (C-0426, C-0488 to C-0491).</summary>
     private const int Capability = 0xF01;
 
+    /// <summary>EOW MAX-SEGMENT 255, what this node recommends to a variable-speed sender (interp C-1272).</summary>
+    private const int MaxSegment255 = 0xAFF;
+
     /// <summary>EOW SENDER-APPROACH: Needed 0, strategy mixed 10, Fixed 0 (open question 8; C-0478, C-1018).</summary>
     private const int Approach = 0xB04;
 
@@ -235,7 +238,7 @@ public class P77Scenarios
         "Conn 1 binds SAP 5 for non-ARQ and gets S_BIND_ACCEPTED (A-0041, A-0047). At 1500, during a burst, it sends S_UNIDATA_REQUEST (priority 0, SAP 5, DELIVERY MODE default, TTL 0, so TTD 1500 + 1296000000 ms, no confirmation): no SIS output (A-0095), dts.ttd starts (C-1050). At 2000 the burst's one block holds PADDING D_PDUs (type 14) to 0.0.1.2, EOT 10, each carrying one EOW; the PADDING itself is ignored (C-0588). A CAPABILITY with the Ed4 bit records its sender Ed4 (interp C-1261). Burst end 3000: csma.vdcd_end 4000; at 7000 LBT rule 1 (K-0067, K-0068), seed 0 slot 15, CONT_WAIT 45000 (K-0080). The transmit queue empties, so dts.ttd is cancelled (C-1050). Fixture: preamble 600, flush 150; per rung the block bytes and ms given in the config (test data). The DATA C_PDU holds the DATA S_PDU SAP 5 to SAP 5 with its TTD; each type 7 has address size 3, and its EOT and reception window are the half seconds from the start of its block to the end of the burst, rounded up (C-0104, C-0350, C-1043). ";
 
     private const string TableNote =
-        "drc.table (corpus-format.md 6.1): ladder WN 2 Long, WN 4 Long, WN 4 Short, WN 6 Long (positions 0 to 3); no thresholds, so this node makes no recommendation of its own (corpus-format.md 6.2); sender constants tx_step_down_waits 2, tx_ceiling_initial 2, tx_ceiling_cap 4. ";
+        "drc.table (corpus-format.md 6.1): ladder WN 2 Long, WN 4 Long, WN 4 Short, WN 6 Long (positions 0 to 3); no thresholds, so this node's own MAX-SPEED and LOW-SPEED never get a value (corpus-format.md 6.2 step 6) and the mixed rotation it sends each Ed4 peer it has heard is MAX-SEGMENT 255 alone (0xAFF; no SENDER-APPROACH has come, C-0956; interp C-1271, C-1272), with no top priority; sender constants tx_step_down_waits 2, tx_ceiling_initial 2, tx_ceiling_cap 4. ";
 
     // ---- scenarios -----------------------------------------------------------------------------
 
@@ -250,7 +253,7 @@ public class P77Scenarios
             Common + TableNote + "0.0.1.3 sends only CAPABILITY, so no recommendation has come and the transmission goes at drc.default_speed, WN 2 Long. The type 7 to 0.0.1.3 carries data to it, so its header takes SENDER-APPROACH, EOW 0xB04: bits 7-4 zero (C-0483), EOW 12 Needed 0 since our modem reports the received waveform (C-0481, C-0482), strategy 10 mixed, Fixed 0 (C-1018; open question 8, interp C-1286), placed after any owed EOW and the top-priority recommendations, of which there are none (interp C-1260). The rotation set is empty, so the 20 PADDING D_PDUs that fill the 256-byte block (11 bytes each) carry CAPABILITY (C-0426, C-1154).");
         byte[] cpdu = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)], PeerPad(P3, Capability));
-        var t = Transmission(W2L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W2L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W2L);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -265,10 +268,10 @@ public class P77Scenarios
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.6.5, p.C-72",
             "A peer that has sent no recommendation gets drc.default_speed; once its MAX-SPEED has come, the next transmission to it goes at that rung.",
             NonArqConfig(true, W2L, W6L),
-            Common + TableNote + "0.0.1.3 sends only CAPABILITY at 2000, so the first transmission, at 52000, goes at drc.default_speed, WN 2 Long (plan 6.2; interp C-1284): the type 7 with SENDER-APPROACH (0xB04, interp C-1286) and 20 PADDING with CAPABILITY, 5550 ms. At 60000 a second burst from 0.0.1.3 holds one PADDING to us, EOT 10 (end 66000), EOW MAX-SPEED WN 6 Long (0x8A6: interleaver code 101, speed 6; C-0459, C-0462). Nothing is queued, so no VDCD timer runs (K-0111). At 63000 conn 1 sends 'again' to 0.0.1.3 (TTD 63000 + 1296000000 ms): dts.ttd starts, and with the prediction ahead, csma.vdcd_end runs to 66000; then LBT rule 1 (K-0067) and contention, the second draw of seed 0, slot 4, 12000 ms (K-0080). At 78000 the type 7 (C_PDU ID 1, C-1040) goes at WN 6 Long, the rung MAX-SPEED names, which is on the ladder (open question 5, interp C-1280). Its D_PDUs are within one 256-byte block, so this is not a bulk transmission and LOW-SPEED would be used, but none has come, so MAX-SPEED stands in (interp C-1284). Fixture WN 6 Long: 256 bytes and 4800 ms a block (test data).");
+            Common + TableNote + "0.0.1.3 sends only CAPABILITY at 2000, so the first transmission, at 52000, goes at drc.default_speed, WN 2 Long (plan 6.2; interp C-1284): the type 7 with SENDER-APPROACH (0xB04, interp C-1286) and 20 PADDING with MAX-SEGMENT 255, 5550 ms. At 60000 a second burst from 0.0.1.3 holds one PADDING to us, EOT 10 (end 66000), EOW MAX-SPEED WN 6 Long (0x8A6: interleaver code 101, speed 6; C-0459, C-0462). Nothing is queued, so no VDCD timer runs (K-0111). At 63000 conn 1 sends 'again' to 0.0.1.3 (TTD 63000 + 1296000000 ms): dts.ttd starts, and with the prediction ahead, csma.vdcd_end runs to 66000; then LBT rule 1 (K-0067) and contention, the second draw of seed 0, slot 4, 12000 ms (K-0080). At 78000 the type 7 (C_PDU ID 1, C-1040) goes at WN 6 Long, the rung MAX-SPEED names, which is on the ladder (open question 5, interp C-1280). Its D_PDUs are within one 256-byte block, so this is not a bulk transmission and LOW-SPEED would be used, but none has come, so MAX-SPEED stands in (interp C-1284). Fixture WN 6 Long: 256 bytes and 4800 ms a block (test data).");
         byte[] cpdu1 = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)], PeerPad(P3, Capability));
-        var t1 = Transmission(W2L, [eot => Type7(P3, Approach, eot, 0, cpdu1, 0, cpdu1.Length, eot)], P3, _ => Capability);
+        var t1 = Transmission(W2L, [eot => Type7(P3, Approach, eot, 0, cpdu1, 0, cpdu1.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t1, W2L);
         b.TransmitDone(52000 + t1.Duration);
         b.BurstStarted(60000).BytesReceived(61000, Hex(PeerPad(P3, MaxSpeed(6, Interleaver.Long)))).BurstEnded(62000, snrTenthDb: 60);
@@ -276,7 +279,7 @@ public class P77Scenarios
         b.TimerExpired(66000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 12000);
         b.TimerExpired(78000, "csma.cont_wait").ExpectTimerCancel("dts.ttd");
         byte[] cpdu2 = Cpdu(63000, hello2);
-        var t2 = Transmission(W6L, [eot => Type7(P3, Approach, eot, 1, cpdu2, 0, cpdu2.Length, eot)], P3, _ => Capability);
+        var t2 = Transmission(W6L, [eot => Type7(P3, Approach, eot, 1, cpdu2, 0, cpdu2.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t2, W6L);
         b.TransmitDone(78000 + t2.Duration);
         return b;
@@ -291,10 +294,10 @@ public class P77Scenarios
             "Ed4 C.6.5, p.C-72; C.7.6.2, pp.C-119 to C-120",
             "A transmission whose data to the peer needs more than one block at the peer's MAX-SPEED rung is a bulk transmission and goes at that rung.",
             NonArqConfig(true, W2L, W4S, W6L),
-            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, then MAX-SPEED WN 6 Long (0x8A6), then LOW-SPEED WN 4 Short (0x964: interleaver code 011, speed 4; C-0472). The U_PDU is 300 bytes (0x00 to 0xff, then 0x00 to 0x2b), so its type 7 is more than one 256-byte block of the MAX-SPEED rung: a bulk transmission (open question 7, interp C-1285), which goes at the MAX-SPEED rung WN 6 Long, on the ladder (open question 5, interp C-1280), not at LOW-SPEED. The type 7 (C_PDU ID 0, the whole C_PDU as one segment, dts.max_segment_size 1023) carries SENDER-APPROACH (interp C-1286) and spans two blocks; the rest of the second block is filled with PADDING with CAPABILITY (C-1154), EOT 10, while the type 7, starting in block 0, has EOT and window 20 (C-1043).");
+            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, then MAX-SPEED WN 6 Long (0x8A6), then LOW-SPEED WN 4 Short (0x964: interleaver code 011, speed 4; C-0472). The U_PDU is 300 bytes (0x00 to 0xff, then 0x00 to 0x2b), so its type 7 is more than one 256-byte block of the MAX-SPEED rung: a bulk transmission (open question 7, interp C-1285), which goes at the MAX-SPEED rung WN 6 Long, on the ladder (open question 5, interp C-1280), not at LOW-SPEED. The type 7 (C_PDU ID 0, the whole C_PDU as one segment, dts.max_segment_size 1023) carries SENDER-APPROACH (interp C-1286) and spans two blocks; the rest of the second block is filled with PADDING with MAX-SEGMENT 255 (C-1154), EOT 10, while the type 7, starting in block 0, has EOT and window 20 (C-1043).");
         byte[] cpdu = Cpdu(1500, big);
         Opening(b, [Request(new SisAddress(P3), big)], Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(6, Interleaver.Long)), PeerPad(P3, LowSpeed(4, Interleaver.Short))));
-        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W6L);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -308,10 +311,10 @@ public class P77Scenarios
             "Ed4 C.6.6, p.C-73; C.7.6.2, pp.C-119 to C-120",
             "A transmission whose data to the peer fits one block at its MAX-SPEED rung is a latency transmission and goes at the peer's LOW-SPEED rung.",
             NonArqConfig(true, W2L, W4S, W6L),
-            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, MAX-SPEED WN 6 Long (0x8A6) and LOW-SPEED WN 4 Short (0x964). The U_PDU is 'hello': its 35-byte type 7 fits one 256-byte block of the MAX-SPEED rung, so the transmission is for latency (open question 7, interp C-1285) and goes at the LOW-SPEED rung, WN 4 Short, on the ladder with exactly that interleaver (open question 5) and not above MAX-SPEED (C-0894). Fixture WN 4 Short: 128 bytes and 1200 ms a block (test data), so one block, 1950 ms, EOT and window ceil(1350 / 500) = 3; the type 7 carries SENDER-APPROACH (interp C-1286), then 8 PADDING with CAPABILITY fill the block (C-1154).");
+            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, MAX-SPEED WN 6 Long (0x8A6) and LOW-SPEED WN 4 Short (0x964). The U_PDU is 'hello': its 35-byte type 7 fits one 256-byte block of the MAX-SPEED rung, so the transmission is for latency (open question 7, interp C-1285) and goes at the LOW-SPEED rung, WN 4 Short, on the ladder with exactly that interleaver (open question 5) and not above MAX-SPEED (C-0894). Fixture WN 4 Short: 128 bytes and 1200 ms a block (test data), so one block, 1950 ms, EOT and window ceil(1350 / 500) = 3; the type 7 carries SENDER-APPROACH (interp C-1286), then 8 PADDING with MAX-SEGMENT 255 fill the block (C-1154).");
         byte[] cpdu = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)], Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(6, Interleaver.Long)), PeerPad(P3, LowSpeed(4, Interleaver.Short))));
-        var t = Transmission(W4S, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W4S, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W4S);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -333,7 +336,7 @@ public class P77Scenarios
             Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(6, Interleaver.Long)), PeerPad(P4, Capability), PeerPad(P4, MaxSpeed(4, Interleaver.Long))));
         var t = Transmission(W4L,
             [eot => Type7(P3, Approach, eot, 0, c1, 0, c1.Length, eot), eot => Type7(P4, Approach, eot, 1, c2, 0, c2.Length, eot)],
-            P3, _ => Capability);
+            P3, _ => MaxSegment255);
         Transmit(b, t, W4L);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -386,11 +389,11 @@ public class P77Scenarios
             "Ed4 C.6.5.1, p.C-72",
             "A MAX-SPEED with a reserved speed is ignored and the previous MAX-SPEED stands, so the transmission goes at the earlier recommended rung.",
             NonArqConfig(true, W2L, W6L),
-            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, MAX-SPEED WN 6 Long (0x8A6), then MAX-SPEED with the reserved speed 14 and interleaver Long (0x8AE; C-0466) and MAX-SPEED with interleaver 111 and speed 2 (0x8E2; C-0469): both ignored, the earlier one kept (interp C-0471, C-1262). The transmission goes at WN 6 Long (open question 5, interp C-1280); 'hello' fits one block, a latency transmission with no LOW-SPEED, so MAX-SPEED stands in (interp C-1284). The type 7 carries SENDER-APPROACH (interp C-1286), then 20 PADDING with CAPABILITY.");
+            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY, MAX-SPEED WN 6 Long (0x8A6), then MAX-SPEED with the reserved speed 14 and interleaver Long (0x8AE; C-0466) and MAX-SPEED with interleaver 111 and speed 2 (0x8E2; C-0469): both ignored, the earlier one kept (interp C-0471, C-1262). The transmission goes at WN 6 Long (open question 5, interp C-1280); 'hello' fits one block, a latency transmission with no LOW-SPEED, so MAX-SPEED stands in (interp C-1284). The type 7 carries SENDER-APPROACH (interp C-1286), then 20 PADDING with MAX-SEGMENT 255.");
         byte[] cpdu = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)],
             Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(6, Interleaver.Long)), PeerPad(P3, 0x8AE), PeerPad(P3, 0x8E2)));
-        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W6L);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -404,10 +407,10 @@ public class P77Scenarios
             "Ed4 C.6.5, p.C-72; C.7.5.4.4, p.C-115",
             "A recommended rung not on our ladder maps to the highest ladder rung whose data rate is not above it and whose interleaver is not shorter.",
             NonArqConfig(true, W2L, W4S, W6L),
-            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY and MAX-SPEED WN 5 Short (0x865: interleaver 011, speed 5), which is not on the ladder. WN 5 is 1600 bit/s (M0LTE.Ms110d docs/waveforms.md, from MIL-STD-188-110D Table D-I). Ladder rungs not faster and with an interleaver not shorter than Short: WN 2 Long (300), WN 4 Long (1200) and WN 4 Short (1200); WN 6 Long is 3200 and too fast. The highest by ladder order is WN 4 Short (open question 5, interp C-1280); speeds compare by data rate, not WN number. 'hello' fits one block: latency, no LOW-SPEED, so MAX-SPEED stands in (interp C-1284). Fixture WN 4 Short: 128 bytes and 1200 ms (test data); the type 7 carries SENDER-APPROACH (interp C-1286), 8 PADDING with CAPABILITY fill the block.");
+            Common + TableNote + "The burst from 0.0.1.3 holds CAPABILITY and MAX-SPEED WN 5 Short (0x865: interleaver 011, speed 5), which is not on the ladder. WN 5 is 1600 bit/s (M0LTE.Ms110d docs/waveforms.md, from MIL-STD-188-110D Table D-I). Ladder rungs not faster and with an interleaver not shorter than Short: WN 2 Long (300), WN 4 Long (1200) and WN 4 Short (1200); WN 6 Long is 3200 and too fast. The highest by ladder order is WN 4 Short (open question 5, interp C-1280); speeds compare by data rate, not WN number. 'hello' fits one block: latency, no LOW-SPEED, so MAX-SPEED stands in (interp C-1284). Fixture WN 4 Short: 128 bytes and 1200 ms (test data); the type 7 carries SENDER-APPROACH (interp C-1286), 8 PADDING with MAX-SEGMENT 255 fill the block.");
         byte[] cpdu = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)], Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(5, Interleaver.Short))));
-        var t = Transmission(W4S, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W4S, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W4S);
         b.TransmitDone(52000 + t.Duration);
         return b;
@@ -439,10 +442,10 @@ public class P77Scenarios
             "Ed4 S.4.2, S.4.3, pp.S-5 to S-6; S.5.11, p.S-15",
             "The node information message shows the waveform of the last transmission and, per peer, the waveform last used to it.",
             NonArqConfig(true, W2L, W6L),
-            Common + TableNote + "Conn 2 connects at 0 and never binds. The burst from 0.0.1.3 holds CAPABILITY and MAX-SPEED WN 6 Long (0x8A6), so 'hello' goes at WN 6 Long (interp C-1280, C-1284) with SENDER-APPROACH and 20 PADDING with CAPABILITY. At 60000 conn 2 asks for node information (MSG TYPE 2, interp S-0164) and is answered at once: this node's address field e0 00 01 02, the waveform of the last transmission, 6 and interleaver code 4 (long), one peer (0.0.1.3 has a receive quality record from its burst, C-0833), and its record: address field e0 00 01 03; soft link state 0; the waveform last used to it, 6 and 4; the last burst heard from it, wn 2 code 4; SNR 60 tenths (003c); 57 whole seconds since that burst ended at 3000 (0039). Before any transmission the speeds shown are drc.default_speed, as sis/management-node-info shows.");
+            Common + TableNote + "Conn 2 connects at 0 and never binds. The burst from 0.0.1.3 holds CAPABILITY and MAX-SPEED WN 6 Long (0x8A6), so 'hello' goes at WN 6 Long (interp C-1280, C-1284) with SENDER-APPROACH and 20 PADDING with MAX-SEGMENT 255. At 60000 conn 2 asks for node information (MSG TYPE 2, interp S-0164) and is answered at once: this node's address field e0 00 01 02, the waveform of the last transmission, 6 and interleaver code 4 (long), one peer (0.0.1.3 has a receive quality record from its burst, C-0833), and its record: address field e0 00 01 03; soft link state 0; the waveform last used to it, 6 and 4; the last burst heard from it, wn 2 code 4; SNR 60 tenths (003c); 57 whole seconds since that burst ended at 3000 (0039). Before any transmission the speeds shown are drc.default_speed, as sis/management-node-info shows.");
         byte[] cpdu = Cpdu(1500, Hello);
         Opening(b, [Request(new SisAddress(P3), Hello)], Cat(PeerPad(P3, Capability), PeerPad(P3, MaxSpeed(6, Interleaver.Long))), conns: 2);
-        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => Capability);
+        var t = Transmission(W6L, [eot => Type7(P3, Approach, eot, 0, cpdu, 0, cpdu.Length, eot)], P3, _ => MaxSegment255);
         Transmit(b, t, W6L);
         b.TransmitDone(52000 + t.Duration);
         byte[] body = [0xe0, 0x00, 0x01, 0x02, 6, 4, 1, 0xe0, 0x00, 0x01, 0x03, 0, 6, 4, 2, 4, 0x00, 0x3c, 0x00, 0x39];
@@ -519,10 +522,10 @@ public class P77Scenarios
     }
 
     private const string ArqCommon =
-        "Link setup as dts-arq/ack-wait-expiry-retransmit: conn 1 binds SAP 5 for ARQ, its S_UNIDATA_REQUEST 'ping' to SAP 9 at 0.0.1.3 at 0 makes the CAS call (request at 75000 at drc.default_speed, WN 2 Long, EOW EMPTY to a peer of unknown edition), and at 91000 the peer's PHYSICAL LINK ACCEPTED makes the link (16-bit family) and records the peer Ed4 (B-0408). That D_PDU's EOW is MAX-SPEED WN 4 Long (0x885: interleaver 101, speed 4), recorded (interp C-1262). On D_CONNECTION_MADE the rung the link was made at, drc.default_speed, position 0, counts as the last answered (interp C-1281). A transmission's rung is at most one above the last answered rung, a transmission of ARQ data above it is a trial, and a dts.ack_wait expiry with nothing heard from the peer since is a silent wait (open question 16); a silent wait after a trial is a failed trial, which caps the peer one rung below it for tx_ceiling_initial of its transmissions to the peer, doubling on each repeat failure up to tx_ceiling_cap (design shape item 7, interp C-1281); tx_step_down_waits silent waits in a row step down one rung (plan 6.2, interp C-1282); an answer (C-1250) ends the silence count and the step down and makes the last rung sent the answered one. Every data D_PDU to the peer is the first header to it in its transmission and carries SENDER-APPROACH, 0xB04 (interp C-1286); PADDING carries CAPABILITY (C-0426, C-1154). Fixture: preamble 600, flush 150; WN 2 Long 25 bytes and 4800 ms a block, WN 4 Long 50 bytes and 2400 ms (test data). The 29-byte DATA-ONLY needs two blocks at WN 2 Long (EOT 20, its PADDING in block 1 EOT 10, 10350 ms) and one at WN 4 Long (EOT and the PADDING's EOT ceil(2550 / 500) = 6, 3150 ms; one PADDING, 11 bytes). Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285). dts.ack_wait_ms 60000; after our own transmission, a queue that refills with nothing heard goes through LBT rule 3, 3000 ms (K-0071, K-0074); after a burst addressed only to us, rule 1 (K-0067). Contention waits are seed 0's draws, uniform(16) x 3000 ms (K-0080). ";
+        "Link setup as dts-arq/ack-wait-expiry-retransmit: conn 1 binds SAP 5 for ARQ, its S_UNIDATA_REQUEST 'ping' to SAP 9 at 0.0.1.3 at 0 makes the CAS call (request at 75000 at drc.default_speed, WN 2 Long, EOW EMPTY to a peer of unknown edition), and at 91000 the peer's PHYSICAL LINK ACCEPTED makes the link (16-bit family) and records the peer Ed4 (B-0408). That D_PDU's EOW is MAX-SPEED WN 4 Long (0x885: interleaver 101, speed 4), recorded (interp C-1262). On D_CONNECTION_MADE the rung the link was made at, drc.default_speed, position 0, counts as the last answered (interp C-1281). A transmission's rung is at most one above the last answered rung, a transmission of ARQ data above it is a trial, and a dts.ack_wait expiry with nothing heard from the peer since is a silent wait (open question 16); a silent wait after a trial is a failed trial, which caps the peer one rung below it for tx_ceiling_initial of its transmissions to the peer, doubling on each repeat failure up to tx_ceiling_cap (design shape item 7, interp C-1281); tx_step_down_waits silent waits in a row step down one rung (plan 6.2, interp C-1282); an answer (C-1250) ends the silence count and the step down and makes the last rung sent the answered one. Every data D_PDU to the peer is the first header to it in its transmission and carries SENDER-APPROACH, 0xB04 (interp C-1286); PADDING carries MAX-SEGMENT 255 (interp C-1271, C-1272). Fixture: preamble 600, flush 150; WN 2 Long 25 bytes and 4800 ms a block, WN 4 Long 50 bytes and 2400 ms (test data). The 29-byte DATA-ONLY needs two blocks at WN 2 Long (EOT 20, its PADDING in block 1 EOT 10, 10350 ms) and one at WN 4 Long (EOT and the PADDING's EOT ceil(2550 / 500) = 6, 3150 ms; one PADDING, 11 bytes). Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285). dts.ack_wait_ms 60000; after our own transmission, a queue that refills with nothing heard goes through LBT rule 3, 3000 ms (K-0071, K-0074); after a burst addressed only to us, rule 1 (K-0067). Contention waits are seed 0's draws, uniform(16) x 3000 ms (K-0080). ";
 
     private static (string Hex, long Duration) DataTx(Wf w, int fsn, byte[] cpdu) =>
-        Transmission(w, [DataOnlyItem(fsn, cpdu, Approach)], P3, _ => Capability);
+        Transmission(w, [DataOnlyItem(fsn, cpdu, Approach)], P3, _ => MaxSegment255);
 
     private static ScenarioBuilder FailedTrialCeiling()
     {
@@ -674,7 +677,7 @@ public class P77Scenarios
                 ["cas"] = new JsonObject { ["max_links"] = 4, ["link_request_timeout_ms"] = 60000, ["link_request_retries"] = 2, ["first_data_timeout_ms"] = 120000 },
                 ["drc"] = new JsonObject { ["table"] = Table() },
             },
-            "As cas/break-responder, with a table. " + TableNote + "At 2000 the peer's PHYSICAL LINK REQUEST (Ed4) carries MAX-SPEED WN 4 Long (0x885) in its EOW, recorded (interp C-1262); the request records the peer Ed4 (B-0408). No connection exists yet, so no answered rung limits the choice (interp C-1281): our PHYSICAL LINK ACCEPTED, a type 8 to 0.0.1.3 alone, goes at the MAX-SPEED rung WN 4 Long (one D_PDU, so for latency; no LOW-SPEED, so MAX-SPEED stands in, interp C-1284), its header SENDER-APPROACH 0xB04 (interp C-1286). Fixture WN 4 Long: 50 bytes and 2400 ms (test data), so the 25-byte type 8 needs one block, 3150 ms, EOT and reception window ceil(2550 / 500) = 6, and two PADDING with CAPABILITY fill the block (C-1154). The link is made when it ends, at 55150 (B-0213, B-0400). At 61000 the peer's PHYSICAL LINK BREAK breaks the link at once (B-0159, B-0284) and D_CONNECTION_TERMINATED reaches the DTS (C-0652), which ends the peer's recommendations (open question 4, interp C-1287). The PHYSICAL LINK BREAK CONFIRM, also a type 8 to 0.0.1.3, therefore goes at drc.default_speed, WN 2 Long (25 bytes and 4800 ms a block: EOT and window 10, the block full, no PADDING), with SENDER-APPROACH. Contention: seed 0 slots 15 then 4 (K-0080), LBT rule 1 after each burst addressed to us (K-0067). The soft link times are derived from the answer wait (A-0321), as in cas/break-responder.");
+            "As cas/break-responder, with a table. " + TableNote + "At 2000 the peer's PHYSICAL LINK REQUEST (Ed4) carries MAX-SPEED WN 4 Long (0x885) in its EOW, recorded (interp C-1262); the request records the peer Ed4 (B-0408). No connection exists yet, so no answered rung limits the choice (interp C-1281): our PHYSICAL LINK ACCEPTED, a type 8 to 0.0.1.3 alone, goes at the MAX-SPEED rung WN 4 Long (one D_PDU, so for latency; no LOW-SPEED, so MAX-SPEED stands in, interp C-1284), its header SENDER-APPROACH 0xB04 (interp C-1286). Fixture WN 4 Long: 50 bytes and 2400 ms (test data), so the 25-byte type 8 needs one block, 3150 ms, EOT and reception window ceil(2550 / 500) = 6, and two PADDING with MAX-SEGMENT 255 fill the block (C-1154). The link is made when it ends, at 55150 (B-0213, B-0400). At 61000 the peer's PHYSICAL LINK BREAK breaks the link at once (B-0159, B-0284) and D_CONNECTION_TERMINATED reaches the DTS (C-0652), which ends the peer's recommendations (open question 4, interp C-1287). The PHYSICAL LINK BREAK CONFIRM, also a type 8 to 0.0.1.3, therefore goes at drc.default_speed, WN 2 Long (25 bytes and 4800 ms a block: EOT and window 10, the block full, no PADDING), with SENDER-APPROACH. Contention: seed 0 slots 15 then 4 (K-0080), LBT rule 1 after each burst addressed to us (K-0067). The soft link times are derived from the answer wait (A-0321), as in cas/break-responder.");
         var request = Decode("90eb80000a6f10210300010000010000000a8bb212977d6864");
         request = request with { Header = request.Header with { Eow = MaxSpeed(4, Interleaver.Long) } };
         var accept = (ExpeditedNonArqData)Decode("90eb8f010a6f10310200010000010000000ad1b32269d8f546");
@@ -683,7 +686,7 @@ public class P77Scenarios
         b.BurstEnded(3000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
         b.TimerExpired(7000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 45000);
         b.TimerExpired(52000, "csma.cont_wait");
-        var t1 = Transmission(A4L, [eot => accept with { Header = H(P3, Us, Approach, eot), Fields = accept.Fields with { ReceptionWindow = eot } }], P3, _ => Capability);
+        var t1 = Transmission(A4L, [eot => accept with { Header = H(P3, Us, Approach, eot), Fields = accept.Fields with { ReceptionWindow = eot } }], P3, _ => MaxSegment255);
         Transmit(b, t1, A4L);
         b.TransmitDone(52000 + t1.Duration).ExpectLinkState("0.0.1.3", LinkStateName.Linked)
             .ExpectTimerStart("cas.first_data/0.0.1.3", 120000)
@@ -696,7 +699,7 @@ public class P77Scenarios
         b.BurstEnded(62000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
         b.TimerExpired(66000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", 12000);
         b.TimerExpired(78000, "csma.cont_wait");
-        var t2 = Transmission(A2L, [eot => confirm with { Header = H(P3, Us, Approach, eot), Fields = confirm.Fields with { ReceptionWindow = eot } }], P3, _ => Capability);
+        var t2 = Transmission(A2L, [eot => confirm with { Header = H(P3, Us, Approach, eot), Fields = confirm.Fields with { ReceptionWindow = eot } }], P3, _ => MaxSegment255);
         Transmit(b, t2, A2L);
         b.TransmitDone(78000 + t2.Duration);
         return b;
@@ -745,5 +748,97 @@ public class P77Scenarios
             .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 1233000)
             .ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 616500);
         return b;
+    }
+
+    // ---- re-derivation of the P7-6 traces ------------------------------------------------------
+
+    /// <summary>
+    /// The P7-6 drc traces with a calibrated table, and per trace the number of top-priority EOWs of
+    /// Table C-25 its peer gets, from each trace's note: mixed with both values 2 (C-0953, C-0956),
+    /// bulk, intermediate and low latency 1 (C-0951, C-0952, C-0954), fixed 0 (C-0950).
+    /// </summary>
+    private static readonly (string File, int Top)[] P76Traces =
+    [
+        ("rx-approach-bulk", 1), ("rx-approach-fixed-segment-only", 0), ("rx-approach-intermediate", 1),
+        ("rx-approach-low-latency", 1), ("rx-default-approach-mixed", 2), ("rx-estimate-drop-moves-down", 2),
+        ("rx-max-speed-after-burst", 2), ("rx-no-snr-holds", 2), ("rx-rung-capped-after-failures", 2),
+        ("rx-several-peers", 2), ("rx-step-down-on-errors", 2), ("rx-trial-after-clean-run", 2),
+        ("top-priority-first-in-short-transmission", 2),
+    ];
+
+    /// <summary>
+    /// Authoring aid for the P7-7 rebase onto P7-6, from the rules alone (interp C-1260, C-1286): with a
+    /// non-empty table, each transmission that carries data (a type 7 to its individual address) to a
+    /// peer gets our SENDER-APPROACH, 0xB04, in that peer's header sequence right after the
+    /// top-priority EOWs; the rotation that followed moves one header later, and the header count is
+    /// unchanged, so the peer's last rotation entry drops off. Nothing else moves: only EOW and header
+    /// CRC bytes are rewritten. Set S5066_REDERIVE_P76 to the t2 directory to rewrite in place.
+    /// </summary>
+    [Fact]
+    public void Rederive_p76()
+    {
+        string? dir = Environment.GetEnvironmentVariable("S5066_REDERIVE_P76");
+        if (dir is null)
+        {
+            return;
+        }
+
+        foreach ((string file, int top) in P76Traces)
+        {
+            string path = Path.Combine(dir, "drc", file + ".jsonl");
+            var lines = File.ReadAllLines(path).ToList();
+            for (int n = 1; n < lines.Count; n++)
+            {
+                JsonObject line = JsonNode.Parse(lines[n])!.AsObject();
+                if ((string?)line["out"] != "transmit")
+                {
+                    continue;
+                }
+
+                byte[] bytes = Convert.FromHexString((string)line["bytes"]!);
+                var pdus = new List<Dpdu>();
+                for (int off = 0; off < bytes.Length;)
+                {
+                    var r = DpduCodec.DecodeFirst(bytes.AsSpan(off), PeerEdition.Ed4);
+                    if (!r.IsSuccess)
+                    {
+                        break;   // the modem's zero fill
+                    }
+
+                    pdus.Add(r.Value!);
+                    off += r.Consumed;
+                }
+
+                int consumed = pdus.Sum(p => Enc(p).Length);
+                var dataPeers = pdus.OfType<NonArqData>().Where(d => !d.Fields.GroupAddress).Select(d => d.Header.Dst).Distinct().ToList();
+                foreach (uint peer in dataPeers)
+                {
+                    var at = Enumerable.Range(0, pdus.Count).Where(i => pdus[i].Header.Dst == peer).ToList();
+                    var eows = at.Select(i => pdus[i].Header.Eow).ToList();
+                    if (eows.Count <= top)
+                    {
+                        continue;   // only top-priority headers: SENDER-APPROACH has no slot
+                    }
+
+                    eows.Insert(top, Approach);
+                    eows.RemoveAt(eows.Count - 1);
+                    for (int j = 0; j < at.Count; j++)
+                    {
+                        pdus[at[j]] = pdus[at[j]] with { Header = pdus[at[j]].Header with { Eow = eows[j] } };
+                    }
+                }
+
+                byte[] rebuilt = pdus.SelectMany(Enc).Concat(bytes.Skip(consumed)).ToArray();
+                if (rebuilt.Length != bytes.Length)
+                {
+                    throw new InvalidOperationException(file + ": length changed");
+                }
+
+                line["bytes"] = Hex(rebuilt);
+                lines[n] = line.ToJsonString();
+            }
+
+            File.WriteAllText(path, string.Join("\n", lines) + "\n");
+        }
     }
 }
