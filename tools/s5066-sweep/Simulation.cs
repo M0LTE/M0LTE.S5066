@@ -286,7 +286,7 @@ internal sealed class Simulation
             foreach (TxRecord t in _txs)
             {
                 tl(string.Create(CultureInfo.InvariantCulture,
-                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.Dpdus.Count}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}"));
+                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.DpduCount}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}"));
             }
         }
 
@@ -321,7 +321,7 @@ internal sealed class Simulation
             Bytes = bytes,
             StartMs = start,
             EndMs = start + (long)Math.Ceiling(samples * 1000.0 / ChannelSpec.SampleRate),
-            Dpdus = TxRecord.Parse(bytes, _retx[node.Index].IsRetransmission),
+            AllDpdus = TxRecord.Parse(bytes, _retx[node.Index].IsRetransmission),
         };
         int other = 1 - node.Index;
         if (_onAir[other] is { } heard)
@@ -426,7 +426,7 @@ internal sealed class Simulation
             rs.Count++;
             rs.AirtimeMs += t.EndMs - t.StartMs;
             rs.Bytes += t.Bytes.Length;
-            rs.Dpdus += t.Dpdus.Count;
+            rs.Dpdus += t.DpduCount;
             rs.DpdusOk += t.DpdusOk;
             rs.DataDpdus += data;
             rs.RetransmittedDpdus += retx;

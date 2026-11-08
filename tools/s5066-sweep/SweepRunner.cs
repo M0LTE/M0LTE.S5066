@@ -11,8 +11,9 @@ namespace M0LTE.S5066.Sweep;
 /// </summary>
 internal static class SweepRunner
 {
-    public static int Run(SweepSettings settings, string outDir, int workers, (int Index, int Count) shard, Action<string> log)
+    public static int Run(SweepSettings settings, string outDir, int workers, (int Index, int Count) shard, Action<string> log, Func<RunSettings, RunResult>? runOne = null)
     {
+        runOne ??= job => new Simulation(job).Run();
         string runs = Path.Combine(outDir, "runs");
         Directory.CreateDirectory(runs);
         string planPath = Path.Combine(outDir, "plan.json");
@@ -51,7 +52,7 @@ internal static class SweepRunner
             RunResult r;
             try
             {
-                r = new Simulation(job).Run();
+                r = runOne(job);
             }
             catch (Exception e)
             {
@@ -63,6 +64,7 @@ internal static class SweepRunner
             {
                 File.WriteAllText(path + ".tmp", r.ToJson());
                 File.Move(path + ".tmp", path, overwrite: true);
+                File.Delete(Path.Combine(runs, job.Id + ".failed"));   // a retry that worked clears the earlier failure
             }
             else
             {

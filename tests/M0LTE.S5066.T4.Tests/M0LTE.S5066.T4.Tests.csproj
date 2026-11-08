@@ -3,12 +3,13 @@
   <!--
     T4 (plan 11.1): two s5066d processes over UDP audio through the real M0LTE.Ms110d modem, driven by
     s5066-test headless. Real time and processes, so kept apart from the deterministic core tests.
-    Also the s5066-test unit tests.
+    Also the s5066-test unit tests, and the stack sweep harness (tools/s5066-sweep, P7-8).
   -->
 
   <ItemGroup>
     <ProjectReference Include="../../src/s5066d/s5066d.csproj" />
     <ProjectReference Include="../../tools/s5066-test/S5066Test.csproj" />
+    <ProjectReference Include="../../tools/s5066-sweep/S5066Sweep.csproj" />
   </ItemGroup>
 
   <ItemGroup>

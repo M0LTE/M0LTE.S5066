@@ -4,7 +4,7 @@ using M0LTE.S5066.Core.Runtime;
 namespace M0LTE.S5066.Sweep;
 
 /// <summary>One D_PDU as laid in a transmission, from the sender's bytes.</summary>
-internal readonly record struct SentDpdu(int Offset, int Length, int HeaderLength, int Eot, bool Data, bool Retransmission, bool AckOnly);
+internal readonly record struct SentDpdu(int Offset, int Length, int HeaderLength, int Eot, bool Data, bool Retransmission, bool AckOnly, bool Padding);
 
 /// <summary>What happened to one transmission: the sender's view and the far node's.</summary>
 internal sealed class TxRecord
@@ -20,11 +20,17 @@ internal sealed class TxRecord
     /// <summary>When the last sample went into the channel, ms (exact, not chunk-rounded).</summary>
     public required long EndMs { get; init; }
 
-    public required List<SentDpdu> Dpdus { get; init; }
+    /// <summary>Every D_PDU laid in the transmission, PADDING included.</summary>
+    public required List<SentDpdu> AllDpdus { get; init; }
 
-    public bool HasData => Dpdus.Exists(d => d.Data);
+    /// <summary>The D_PDUs that count in the statistics: all but PADDING, which only fills a block (C-0872).</summary>
+    public IEnumerable<SentDpdu> Dpdus => AllDpdus.Where(d => !d.Padding);
 
-    public bool AckOnlyTransmission => !HasData && Dpdus.Exists(d => d.AckOnly);
+    public int DpduCount => AllDpdus.Count(d => !d.Padding);
+
+    public bool HasData => AllDpdus.Exists(d => d.Data);
+
+    public bool AckOnlyTransmission => !HasData && AllDpdus.Exists(d => d.AckOnly);
 
     // The far node's view.
     public bool Collided { get; set; }
@@ -50,16 +56,16 @@ internal sealed class TxRecord
     /// Scores the far node's reception against the sent bytes: a D_PDU is right when every one of
     /// its bytes arrived right. The far node's predicted end is computed as its core computes it
     /// (DtsReceiver: t_rx + EOT x 500 ms, t_rx the bytes_received that completed a valid header,
-    /// C-0842 to C-0844), the latest over the burst.
+    /// C-0842 to C-0844), and as its MAC keeps it, the earliest over the burst (MacSublayer.EotHeard).
     /// </summary>
     public void Score()
     {
         byte[] rx = Blocks.SelectMany(b => b.Bytes).ToArray();
         int ok = 0;
         long? predicted = null;
-        foreach (SentDpdu d in Dpdus)
+        foreach (SentDpdu d in AllDpdus)
         {
-            if (rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
+            if (!d.Padding && rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
             {
                 ok++;
             }
@@ -69,7 +75,7 @@ internal sealed class TxRecord
             {
                 long tRx = BlockTimeCovering(headerEnd - 1);
                 long p = tRx + (d.Eot * 500L);
-                predicted = predicted is long q ? Math.Max(q, p) : p;
+                predicted = predicted is long q ? Math.Min(q, p) : p;
             }
         }
 
@@ -77,7 +83,7 @@ internal sealed class TxRecord
         PredictedEndMs = predicted;
         Outcome = Collided ? "collided"
             : !Locked ? "missed"
-            : ok == Dpdus.Count && Dpdus.Count > 0 ? "clean"
+            : ok == DpduCount && DpduCount > 0 ? "clean"
             : ok > 0 ? "partial"
             : "failed";
     }
@@ -113,7 +119,7 @@ internal sealed class TxRecord
 
             Dpdu p = whole.Value!;
             bool data = p is DataOnly or DataAck or ExpeditedDataOnly or NonArqData or ExpeditedNonArqData;
-            list.Add(new SentDpdu(pos, whole.Consumed, header.Consumed, p.Header.Eot, data, data && isRetransmission(p), p is AckOnly or ExpeditedAckOnly));
+            list.Add(new SentDpdu(pos, whole.Consumed, header.Consumed, p.Header.Eot, data, data && isRetransmission(p), p is AckOnly or ExpeditedAckOnly, p is Padding));
             pos += whole.Consumed;
         }
 
