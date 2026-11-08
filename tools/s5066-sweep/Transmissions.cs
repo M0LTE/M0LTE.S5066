@@ -1,3 +1,4 @@
+using M0LTE.Ms110d;
 using M0LTE.S5066.Core.Dts;
 using M0LTE.S5066.Core.Runtime;
 
@@ -73,8 +74,7 @@ internal sealed class TxRecord
             int headerEnd = d.Offset + d.HeaderLength;
             if (d.Eot > 0 && rx.Length >= headerEnd && rx.AsSpan(d.Offset, d.HeaderLength).SequenceEqual(Bytes.AsSpan(d.Offset, d.HeaderLength)))
             {
-                long tRx = BlockTimeCovering(headerEnd - 1);
-                long p = tRx + (d.Eot * 500L);
+                long p = Anchor(d.Offset) + (d.Eot * 500L);
                 predicted = predicted is long q ? Math.Min(q, p) : p;
             }
         }
@@ -86,6 +86,32 @@ internal sealed class TxRecord
             : ok == DpduCount && DpduCount > 0 ? "clean"
             : ok > 0 ? "partial"
             : "failed";
+    }
+
+    /// <summary>The receiver's EOT anchor for a D_PDU starting at this byte, as DtsReceiver computes it with block_ms (interp C-1289).</summary>
+    private long Anchor(int byteIndex)
+    {
+        Ms110dInterleaverKind kind = Rung.Il switch
+        {
+            Interleaver.UltraShort => Ms110dInterleaverKind.UltraShort,
+            Interleaver.Short => Ms110dInterleaverKind.Short,
+            Interleaver.Medium => Ms110dInterleaverKind.Medium,
+            _ => Ms110dInterleaverKind.Long,
+        };
+        int blockMs = M0LTE.S5066.Host.Modem.Ms110dHostModem.ReceivedBlockMs(new Ms110dLockInfo(Rung.Wn, kind, 7, 0))!.Value;
+        int seen = 0;
+        foreach ((long time, byte[] bytes) in Blocks)
+        {
+            if (byteIndex < seen + bytes.Length)
+            {
+                long into = byteIndex - seen;
+                return time - blockMs + (((into * blockMs) + bytes.Length - 1) / bytes.Length);
+            }
+
+            seen += bytes.Length;
+        }
+
+        return Blocks[^1].Time;
     }
 
     private long BlockTimeCovering(int byteIndex)

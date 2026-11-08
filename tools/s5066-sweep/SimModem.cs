@@ -138,7 +138,8 @@ internal sealed class SimModem : IModemPort
 
         _locked = start.Lock;
         _blocks = 0;
-        _events.Add(t => new Core.Runtime.BurstStarted(t));
+        int? blockMs = Ms110dHostModem.ReceivedBlockMs(start.Lock);   // interp C-1289
+        _events.Add(t => new Core.Runtime.BurstStarted(t, blockMs));
         RxStarted?.Invoke();
     }
 
