@@ -618,7 +618,7 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         (Speed speed, int position, long capacity) = Shape();
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
-        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape, shape.CapacityOf(BlocksWithin(shape, Budget)));
+        (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape);
         if (chosenControl.Count == 0 && chosen.Count == 0)
         {
             throw new InvalidOperationException("the planner chose nothing");
@@ -926,7 +926,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>
     /// The size of the first D_PDU the selection would take (core-architecture.md 5.3), for the budget
     /// rule, or null when nothing can be placed. It walks the classes in the order and with the
-    /// eligibility rules of <see cref="Select"/>, so a non-null answer is exactly what Select takes first.
+    /// eligibility rules of <see cref="Select"/>, so a non-null answer is exactly what Select takes first,
+    /// except that a first transmission of an ARQ segment to a peer recorded Ed4 answers the smallest
+    /// D_PDU it may be cut to, one byte of segment (C-0553; interp C-1042): that D_PDU is cut to the
+    /// configured length rather than stretching the transmission past it (interp C-1155).
     /// </summary>
     private int? FirstItemSize()
     {
@@ -991,6 +994,14 @@ internal sealed class TransmitQueue : ITransmissionSource
                 continue;
             }
 
+            if (!a.Dropped && _context.Peers.EditionOf(a.Peer) == KnownEdition.Ed4)
+            {
+                // Towards a peer recorded Ed4 a fresh segment may be cut to any length of at least one
+                // byte (C-0553), so it never stretches the transmission past the configured length:
+                // it is cut to end where the length's room ends (interp C-1042, C-1155, C-1290).
+                return DataOnlySize(link, 1);
+            }
+
             return DataOnlySize(link, a.Dropped ? 0 : a.NextSegmentLength(MaxSegmentTo(a.Peer, false)));
         }
 
@@ -1038,7 +1049,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// ARQ data D_PDU to a peer whose acknowledgement is one ACK-ONLY of at most 18 bytes of Ack Data
     /// carries it instead, as DATA-ACK (C-0238, C-0249, C-1128, C-1152).
     /// </summary>
-    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, BurstPlan shape, long budgetCapacity)
+    private (List<ControlItem> Control, List<Piece> Data) Select(long capacity, BurstPlan shape)
     {
         var chosenControl = new List<ControlItem>();
         var chosen = new List<Piece>();
@@ -1087,16 +1098,8 @@ internal sealed class TransmitQueue : ITransmissionSource
                 ack.Merged = true;
             }
 
-            bool firstItem = chosenControl.Count == 0 && chosen.Count == 0;
             used += size - released;
             chosen.Add(new ArqPiece(link, frame, size, ack));
-            if (firstItem && capacity > budgetCapacity)
-            {
-                // The capacity went past the configured length only for this D_PDU (C-1042); cut short by
-                // alignment it may need fewer blocks, and the transmission is then just those (C-1155).
-                capacity = Math.Max(budgetCapacity, shape.CapacityOf(shape.BlocksFor(used)));
-            }
-
             return true;
         }
 
@@ -1119,21 +1122,10 @@ internal sealed class TransmitQueue : ITransmissionSource
             int bpb = shape.BytesPerBlock;
             if (end > capacity)
             {
-                boundary = capacity;   // the end of the whole blocks, less the marker's space (interp C-1290)
-            }
-            else if (chosenControl.Count == 0 && chosen.Count == 0 && capacity > budgetCapacity)
-            {
-                // Stretched for this D_PDU alone (C-1042): the places it may end are where the room of
-                // whole blocks ends, n x bytes_per_block - eom_bytes, since ending at a block boundary
-                // itself would leave the modem's end-of-message marker a block of its own (interp C-1290).
-                // It is cut to the last such place it passes; with no marker these are the boundaries.
-                long e = shape.EomBytes;
-                if (!(full < a.Remaining && (end + e) % bpb != 0 && (end + e - 1) / bpb > (pos + e) / bpb))
-                {
-                    return full;
-                }
-
-                boundary = shape.CapacityOf((end + e) / bpb);
+                // The end of the whole blocks, less the marker's space (interp C-1290). As the first D_PDU
+                // this is the configured length, or one block when that is shorter than a block: the
+                // transmission was never stretched for it (interp C-1042, C-1155).
+                boundary = capacity;
             }
             else if (full < a.Remaining && end % bpb != 0 && (end - 1) / bpb > pos / bpb)
             {
@@ -1395,6 +1387,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// block space the modem's end-of-message marker takes (interp C-1290). If the first
     /// D_PDU the build would take does not fit, the transmission is made just long enough for it
     /// (C-0551, C-0878; C-1042): the limit never blocks one D_PDU, and nothing else stretches it.
+    /// <paramref name="first"/> is the smallest the first D_PDU may be (<see cref="FirstItemSize"/>), so a
+    /// first segment to a peer recorded Ed4, which may be cut short (C-0553), never stretches it: the
+    /// capacity is the configured length's, or one block when that is shorter than a block (interp C-1042).
     /// A D_PDU that needs more than 127.5 s on the configured waveform cannot be sent at all, which
     /// is a configuration the core cannot use.
     /// </summary>

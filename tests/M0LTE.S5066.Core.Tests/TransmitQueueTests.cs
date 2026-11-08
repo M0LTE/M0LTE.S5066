@@ -344,10 +344,9 @@ public class TransmitQueueTests
     [Fact]
     public void A_segment_that_would_pass_the_capacity_is_cut_to_end_at_it_towards_an_Ed4_peer()
     {
-        // C-1155 with C-1042: the budget is one 96-byte block, and the first 119-byte D_PDU would stretch the
-        // transmission to two blocks (192 bytes). It is not the C_PDU's last segment, so it is cut to end at
-        // the boundary at 96 (19 + 77); then it needs one block, so the transmission is one block, the budget,
-        // and nothing more is placed.
+        // C-1155 with C-1042: the budget is one 96-byte block, and the first 119-byte D_PDU does not fit it.
+        // Towards an Ed4 peer it does not stretch the transmission: it is cut to end at the capacity, 96
+        // (19 + 77), so the transmission is one block, the budget, and nothing more is placed.
         var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100);
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         q.Tx.OpenLink(X);
@@ -371,12 +370,11 @@ public class TransmitQueueTests
     }
 
     [Fact]
-    public void A_stretched_first_segment_leaves_room_for_the_eom_in_its_last_block()
+    public void A_first_segment_to_an_ed4_peer_leaves_room_for_the_eom_in_the_limit()
     {
-        // C-1155 with C-1042 and interp C-1290: one 96-byte block within the budget carries 92 bytes after
-        // the 4-byte EOM. The first 119-byte D_PDU would stretch the transmission to two blocks; cut to the
-        // block boundary at 96 it would still need two, the EOM taking the second, so it is cut to end at
-        // 92 (19 + 73) and the transmission is the one block the budget allows.
+        // Interp C-1042, C-1155, C-1290: one 96-byte block within the budget carries 92 bytes after the 4-byte
+        // EOM. The first segment at the maximum size would be a 119-byte D_PDU; towards an Ed4 peer it is cut
+        // to end where the budget's room ends, 92 (19 + 73), and the transmission is the one block allowed.
         var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100, eomBytes: 4);
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         q.Tx.OpenLink(X);
@@ -389,23 +387,52 @@ public class TransmitQueueTests
     }
 
     [Theory]
-    [InlineData(173, 188, 2)]   // ends at the boundary at 192: the marker would take a third block alone
-    [InlineData(171, 188, 2)]   // ends at 190, inside the marker's room of block 2
-    [InlineData(169, 188, 2)]   // ends at 188, exactly the room of two blocks: not cut
-    [InlineData(180, 188, 2)]   // ends at 199, past the boundary: cut to the room of two blocks
-    public void A_stretched_first_segment_is_cut_to_the_last_room_end_it_passes(int maxSegment, int length, int blocks)
+    [InlineData(173, 400)]    // would end at the boundary at 192
+    [InlineData(171, 400)]    // would end at 190, inside the marker's room of block 2
+    [InlineData(169, 400)]    // would end at 188, exactly the room of two blocks
+    [InlineData(1023, 2000)]  // would need 12 blocks
+    [InlineData(1023, 300)]   // the C_PDU's only segment, so its last, would need 4 blocks
+    public void A_first_segment_to_an_ed4_peer_is_cut_to_the_limit_however_long(int maxSegment, int cpdu)
     {
-        // C-1155 with C-1042 and interp C-1290: 96-byte blocks, a 4-byte EOM and a one-block budget (92
-        // bytes). A first DATA-ONLY of 19 + maxSegment bytes stretches the transmission; it is cut to end
-        // where the room of whole blocks ends (96n - 4) at the last such place it passes, so the marker
-        // never gets a block of its own and a D_PDU a few bytes shorter never makes a longer transmission.
+        // Interp C-1042, C-1155, C-1290 (P7-9b): 96-byte blocks, a 4-byte EOM and a one-block budget (92
+        // bytes). However long the first segment would be, towards an Ed4 peer it may be shorter than the
+        // maximum (C-0553), so the transmission is never stretched for it: it is cut to the budget's room.
         var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: maxSegment, eomBytes: 4);
         q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
         q.Tx.OpenLink(X);
-        q.Tx.AddArq(Arq(X, 400));
+        q.Tx.AddArq(Arq(X, cpdu));
         Transmit first = q.Tx.Build();
-        first.Bytes.Length.Should().Be(length);
-        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(blocks);
+        first.Bytes.Length.Should().Be(92);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(1);
+        q.Decode(first).Cast<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length, d.Flags.CPduEnd)).Should().Equal((0, 73, false));
+    }
+
+    [Fact]
+    public void A_first_segment_to_an_ed4_peer_under_a_limit_shorter_than_a_block_takes_one_block()
+    {
+        // Interp C-1042, C-0879: with a budget too short for any block the transmission is one block, the
+        // shortest there is, and the first segment to an Ed4 peer is cut to fill it.
+        var q = new Rig(maxTransmissionMs: 2000, maxSegment: 1023, eomBytes: 4);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 500));
+        Transmit first = q.Tx.Build();
+        first.Bytes.Length.Should().Be(92);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(1);
+    }
+
+    [Fact]
+    public void A_first_segment_to_an_ed3_peer_stretches_the_transmission()
+    {
+        // Interp C-1042, C-0551, C-0554: towards an Ed3 peer a segment may not be shortened, so a 118-byte
+        // type 0 D_PDU (18 + 100) that does not fit the one-block budget goes alone, in the 2 blocks it needs.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, maxSegment: 100);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed3);
+        q.Tx.OpenLink(X, shortFamily: true);
+        q.Tx.AddArq(Arq(X, 200));
+        Transmit first = q.Tx.Build();
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, first.Bytes.Length).Blocks.Should().Be(2);
+        q.Decode(first).OfType<Ed3DataOnly>().Select(d => (d.TxFsn, d.Segment.Length)).Should().Equal((0, 100));
     }
 
     [Fact]
