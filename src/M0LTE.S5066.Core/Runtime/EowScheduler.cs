@@ -51,6 +51,9 @@ internal sealed class EowScheduler
     /// <summary>The repeating set for a peer, in rotation order (open question 1; P7-6). Empty in P7-3.</summary>
     public Func<uint, IReadOnlyList<Eow>> RepeatingSet { get; set; } = _ => [];
 
+    /// <summary>ED3-BASIC-RATE for a peer recorded Ed3 (C-0957; P7-6), or null for EMPTY.</summary>
+    public Func<uint, Eow?> Ed3Recommendation { get; set; } = _ => null;
+
     /// <summary>Our SENDER-APPROACH for a peer the transmission carries data to (P7-7), or null. Null in P7-3.</summary>
     public Func<uint, Eow?> SenderApproach { get; set; } = _ => null;
 
@@ -87,9 +90,17 @@ internal sealed class EowScheduler
             return owed;   // C-1079, an All-editions EOW
         }
 
-        if (_editions.EditionOf(dst) != KnownEdition.Ed4)
+        KnownEdition edition = _editions.EditionOf(dst);
+        if (edition == KnownEdition.Ed3)
         {
-            return 0;   // EMPTY: unknown edition or Ed3 (C-0419, C-0938, interp C-0055)
+            // ED3-BASIC-RATE in every header to the peer when we have a recommendation (C-0957,
+            // interp C-1273), else EMPTY; never an Ed4 EOW (C-0419, C-0938).
+            return Ed3Recommendation(dst) is Eow ed3 ? EowCodec.Encode(ed3) : 0;
+        }
+
+        if (edition != KnownEdition.Ed4)
+        {
+            return 0;   // EMPTY: unknown edition (C-0419, interp C-0055)
         }
 
         if (!_head.TryGetValue(dst, out Queue<Eow>? head))

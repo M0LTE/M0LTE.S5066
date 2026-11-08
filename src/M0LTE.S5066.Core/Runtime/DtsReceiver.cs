@@ -119,14 +119,17 @@ internal sealed class DtsReceiver
     /// The burst ended: finish the search over what is left, drop any partial D_PDU, and record the
     /// burst's quality for every sender heard in it (C-0833; core-architecture.md 3.5 rule 1).
     /// </summary>
-    public void OnBurstEnded(BurstEnded burst)
+    /// <returns>Each sender heard in the burst, in address order, with its valid headers and data CRC failures in it (for P7-6).</returns>
+    public IReadOnlyList<(uint Src, long Headers, long DataCrcFailures)> OnBurstEnded(BurstEnded burst)
     {
         Scan(endOfBurst: true);
         Reset();
 
+        var heard = new List<(uint, long, long)>();
         foreach (uint src in _heardThisBurst)
         {
             (long headers, long dataCrc) = _countsThisBurst[src];
+            heard.Add((src, headers, dataCrc));
             _quality.TryGetValue(src, out RxQuality? old);
             _quality[src] = new RxQuality(
                 _context.Now, burst.SnrTenthDb, burst.Wn, burst.Interleaver, burst.K,
@@ -141,6 +144,7 @@ internal sealed class DtsReceiver
         _heardThisBurst.Clear();
         _toUsThisBurst.Clear();
         _countsThisBurst.Clear();
+        return heard;
     }
 
     /// <summary>

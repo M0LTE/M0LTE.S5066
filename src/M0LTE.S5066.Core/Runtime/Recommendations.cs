@@ -1,0 +1,264 @@
+using M0LTE.S5066.Core.Dts;
+
+namespace M0LTE.S5066.Core.Runtime;
+
+/// <summary>
+/// The receiver half of rate selection for one peer (core-architecture.md 9, phase 7, P7-6): what
+/// this node has measured of the peer's bursts and the recommendations it sends back (C-0459,
+/// C-0472, C-0474, C-0935, C-0957). Lives in the peer's DtsPeers entry, so it is created and removed
+/// with it (core-architecture.md 6 rule 11). The arithmetic is fixed in corpus-format.md 6.2 (interp
+/// C-1270) so the C++ port computes the same values.
+/// </summary>
+internal sealed class RecommendationState
+{
+    /// <summary>The largest MAX-SEGMENT value, 255 (1020 bytes; C-0475, interp C-1272).</summary>
+    public const int SegmentMax = 255;
+
+    /// <summary>The smallest MAX-SEGMENT value sent to a fixed-speed sender, 25 (100 bytes; interp C-1272).</summary>
+    public const int SegmentMin = 25;
+
+    /// <summary>Smoothed estimate per measured rung, tenths of a dB (key <see cref="Key"/>).</summary>
+    public SortedDictionary<int, int> Smoothed { get; } = new();
+
+    /// <summary>Clean bursts in a row per rung (key <see cref="Key"/>).</summary>
+    public SortedDictionary<int, int> CleanRun { get; } = new();
+
+    /// <summary>Failures in a row per ladder position (bursts over the error limit).</summary>
+    public SortedDictionary<int, int> Failures { get; } = new();
+
+    /// <summary>Active caps: ladder position to bursts left.</summary>
+    public SortedDictionary<int, int> Caps { get; } = new();
+
+    /// <summary>Whether a burst with a valid header from the peer has been measured with a non-empty table (interp C-1271).</summary>
+    public bool Heard { get; set; }
+
+    /// <summary>The MAX-SPEED recommendation, a ladder position, or null.</summary>
+    public int? MaxSpeed { get; set; }
+
+    /// <summary>The LOW-SPEED recommendation, a ladder position, or null.</summary>
+    public int? LowSpeed { get; set; }
+
+    /// <summary>MAX-SEGMENT kept for a fixed-speed sender (interp C-1272).</summary>
+    public int Segment { get; set; } = SegmentMax;
+
+    /// <summary>Clean bursts since MAX-SEGMENT last changed, for a fixed-speed sender.</summary>
+    public int SegmentClean { get; set; }
+
+    /// <summary>A total order on rungs, for the per-rung tables.</summary>
+    public static int Key(Speed rung) => (rung.Wn * 8) + (int)rung.Interleaver;
+}
+
+/// <summary>
+/// The receiver recommendation logic of corpus-format.md 6.2 (P7-6; interp C-1270 to C-1273). Runs
+/// at each <c>burst_ended</c>, once per source heard in the burst, in address order. Integer
+/// arithmetic only; divisions are on non-negative operands (core-architecture.md 6 rule 1). Does
+/// nothing with an empty table (core-architecture.md 9, phase 7, design shape item 6).
+/// </summary>
+internal static class Recommender
+{
+    /// <summary>
+    /// The smoothing step (corpus-format.md 6.2): S = x when empty, else S + q where q is |x - S| x w
+    /// / 16, truncated, with the sign of x - S (interp C-1270).
+    /// </summary>
+    public static int Smooth(int? smoothed, int sample, int weight)
+    {
+        if (smoothed is not int s)
+        {
+            return sample;
+        }
+
+        long d = (long)sample - s;
+        long q = ((d < 0 ? -d : d) * weight) / 16;
+        return (int)(d < 0 ? s - q : s + q);
+    }
+
+    /// <summary>
+    /// One burst from the peer (corpus-format.md 6.2 steps 1 to 7): <paramref name="headers"/> valid
+    /// D_PDU headers from it, <paramref name="errors"/> of its D_PDUs discarded for a bad data CRC
+    /// (C-0833, C-0836), on <paramref name="rung"/> with estimate <paramref name="snr"/> (null when the
+    /// modem gives none).
+    /// </summary>
+    public static void OnBurst(DrcTable table, RecommendationState st, Speed rung, int? snr, long headers, long errors, bool fixedSender)
+    {
+        if (table.IsEmpty)
+        {
+            return;
+        }
+
+        st.Heard = true;
+
+        // 1. Every active cap counts down by one burst from the peer.
+        foreach (int p in st.Caps.Keys.ToList())
+        {
+            if (--st.Caps[p] <= 0)
+            {
+                st.Caps.Remove(p);
+            }
+        }
+
+        // 2. A burst over the error limit caps its rung, with doubling backoff (design shape item 7).
+        int pos = table.PositionOf(rung);
+        if (pos >= 0)
+        {
+            if (errors * 1000 > (long)DrcTable.Need(table.RxErrorLimitPpt, "rx_error_limit_ppt") * headers)
+            {
+                int failures = st.Failures.GetValueOrDefault(pos) + 1;
+                st.Failures[pos] = failures;
+                long length = DrcTable.Need(table.RxCeilingInitial, "rx_ceiling_initial");
+                int cap = DrcTable.Need(table.RxCeilingCap, "rx_ceiling_cap");
+                for (int i = 1; i < failures && length < cap; i++)
+                {
+                    length *= 2;
+                }
+
+                st.Caps[pos] = (int)Math.Min(length, cap);
+            }
+            else if (errors == 0)
+            {
+                st.Failures.Remove(pos);
+            }
+        }
+
+        // 3. Clean run of the rung.
+        int key = RecommendationState.Key(rung);
+        st.CleanRun[key] = errors == 0 ? st.CleanRun.GetValueOrDefault(key) + 1 : 0;
+
+        // 4. Smoothing, on a rung the table has thresholds for.
+        DrcThresholds? thresholds = table.ThresholdsOn(rung);
+        int? smoothed = null;
+        if (thresholds is not null && snr is int x)
+        {
+            int? old = st.Smoothed.TryGetValue(key, out int s) ? s : null;
+            smoothed = Smooth(old, x, DrcTable.Need(table.SmoothingWeight, "smoothing_weight"));
+            st.Smoothed[key] = smoothed.Value;
+        }
+
+        // 5. The ceiling from the active caps.
+        int? ceiling = null;
+        foreach (int p in st.Caps.Keys)
+        {
+            int c = Math.Max(0, p - 1);
+            ceiling = ceiling is int cc ? Math.Min(cc, c) : c;
+        }
+
+        // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency).
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling);
+
+        // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
+        if (fixedSender)
+        {
+            if (errors * 2 > headers)
+            {
+                st.Segment = Math.Max(RecommendationState.SegmentMin, st.Segment / 2);
+                st.SegmentClean = 0;
+            }
+            else if (errors == 0 && ++st.SegmentClean >= DrcTable.Need(table.CleanRun, "clean_run"))
+            {
+                st.Segment = Math.Min(RecommendationState.SegmentMax, st.Segment * 2);
+                st.SegmentClean = 0;
+            }
+        }
+    }
+
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling)
+    {
+        if (row is not null && smoothed is int s)
+        {
+            int target = 0;
+            for (int j = row.Count - 1; j >= 0; j--)
+            {
+                if (row[j] is int t && t <= s)
+                {
+                    target = j;
+                    break;
+                }
+            }
+
+            if (r is not int current)
+            {
+                r = pos >= 0 ? Math.Min(target, pos) : target;
+            }
+            else if (target < current)
+            {
+                r = target;   // a move down is immediate
+            }
+            else if (target > current
+                && st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[current])) >= DrcTable.Need(table.CleanRun, "clean_run"))
+            {
+                r = current + 1;   // one rung, after the clean run (the trial)
+            }
+        }
+
+        return r is int v && ceiling is int c && v > c ? c : r;
+    }
+
+    /// <summary>The MAX-SPEED or LOW-SPEED contents for a ladder rung: Speed = WN, the interleaver code of its name (C-0462, C-0463, C-0469).</summary>
+    public static SpeedInterleaver ToSpeed(Speed rung) => new((int)rung.Interleaver + 1, rung.Wn);
+
+    /// <summary>
+    /// The EOWs a peer's last SENDER-APPROACH asks for, by Table C-25 (C-0950 to C-0954), mixed when
+    /// none has come (C-0956): the top priority, and the repeating set in rotation order (open
+    /// question 1, interp C-1260). Entries with no value yet are left out (interp C-1271).
+    /// </summary>
+    public static (IReadOnlyList<Eow> Top, IReadOnlyList<Eow> Set) Wanted(DrcTable table, RecommendationState? st, SenderApproachEow? approach)
+    {
+        if (table.IsEmpty || st is null || !st.Heard)
+        {
+            return ([], []);
+        }
+
+        Eow? max = st.MaxSpeed is int m ? new MaxSpeedEow(ToSpeed(table.Ladder[m])) : null;
+        Eow? low = st.LowSpeed is int l ? new LowSpeedEow(ToSpeed(table.Ladder[l])) : null;
+        bool fixedSender = approach?.Fixed == true;
+        Eow seg = new MaxSegmentEow(fixedSender ? st.Segment : RecommendationState.SegmentMax);
+
+        (Eow?[] top, Eow?[] set) = fixedSender
+            ? ([], [seg])                                                  // C-0950
+            : (approach?.Strategy ?? 2) switch
+            {
+                0 => (new[] { max }, new[] { max, max, seg }),             // bulk, C-0951
+                1 => (new[] { low }, new[] { low, seg }),                  // low latency, C-0952
+                3 => (new[] { max }, new[] { max, low, max, seg }),        // intermediate, C-0954
+                _ => (new[] { max, low }, new[] { max, low, seg }),        // mixed, C-0953, C-0956
+            };
+
+        return (top.OfType<Eow>().ToList(), set.OfType<Eow>().ToList());
+    }
+
+    /// <summary>
+    /// ED3-BASIC-RATE for a peer recorded Ed3 (C-0957, C-0959), from the MAX-SPEED rung, Other
+    /// Parameters 10 (C-0440), or null when there is none.
+    /// </summary>
+    public static Ed3BasicRateEow? Ed3(DrcTable table, RecommendationState? st) =>
+        !table.IsEmpty && st?.MaxSpeed is int m ? Ed3BasicRate(table.Ladder[m]) : null;
+
+    /// <summary>
+    /// Our C-0442 table (open question 10, interp C-1273): the highest Table C-5 rate not above the
+    /// rung's data rate (WN 1 150, WN 2 300, WN 3 600, WN 4 and WN 5 1200, WN 13 2400, WN 6 3200, WN 7
+    /// 4800, WN 8 6400 bps), and Ultra Short or Short as short (01), Medium or Long as long (10).
+    /// </summary>
+    /// <exception cref="ArgumentException">The rung is not one our ladder can hold.</exception>
+    public static Ed3BasicRateEow Ed3BasicRate(Speed rung)
+    {
+        int rate = rung.Wn switch
+        {
+            1 => 1,    // 150
+            2 => 2,    // 300
+            3 => 3,    // 600
+            4 or 5 => 4,   // 1200
+            13 => 5,   // 2400
+            6 => 6,    // 3200
+            7 => 8,    // 4800
+            8 => 9,    // 6400
+            _ => throw new ArgumentException("WN 1 to 8 or 13 only", nameof(rung)),
+        };
+        int interleaving = rung.Interleaver switch
+        {
+            Interleaver.UltraShort or Interleaver.Short => 1,
+            Interleaver.Medium or Interleaver.Long => 2,
+            _ => throw new ArgumentException("ultra short, short, medium or long only", nameof(rung)),
+        };
+        return new Ed3BasicRateEow(rate, interleaving, 2);
+    }
+}

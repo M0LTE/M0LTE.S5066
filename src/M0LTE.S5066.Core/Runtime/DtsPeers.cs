@@ -142,7 +142,42 @@ internal sealed class DtsPeers
         _tx = tx;
         _reassembler = new NonArqReassembler(context);
         _tx.HoldsPartialExpedited = p => _peers.TryGetValue(p, out Peer? peer) && peer.Connected && peer.Expedited.Partial;
+
+        // P7-6: the recommendations each peer is sent (interp C-1260, C-1271).
+        _tx.Eows.TopPriority = p => Wanted(p).Top;
+        _tx.Eows.RepeatingSet = p => Wanted(p).Set;
+        _tx.Eows.Ed3Recommendation = p => Recommender.Ed3(_context.Config.Drc.Table, _peers.TryGetValue(p, out Peer? peer) ? peer.Recommendations : null);
     }
+
+    private (IReadOnlyList<Eow> Top, IReadOnlyList<Eow> Set) Wanted(uint p) =>
+        _peers.TryGetValue(p, out Peer? peer)
+            ? Recommender.Wanted(_context.Config.Drc.Table, peer.Recommendations, peer.Received.SenderApproach)
+            : ([], []);
+
+    /// <summary>
+    /// A received burst has ended (P7-6; corpus-format.md 6.2; interp C-1270): each sender heard in
+    /// it, with a valid header (C-0833), in address order, has its measurements and recommendations
+    /// updated. A sender heard for the first time gets its entry here (core-architecture.md 6 rule
+    /// 11: first D_PDU heard). Nothing is done with an empty table.
+    /// </summary>
+    public void OnBurstMeasured(BurstEnded burst, IReadOnlyList<(uint Src, long Headers, long DataCrcFailures)> heard)
+    {
+        DrcTable table = _context.Config.Drc.Table;
+        if (table.IsEmpty)
+        {
+            return;
+        }
+
+        var rung = new Speed(burst.Wn, burst.Interleaver);
+        foreach ((uint src, long headers, long errors) in heard)
+        {
+            Peer peer = PeerOf(src);
+            Recommender.OnBurst(table, peer.Recommendations, rung, burst.SnrTenthDb, headers, errors, peer.Received.SenderApproach?.Fixed == true);
+        }
+    }
+
+    /// <summary>The receiver recommendation state of a peer (P7-6), or null; for tests.</summary>
+    internal RecommendationState? RecommendationsOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.Recommendations : null;
 
     /// <summary>The non-ARQ reassembly, for tests and the <c>dts.reception_window</c> expiry.</summary>
     internal NonArqReassembler Reassembler => _reassembler;
@@ -1107,6 +1142,9 @@ internal sealed class DtsPeers
 
         /// <summary>The latest recommendation EOWs from this peer (P7-3).</summary>
         public ReceivedEows Received { get; } = new();
+
+        /// <summary>What we measure of this peer and recommend to it (P7-6).</summary>
+        public RecommendationState Recommendations { get; } = new();
 
         /// <summary>RX MANAGEMENT FRAME ID NUMBER (C-0308, C-0310). TX MANAGEMENT FRAME ID NUMBER is not kept: no MANAGEMENT message is sent before phase 7.</summary>
         public int RxFrameId { get; set; } = NoFrameId;
