@@ -51,7 +51,7 @@ public class CalibratedTableTests
         host.Calibration.Should().BeSameAs(CalibratedTable.Default);
         host.Config.Drc.Table.Should().BeSameAs(CalibratedTable.Default.Table);
         host.Config.Drc.DefaultSpeed.Should().Be(c.Node.Drc.DefaultSpeed);
-        lines.Should().Contain(l => l.StartsWith("drc.table: calibration ms110d-cs-", StringComparison.Ordinal));
+        lines.Should().BeEmpty();
 
         host.UpdateConfig(c.Node);
         host.Config.Drc.Table.Should().BeSameAs(CalibratedTable.Default.Table);

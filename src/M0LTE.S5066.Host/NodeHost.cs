@@ -127,7 +127,7 @@ public sealed class NodeHost : IAsyncDisposable
     /// the configured <c>drc.table</c> (empty by default: no rate selection) stays.
     /// </summary>
     /// <param name="modem">The modem the node will run on.</param>
-    /// <param name="log">A sink for the one-line notice, or null.</param>
+    /// <param name="log">A sink for the one-line warning when a calibration is refused, or null.</param>
     public static CalibratedTable? CalibrationFor(IModemPort modem, Action<string>? log = null)
     {
         ArgumentNullException.ThrowIfNull(modem);
@@ -149,7 +149,6 @@ public sealed class NodeHost : IAsyncDisposable
             return null;
         }
 
-        log?.Invoke($"drc.table: calibration {c.Calibration} ({c.Table.Ladder.Count} rungs)");
         return c;
     }
 
