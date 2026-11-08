@@ -29,6 +29,10 @@ internal sealed class Probe(string name, List<string> log) : ISisSublayer, ICasS
 
     public void OnShutdown() => Call("OnShutdown");
 
+    public void OnReceiveStarted() => Call("OnReceiveStarted");
+
+    public void OnReceiveEnded() => Call("OnReceiveEnded");
+
     public void On(ToSis primitive) => Call("On", primitive is ProbeToSis p ? p.Tag : primitive.GetType().Name);
 
     public void On(ToCas primitive) => Call("On", primitive is ProbeToCas p ? p.Tag : primitive.GetType().Name);

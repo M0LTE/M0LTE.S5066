@@ -25,6 +25,12 @@ internal interface ISisSublayer : ISublayer
     /// <summary>The host is shutting the node down (interp A-0059): unbind reason 6 to every bound client, then every connection closed.</summary>
     void OnShutdown();
 
+    /// <summary>A received burst began. Records only (interp A-0320, issue #88).</summary>
+    void OnReceiveStarted();
+
+    /// <summary>A received burst ended; called after the DTS has handled the end (interp A-0320, issue #88).</summary>
+    void OnReceiveEnded();
+
     void On(ToSis primitive);
 }
 

@@ -104,6 +104,7 @@ internal sealed class Dispatcher
                 break;
             case BurstStarted:
                 _dts.OnBurstStarted();
+                Quiet("the SIS's OnReceiveStarted", _sis.OnReceiveStarted);
                 Quiet("the MAC's OnBurstStarted", _mac.OnBurstStarted);
                 break;
             case BytesReceived b:
@@ -111,6 +112,7 @@ internal sealed class Dispatcher
                 break;
             case BurstEnded b:
                 _dts.OnBurstEnded(b);
+                _sis.OnReceiveEnded();
                 Quiet("the MAC's OnBurstEnded", () => _mac.OnBurstEnded(b));
                 break;
             case TransmitDone:

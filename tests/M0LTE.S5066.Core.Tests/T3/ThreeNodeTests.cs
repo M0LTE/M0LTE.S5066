@@ -637,6 +637,10 @@ public class ThreeNodeTests(ITestOutputHelper output)
 
         public void OnShutdown() => inner.OnShutdown();
 
+        public void OnReceiveStarted() => inner.OnReceiveStarted();
+
+        public void OnReceiveEnded() => inner.OnReceiveEnded();
+
         public void On(ToSis primitive)
         {
             switch (primitive)

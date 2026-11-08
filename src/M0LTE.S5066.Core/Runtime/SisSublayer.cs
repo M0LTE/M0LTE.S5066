@@ -135,6 +135,9 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly SortedDictionary<byte, int> _sapOwner = [];
     private readonly List<Held> _awaitingSoftLink = [];
     private readonly SortedDictionary<uint, SoftLink> _softLinks = new();
+
+    // Between burst_started and burst_ended of a received burst (interp A-0320, issue #88).
+    private bool _receiving;
     private readonly SortedDictionary<int, Held> _outstanding = new();
 
     // Flow control (P6-2; interp S-0163): every accepted client U_PDU the lower sublayers are not
@@ -200,13 +203,15 @@ internal sealed class SisSublayer : ISisSublayer
         switch (name.Kind)
         {
             case TimerKind.SisSoftLinkIdle:
-                if (HeardDuringIdle(peer, link) is long remaining)
+                if (_receiving)
                 {
-                    _context.Timers.Start(IdleTimer(peer), remaining);
+                    // A burst is arriving and may hold more of the peer's C_PDU: decide at its end
+                    // (interp A-0320, issue #88).
+                    link.IdleDeferred = true;
                     break;
                 }
 
-                OnIdle(peer, link);
+                IdleExpired(peer, link);
                 break;
             case TimerKind.SisSoftLinkMinHold:
                 // A-0197: the called node may now close on its own: an idle close that waited for the
@@ -227,6 +232,28 @@ internal sealed class SisSublayer : ISisSublayer
                 break;
             default:
                 throw new InvalidOperationException($"SIS timer {name} expired, but the SIS does not start it (now {_context.Now})");
+        }
+    }
+
+    /// <summary>A received burst began (DCD up): an idle wait that runs out until it ends waits for its end (interp A-0320). Records only.</summary>
+    public void OnReceiveStarted() => _receiving = true;
+
+    /// <summary>
+    /// The received burst ended, after the DTS has recorded who it heard in it: every idle wait that
+    /// ran out during the burst is decided now, in peer address order, by the rule it would have met
+    /// at expiry. A burst from the peer addressed to this node, begun during the wait, counts the wait
+    /// again from now; otherwise the link is idle and closes (interp A-0320, issue #88).
+    /// </summary>
+    public void OnReceiveEnded()
+    {
+        _receiving = false;
+        foreach ((uint peer, SoftLink link) in _softLinks.Where(kv => kv.Value.IdleDeferred).ToList())
+        {
+            link.IdleDeferred = false;
+            if (link.State == SoftLinkState.Established && !link.Closing)
+            {
+                IdleExpired(peer, link);
+            }
         }
     }
 
@@ -1023,9 +1050,10 @@ internal sealed class SisSublayer : ISisSublayer
     private void Received(uint peer)
     {
         if (_softLinks.TryGetValue(peer, out SoftLink? link) && link.State == SoftLinkState.Established && !link.Closing
-            && (_context.Timers.IsRunning(IdleTimer(peer)) || link.IdleDue))
+            && (_context.Timers.IsRunning(IdleTimer(peer)) || link.IdleDue || link.IdleDeferred))
         {
             link.IdleDue = false;
+            link.IdleDeferred = false;
             StartIdle(peer, link);
         }
     }
@@ -1046,9 +1074,10 @@ internal sealed class SisSublayer : ISisSublayer
         if (_outstanding.Values.Any(h => h.Request.Dst == peer))
         {
             link.IdleDue = false;
+            link.IdleDeferred = false;
             _context.Timers.Cancel(IdleTimer(peer));
         }
-        else if (!_context.Timers.IsRunning(IdleTimer(peer)) && !link.IdleDue)
+        else if (!_context.Timers.IsRunning(IdleTimer(peer)) && !link.IdleDue && !link.IdleDeferred)
         {
             StartIdle(peer, link);
         }
@@ -1090,6 +1119,22 @@ internal sealed class SisSublayer : ISisSublayer
         return remaining > 0 ? remaining : null;
     }
 
+    /// <summary>
+    /// The idle wait ran out, at its expiry or, when a burst was arriving then, at that burst's end:
+    /// it counts again if the peer was heard addressing this node during it, else the link is idle
+    /// (interp A-0320).
+    /// </summary>
+    private void IdleExpired(uint peer, SoftLink link)
+    {
+        if (HeardDuringIdle(peer, link) is long remaining)
+        {
+            _context.Timers.Start(IdleTimer(peer), remaining);
+            return;
+        }
+
+        OnIdle(peer, link);
+    }
+
     /// <summary>The idle wait is over (A-0011): close, unless a called node's minimum hold is still running, when the close waits for it (A-0197).</summary>
     private void OnIdle(uint peer, SoftLink link)
     {
@@ -1111,6 +1156,7 @@ internal sealed class SisSublayer : ISisSublayer
     {
         link.Closing = true;
         link.IdleDue = false;
+        link.IdleDeferred = false;
         CancelTimers(peer);
         _context.Enqueue(new CPhysicalLinkBreak(peer, reason, priority));
     }
@@ -1366,6 +1412,9 @@ internal sealed class SisSublayer : ISisSublayer
 
         /// <summary>The idle wait ended during a called node's minimum hold, so the close waits for it (A-0197).</summary>
         public bool IdleDue { get; set; }
+
+        /// <summary>The idle wait ran out while a burst was arriving; it is decided at the burst's end (interp A-0320, issue #88).</summary>
+        public bool IdleDeferred { get; set; }
 
         /// <summary>The time the running idle wait counts from: when it was started, or the burst the peer was last heard in (interp A-0320).</summary>
         public long IdleSince { get; set; }
