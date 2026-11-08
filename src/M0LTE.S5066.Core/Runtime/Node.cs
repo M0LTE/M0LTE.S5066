@@ -41,6 +41,15 @@ public sealed class Node
     /// <param name="input">The input; its time must not be earlier than the previous input's.</param>
     public void Handle(CoreInput input) => _dispatcher.Handle(input);
 
+    /// <summary>
+    /// Shuts the SIS service down, the last call before the host destroys the core (interp A-0059;
+    /// core-architecture.md 10 item 1): every bound client is sent S_UNBIND_INDICATION reason 6,
+    /// and every connection, bound or not, is closed, in connection order. Handled like an input at
+    /// time <paramref name="t"/>, so its outputs are drained with <see cref="DrainOutputs"/>.
+    /// </summary>
+    /// <param name="t">The time, not earlier than the previous input's.</param>
+    public void Shutdown(long t) => _dispatcher.Handle(new ShutdownInput(t));
+
     /// <summary>Returns and clears the outputs produced since the last call.</summary>
     public List<CoreOutput> DrainOutputs() => _context.TakeOutputs();
 }

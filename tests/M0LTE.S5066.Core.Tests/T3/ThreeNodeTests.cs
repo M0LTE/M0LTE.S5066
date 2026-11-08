@@ -635,6 +635,8 @@ public class ThreeNodeTests(ITestOutputHelper output)
 
         public void OnDisconnect(int conn) => inner.OnDisconnect(conn);
 
+        public void OnShutdown() => inner.OnShutdown();
+
         public void On(ToSis primitive)
         {
             switch (primitive)

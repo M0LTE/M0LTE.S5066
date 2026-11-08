@@ -14,7 +14,7 @@ namespace M0LTE.S5066.Core.Runtime;
 /// stream decoder, so primitives are framed with nothing else on the stream (S-0011, S-0012).
 /// A disconnect unbinds at once with no S_UNBIND_INDICATION (A-0040, S-0016). The node keeps a
 /// connection open after an unbind so the client can bind again (A-0039, S-0102), and closes it
-/// only after the invalid-primitive limit (S-0077); shutdown (reason 6) is the host's.
+/// only after the invalid-primitive limit (S-0077) or at shutdown (reason 6, interp A-0059).
 /// </para>
 /// <para>
 /// Soft links (P4-1): an accepted ARQ U_PDU for a peer with no soft link is held, and the SIS asks
@@ -51,8 +51,19 @@ namespace M0LTE.S5066.Core.Runtime;
 /// interp A-0341).
 /// </para>
 /// <para>
-/// Not here yet: flow control and
-/// other management messages are P6-2 (P5-3 sends the MAC-mode discovery report, interp J-0082). The node sends no unprompted keep-alive and never unbind
+/// Flow control and management (P6-2): each client's accepted U_PDUs count against it until the
+/// lower sublayers are finished with them; S_DATA_FLOW_OFF goes out when the count reaches
+/// <see cref="FlowOffBytes"/> and S_DATA_FLOW_ON when it is back down to <see cref="FlowOnBytes"/>
+/// (S-0019, S-0022, B-0279, C-0019; interp S-0163). A U_PDU sent while flow is off is discarded,
+/// with S_UNIDATA_REQUEST_REJECTED reason 13 if it asked for confirmation (S-0023; interp S-0028,
+/// S-0163). S_MANAGEMENT_MSG_REQUEST MSG TYPE 2 is answered with our node information (S-0030 to
+/// S-0038; interp S-0164); the MAC-mode report of P5-3 is MSG TYPE 1 (interp J-0082). The node's
+/// status never changes, so it never sends S_SUBNET_AVAILABILITY (S-0046; interp S-0165). Shutdown
+/// sends unbind reason 6 to every bound client and closes every connection (interp A-0059).
+/// Precedence of higher-priority U_PDUs across clients is the planner's (A-0064, C-0853).
+/// </para>
+/// <para>
+/// The node sends no unprompted keep-alive and never unbind
 /// reason 2 (S-0045), never unbind reasons 1 or 4 (A-0060), and never bind reason 4, having no
 /// exclusive broadcast session (A-0052).
 /// </para>
@@ -68,12 +79,28 @@ internal sealed class SisSublayer : ISisSublayer
     /// <summary>The MSG TYPE of our MAC-mode discovery report in S_MANAGEMENT_MSG_INDICATION (S-0038; interp J-0082).</summary>
     public const byte MacModeMsgType = 1;
 
+    /// <summary>The MSG TYPE of our node information request and answer (S-0038; interp S-0164).</summary>
+    public const byte NodeInfoMsgType = 2;
+
+    /// <summary>
+    /// A client's unfinished U_PDU bytes at which the node sends S_DATA_FLOW_OFF: eight MTUs (interp
+    /// S-0163). Fixed, not a setting (core-architecture.md 7.2).
+    /// </summary>
+    public const int FlowOffBytes = 8 * Mtu;
+
+    /// <summary>The unfinished bytes at or below which a client held off gets S_DATA_FLOW_ON: four MTUs (interp S-0163).</summary>
+    public const int FlowOnBytes = 4 * Mtu;
+
+    /// <summary>The most peer records in one node information answer (interp S-0164): the count is one byte.</summary>
+    public const int MaxNodeInfoPeers = 255;
+
     // Bind reject reasons (A-0052, A-0053).
     private const byte BindRejectNotEnoughResources = 1;
     private const byte BindRejectSapAllocated = 3;
 
     // Unbind indication reason (A-0057, A-0058).
     private const byte UnbindTooManyInvalid = 3;
+    private const byte UnbindServiceTerminating = 6;   // interp A-0059
 
     // Unidata reject reasons (A-0107, A-0108).
     private const byte RejectTtlExpired = 1;
@@ -85,6 +112,7 @@ internal sealed class SisSublayer : ISisSublayer
     private const byte RejectSoftLinkHigherPriority = 9;
     private const byte RejectSoftLinkShareChannel = 10;
     private const byte RejectSoftLinkIdle = 11;
+    private const byte RejectDataBuffersFull = 13;   // interp S-0028
     private const byte RejectOther = 15;
 
     // Transmission Mode values (S-0080, S-0152).
@@ -108,6 +136,10 @@ internal sealed class SisSublayer : ISisSublayer
     private readonly List<Held> _awaitingSoftLink = [];
     private readonly SortedDictionary<uint, SoftLink> _softLinks = new();
     private readonly SortedDictionary<int, Held> _outstanding = new();
+
+    // Flow control (P6-2; interp S-0163): every accepted client U_PDU the lower sublayers are not
+    // finished with, by handle, with its connection and U_PDU size.
+    private readonly SortedDictionary<int, (int Conn, int Bytes)> _unfinished = new();
 
     // Delivery confirmation (P6-1): the U_PDUs awaiting an answer for their client, by handle, and the
     // deadline list behind the one sis.confirm_wait timer (core-architecture.md 3.2, collapsing rule),
@@ -228,7 +260,7 @@ internal sealed class SisSublayer : ISisSublayer
     {
         if (_connections.Remove(conn, out Connection? c))
         {
-            Release(c);
+            Release(conn, c);
         }
     }
 
@@ -239,9 +271,11 @@ internal sealed class SisSublayer : ISisSublayer
             case CUnidataRequestConfirm c:
                 OnCasConfirm(c.Handle);
                 Settled(c.Handle);   // no longer outstanding on its soft link (A-0011)
+                Finished(c.Handle);
                 break;
             case CUnidataRequestRejected j:
                 OnRejected(j);
+                Finished(j.Handle);
                 break;
             case CUnidataIndication ind:
                 OnUnidataIndication(ind);
@@ -296,9 +330,9 @@ internal sealed class SisSublayer : ISisSublayer
         bool valid = result.Primitive switch
         {
             SisBindRequest b => OnBind(conn, c, b),
-            SisUnbindRequest => OnUnbind(c),
+            SisUnbindRequest => OnUnbind(conn, c),
             SisKeepAlive => OnKeepAlive(conn),
-            SisManagementMsgRequest => true,   // no published types yet: ignored, not invalid (S-0038)
+            SisManagementMsgRequest m => OnManagement(conn, m),
             SisUnidataRequest u => c.Sap is { } sap && OnUnidata(conn, c, sap, u),
             _ => false,                        // a framing error, or a node-to-client type (S-0077)
         };
@@ -320,7 +354,7 @@ internal sealed class SisSublayer : ISisSublayer
             Send(conn, new SisUnbindIndication(UnbindTooManyInvalid));
         }
 
-        Release(c);
+        Release(conn, c);
         _connections.Remove(conn);
         _context.Emit(new SisClose(conn));
         return false;
@@ -363,14 +397,14 @@ internal sealed class SisSublayer : ISisSublayer
     /// S_UNBIND_REQUEST releases the SAP for any other client (A-0037, A-0038) and sends nothing.
     /// From an unbound client it is invalid (S-0160).
     /// </summary>
-    private bool OnUnbind(Connection c)
+    private bool OnUnbind(int conn, Connection c)
     {
         if (c.Sap is null)
         {
             return false;
         }
 
-        Release(c);
+        Release(conn, c);
         return true;
     }
 
@@ -415,6 +449,18 @@ internal sealed class SisSublayer : ISisSublayer
             return true;
         }
 
+        if (c.FlowOff)
+        {
+            // S-0023, interp S-0028 and S-0163: sent after S_DATA_FLOW_OFF, so discarded; one that
+            // asked for confirmation is told so with reason 13. The checks above come first.
+            if (mode.Confirm != ConfirmNone)
+            {
+                Reject(conn, r, RejectDataBuffersFull);
+            }
+
+            return true;
+        }
+
         // TTL: 0 is the configured default maximum (A-0086, A-0089, A-0091); a field above 648000
         // is read as 648000 (S-0121). The TTD is fixed now and travels with the U_PDU (A-0089,
         // A-0090); every DATA S_PDU we send carries it (A-0168).
@@ -444,8 +490,133 @@ internal sealed class SisSublayer : ISisSublayer
             _pending.Add(request.Handle, new Pending(held, mode.Confirm == ConfirmClient));
         }
 
+        _unfinished.Add(request.Handle, (conn, r.UPdu.Length));
+        c.Unfinished += r.UPdu.Length;
         Submit(held);
+        if (!c.FlowOff && c.Unfinished >= FlowOffBytes)
+        {
+            c.FlowOff = true;   // interp S-0163
+            Send(conn, new SisDataFlowOff());
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// The lower sublayers are finished with a client U_PDU: confirmed or rejected by the CAS, or
+    /// dropped by the SIS while held for a soft link. Its bytes no longer count against its client,
+    /// and a client held off whose count is now at or below <see cref="FlowOnBytes"/> gets
+    /// S_DATA_FLOW_ON (S-0019, S-0021; interp S-0163). A handle that is not a client U_PDU, or whose
+    /// client has gone, is ignored.
+    /// </summary>
+    private void Finished(int handle)
+    {
+        if (!_unfinished.Remove(handle, out (int Conn, int Bytes) u) || !_connections.TryGetValue(u.Conn, out Connection? c))
+        {
+            return;
+        }
+
+        c.Unfinished -= u.Bytes;
+        if (c.FlowOff && c.Unfinished <= FlowOnBytes)
+        {
+            c.FlowOff = false;
+            Send(u.Conn, new SisDataFlowOn());
+        }
+    }
+
+    /// <summary>
+    /// S_MANAGEMENT_MSG_REQUEST, valid bound or not (S-0032, S-0038). MSG TYPE 2 is answered at once,
+    /// to the asking connection only, with S_MANAGEMENT_MSG_INDICATION MSG TYPE 2 (S-0034, S-0037;
+    /// interp S-0164); its MSG BODY is ignored. Any other MSG TYPE is ignored, with no reply.
+    /// </summary>
+    private bool OnManagement(int conn, SisManagementMsgRequest m)
+    {
+        if (m.MsgType == NodeInfoMsgType)
+        {
+            Send(conn, new SisManagementMsgIndication(NodeInfoMsgType, NodeInfoBody()));
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Our published node information (docs/management-messages.md; interp S-0164): this node's
+    /// address field (Fig S-19, SIZE 7), the transmit waveform number and interleaver, the peer count,
+    /// then one 13-byte record per peer in address order, at most <see cref="MaxNodeInfoPeers"/>. The
+    /// peers are those the receiver has a quality record for (C-0833) and those the SIS has a soft
+    /// link record for. A record: the address field; the soft link state (0 none, 1 being made or held
+    /// off, 2 established, 3 closing); the transmit waveform and interleaver to it; the waveform and
+    /// interleaver of the last burst heard from it (0xFF when never heard); that burst's SNR in tenths
+    /// of a dB, signed 16-bit big-endian (0x8000 when not given or never heard); and the whole seconds
+    /// since it, big-endian, saturating at 65534 (0xFFFF when never heard).
+    /// </summary>
+    private byte[] NodeInfoBody()
+    {
+        Speed speed = _context.Config.Drc.DefaultSpeed;   // the transmit speed to every peer until phase 7
+        var peers = new SortedSet<uint>(_context.RxQuality.Keys);
+        peers.UnionWith(_softLinks.Keys);
+        List<uint> listed = peers.Take(MaxNodeInfoPeers).ToList();
+        byte[] body = new byte[7 + (13 * listed.Count)];
+        new SisAddress(_context.Config.LocalAddress).Write(body.AsSpan(0, 4));
+        body[4] = (byte)speed.Wn;
+        body[5] = (byte)speed.Interleaver;
+        body[6] = (byte)listed.Count;
+        int at = 7;
+        foreach (uint peer in listed)
+        {
+            new SisAddress(peer).Write(body.AsSpan(at, 4));
+            body[at + 4] = !_softLinks.TryGetValue(peer, out SoftLink? link) ? (byte)0
+                : link.State != SoftLinkState.Established ? (byte)1
+                : link.Closing ? (byte)3 : (byte)2;
+            body[at + 5] = (byte)speed.Wn;
+            body[at + 6] = (byte)speed.Interleaver;
+            int snr = 0x8000;
+            int age = 0xFFFF;
+            if (_context.RxQuality.TryGetValue(peer, out RxQuality? q))
+            {
+                body[at + 7] = (byte)q.Wn;
+                body[at + 8] = (byte)q.Interleaver;
+                if (q.SnrTenthDb is int tenths)
+                {
+                    snr = Math.Clamp(tenths, -32767, 32767) & 0xFFFF;
+                }
+
+                age = (int)Math.Min((_context.Now - q.LastHeard) / 1000, 65534);
+            }
+            else
+            {
+                body[at + 7] = 0xFF;
+                body[at + 8] = 0xFF;
+            }
+
+            body[at + 9] = (byte)(snr >> 8);
+            body[at + 10] = (byte)snr;
+            body[at + 11] = (byte)(age >> 8);
+            body[at + 12] = (byte)age;
+            at += 13;
+        }
+
+        return body;
+    }
+
+    /// <summary>
+    /// Interp A-0059: the SIS service is terminating. In connection order, each bound client is sent
+    /// S_UNBIND_INDICATION reason 6 and each connection, bound or not, is closed. Nothing held for a
+    /// client is answered (A-0260); the host destroys the core next.
+    /// </summary>
+    public void OnShutdown()
+    {
+        foreach ((int conn, Connection c) in _connections.ToList())
+        {
+            if (c.Sap is not null)
+            {
+                Send(conn, new SisUnbindIndication(UnbindServiceTerminating));
+            }
+
+            Release(conn, c);
+            _connections.Remove(conn);
+            _context.Emit(new SisClose(conn));
+        }
     }
 
     /// <summary>
@@ -657,6 +828,7 @@ internal sealed class SisSublayer : ISisSublayer
         {
             _awaitingSoftLink.Remove(p.Held);
             Answer(p, RejectTtlExpired);
+            Finished(p.Held.Request.Handle);
         }
     }
 
@@ -1005,6 +1177,8 @@ internal sealed class SisSublayer : ISisSublayer
             {
                 Answer(p, reason == LinkReason.NoAnswer ? RejectNodeNotResponding : RejectOther);
             }
+
+            Finished(h.Request.Handle);
         }
 
         RetryHeldOff(peer);
@@ -1080,8 +1254,15 @@ internal sealed class SisSublayer : ISisSublayer
     /// completion or TTL expiry (A-0260, NOT STATED). The held ones are the ARQ requests waiting
     /// for a soft link; non-ARQ requests went to the CAS when they arrived.
     /// </summary>
-    private void Release(Connection c)
+    private void Release(int conn, Connection c)
     {
+        // Its flow control count goes with the binding: a new binding starts with flow on and nothing
+        // counted (interp S-0027, S-0163).
+        foreach (int handle in _unfinished.Where(kv => kv.Value.Conn == conn).Select(kv => kv.Key).ToList())
+        {
+            _unfinished.Remove(handle);
+        }
+
         if (c.Release(out byte sap))
         {
             _sapOwner.Remove(sap);
@@ -1172,6 +1353,12 @@ internal sealed class SisSublayer : ISisSublayer
 
         public int InvalidCount { get; set; }
 
+        /// <summary>The bytes of its accepted U_PDUs the lower sublayers are not finished with (interp S-0163).</summary>
+        public long Unfinished { get; set; }
+
+        /// <summary>S_DATA_FLOW_OFF has been sent and no S_DATA_FLOW_ON since (interp S-0163).</summary>
+        public bool FlowOff { get; set; }
+
         /// <summary>Clears the binding; true with the SAP it held, if it was bound.</summary>
         public bool Release(out byte sap)
         {
@@ -1179,6 +1366,8 @@ internal sealed class SisSublayer : ISisSublayer
             bool wasBound = Sap is not null;
             Sap = null;
             ServiceType = default;
+            Unfinished = 0;
+            FlowOff = false;
             return wasBound;
         }
     }

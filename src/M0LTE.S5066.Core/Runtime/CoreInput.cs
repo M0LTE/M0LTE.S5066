@@ -96,3 +96,10 @@ public sealed record SisBytes(long T, int Conn, ReadOnlyMemory<byte> Bytes) : Co
 /// <param name="T">Input time in ms.</param>
 /// <param name="Conn">Connection number.</param>
 public sealed record SisDisconnect(long T, int Conn) : CoreInput(T);
+
+/// <summary>
+/// The host is shutting the node down (interp A-0059). Not a T2 input kind: it reaches the core
+/// only through <see cref="Node.Shutdown(long)"/>, the last call before the host destroys the core
+/// (core-architecture.md 10 item 1, STOP).
+/// </summary>
+internal sealed record ShutdownInput(long T) : CoreInput(T);

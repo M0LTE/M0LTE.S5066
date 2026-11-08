@@ -129,6 +129,9 @@ internal sealed class Dispatcher
             case SisDisconnect d:
                 _sis.OnDisconnect(d.Conn);
                 break;
+            case ShutdownInput:
+                _sis.OnShutdown();
+                break;
             default:
                 throw new ArgumentException($"unknown input {input.GetType().Name}", nameof(input));
         }

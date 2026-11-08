@@ -32,6 +32,13 @@ internal sealed class CoreContext
 
     public IModemPort Modem { get; }
 
+    /// <summary>
+    /// The receive quality record per sender (C-0833), in address order: written only by the DTS
+    /// receiver, which attaches its own table here at construction, and read by the SIS for the node
+    /// information message (S-0038; interp S-0164). Like <see cref="Peers"/>, a shared read, never a call.
+    /// </summary>
+    public IReadOnlyDictionary<uint, RxQuality> RxQuality { get; internal set; } = new SortedDictionary<uint, RxQuality>();
+
     /// <summary>Set by the dispatcher: drains the FIFO on the MAC's request during AfterInput.</summary>
     internal Action? DrainHandler { get; set; }
 

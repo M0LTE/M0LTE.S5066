@@ -76,6 +76,7 @@ internal sealed class DtsReceiver
         _mac = mac;
         _toStateMachine = toStateMachine;
         _onHeader = onHeader;
+        context.RxQuality = _quality;   // read by the SIS for node information (interp S-0164)
     }
 
     /// <summary>Headers with a sync that failed a header check (bad CRC, impossible sizes), all bursts.</summary>

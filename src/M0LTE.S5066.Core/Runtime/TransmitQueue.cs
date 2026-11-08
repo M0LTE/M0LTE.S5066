@@ -119,7 +119,8 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly SortedDictionary<uint, ArqLink> _links = new();
     private readonly SortedSet<uint> _sentArqPeers = new();
     private readonly SortedSet<uint> _sentPeers = new();
-    private readonly List<int> _sentExpedited = [];
+    private readonly List<(int Handle, bool Expedited)> _sent = [];
+    private readonly List<int> _droppedNormal = [];
     private long _nextSeq;
 
     public TransmitQueue(CoreContext context, IMacObserver mac)
@@ -530,11 +531,18 @@ internal sealed class TransmitQueue : ITransmissionSource
 
     private static TimerName AckWaitTimer(uint peer) => TimerName.ForPeer(TimerKind.DtsAckWait, peer);
 
-    /// <summary>The handles of expedited requests whose last D_PDU went in the transmission now ending, in placement order (C-1100).</summary>
-    public List<int> TakeSentExpedited()
+    /// <summary>
+    /// The requests whose last D_PDU went in the transmission now ending, in placement order:
+    /// expedited (C-1100) and normal non-ARQ (interp C-1255). Then any normal non-ARQ request whose
+    /// owed copies were dropped by a build at this time (C-1052, interp C-1255), which ExpireDue has
+    /// not already reported.
+    /// </summary>
+    public List<(int Handle, bool Expedited)> TakeSent()
     {
-        var sent = new List<int>(_sentExpedited);
-        _sentExpedited.Clear();
+        var sent = new List<(int, bool)>(_sent);
+        sent.AddRange(_droppedNormal.Select(h => (h, false)));
+        _sent.Clear();
+        _droppedNormal.Clear();
         return sent;
     }
 
@@ -561,6 +569,15 @@ internal sealed class TransmitQueue : ITransmissionSource
             Shape();   // drops copies that can no longer be sent in time (C-0353, C-1052)
         }
 
+        // Interp C-1255: a normal non-ARQ request whose remaining copies were dropped is finished
+        // with (placed at least once, though a partly placed one never went whole), and is
+        // confirmed now, after any TTL rejections.
+        foreach (int handle in _droppedNormal)
+        {
+            _context.Enqueue(new DUnidataRequestConfirm(handle));
+        }
+
+        _droppedNormal.Clear();
         _mac.QueueState(Placeable());
         ReconcileTimer();
     }
@@ -613,10 +630,15 @@ internal sealed class TransmitQueue : ITransmissionSource
                 return (speed, capacity);
             }
 
-            // Dropped without a rejection: the TTL has not expired, and non-ARQ has no confirmation (C-1052).
+            // Dropped without a rejection: the TTL has not expired (C-1052). A normal request has been
+            // placed at least once, so the DTS is finished with it and will confirm it (interp C-1255).
             foreach (Entry e in late)
             {
                 _entries.Remove(e);
+                if (!e.Expedited && e.Request is { } r)
+                {
+                    _droppedNormal.Add(r.Handle);
+                }
             }
 
             if (!Placeable())
@@ -1253,9 +1275,10 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         foreach (Entry e in owners)
         {
-            if (e.Expedited && !e.HasUnplacedSegment && e.OwedRepeat() is null)
+            if (!e.HasUnplacedSegment && e.OwedRepeat() is null)
             {
-                _sentExpedited.Add(e.Handle);   // confirmed at transmit_done (C-1100)
+                // Confirmed at transmit_done: expedited (C-1100), and normal non-ARQ (interp C-1255).
+                _sent.Add(e.Expedited ? (e.Handle, true) : (e.Request!.Handle, false));
             }
         }
 
