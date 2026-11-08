@@ -309,3 +309,34 @@ public class DeterminismTests
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 }
+
+/// <summary>
+/// Runs <see cref="EowRederive"/> over a corpus when S5066_REDERIVE_P73 names its t2 directory
+/// (an authoring step of P7-3, run once by hand); does nothing otherwise.
+/// </summary>
+public class EowRederiveRun
+{
+    [Fact]
+    public void Rederive_when_asked()
+    {
+        string? dir = Environment.GetEnvironmentVariable("S5066_REDERIVE_P73");
+        if (string.IsNullOrEmpty(dir))
+        {
+            return;
+        }
+
+        var report = new StringBuilder();
+        foreach (string file in Directory.GetFiles(dir, "*.jsonl", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+        {
+            string[] lines = File.ReadAllLines(file);
+            (List<string> updated, int changed) = EowRederive.Apply(lines);
+            if (changed > 0)
+            {
+                File.WriteAllText(file, string.Join('\n', updated) + "\n");
+                report.AppendLine($"{Path.GetRelativePath(dir, file)}\t{changed}");
+            }
+        }
+
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "p73-rederive.tsv"), report.ToString());
+    }
+}

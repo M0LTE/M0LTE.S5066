@@ -114,7 +114,7 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly IdSpace _normalIds = new();
     private readonly IdSpace _expeditedIds = new();
     private readonly List<ControlItem> _control = [];
-    private readonly SortedDictionary<uint, int> _owedEow = new();
+    private readonly EowScheduler _eows;
     private readonly List<ArqCPdu> _arq = [];
     private readonly SortedDictionary<uint, ArqLink> _links = new();
     private readonly SortedSet<uint> _sentArqPeers = new();
@@ -127,7 +127,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     {
         _context = context;
         _mac = mac;
+        _eows = new EowScheduler(context.Peers);
     }
+
+    /// <summary>The EOW scheduler of this node's headers (P7-3).</summary>
+    internal EowScheduler Eows => _eows;
 
     /// <summary>The queued normal-delivery requests, in arrival order.</summary>
     internal IReadOnlyList<DUnidataRequest> PendingNonArq =>
@@ -159,10 +163,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// next D_PDU placed for that individual address, replacing EMPTY; a later one replaces an earlier
     /// one still unsent (C-1079).
     /// </summary>
-    public void OweEow(uint peer, int eow) => _owedEow[peer] = eow;
+    public void OweEow(uint peer, int eow) => _eows.Owe(peer, eow);
 
     /// <summary>For tests: the EOW owed to a peer and not yet sent (C-1079), or null.</summary>
-    internal int? OwedEowFor(uint peer) => _owedEow.TryGetValue(peer, out int eow) ? eow : null;
+    internal int? OwedEowFor(uint peer) => _eows.OwedFor(peer);
 
     /// <summary>
     /// A non-ARQ D_UNIDATA_REQUEST: queued for type 7 D_PDUs (C-0575, C-0595). In the
@@ -1157,6 +1161,20 @@ internal sealed class TransmitQueue : ITransmissionSource
         var ordered = chosen.Where(p => p is not AckPiece { Merged: true }).Select((p, i) => (p, i)).ToList();
         ordered.Sort((a, b) => a.p.Copy != b.p.Copy ? a.p.Copy.CompareTo(b.p.Copy) : a.i.CompareTo(b.i));
 
+        var dataPeers = new SortedSet<uint>();
+        foreach (Piece piece in chosen)
+        {
+            if (piece is ArqPiece arq)
+            {
+                dataPeers.Add(arq.Link.Peer);
+            }
+            else if (piece is DataPiece { Owner.DstIsGroup: false } data)
+            {
+                dataPeers.Add(data.Owner.Dst);
+            }
+        }
+
+        _eows.BeginTransmission(dataPeers);
         long chosenTotal = chosenControl.Sum(c => (long)c.Size) + ordered.Sum(x => (long)x.p.Size);
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         List<FillItem> fill = Fill(chosenControl, ordered.Select(x => x.p).ToList(), chosenTotal, shape.BytesPerBlock);
@@ -1363,9 +1381,11 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// copies of the acknowledgements of this transmission as ACK-ONLY D_PDUs, an acknowledgement
     /// merged into a DATA-ACK included, taken in turn in the order they stand in the transmission
     /// and stopping at the first copy that does not fit (C-0214, C-0240, C-0369, C-0882); then, when
-    /// every addressee of the transmission is an individual address recorded Ed4 by CAS-1 negotiation
-    /// (C-0367, C-0055, C-0560), as many PADDING D_PDUs as fit, addressed to the lowest addressee. The
-    /// rest is left to the modem's zero fill.
+    /// every addressee of the transmission is an individual address recorded Ed4, by CAS-1 negotiation
+    /// or, where CAS-1 has not spoken, by a received CAPABILITY (C-0367, interp C-0055, C-0560, interp
+    /// C-1154 as amended by P7-3), as many PADDING D_PDUs as fit, addressed to the lowest addressee,
+    /// each taking the next EOW of that peer's sequence (C-0373). The rest is left to the modem's
+    /// zero fill.
     /// </summary>
     private List<FillItem> Fill(List<ControlItem> control, List<Piece> laidOut, long chosenTotal, int bytesPerBlock)
     {
@@ -1456,8 +1476,9 @@ internal sealed class TransmitQueue : ITransmissionSource
         : new AckOnly(header, u.RxLwe, u.Encoding, u.Offset, new Octets(u.Data), null);
 
     /// <summary>
-    /// The EOW for the next D_PDU to an address: the one owed to that individual peer, used once, or
-    /// EMPTY (C-0398, C-1079). Group and broadcast destinations always get EMPTY.
+    /// The EOW for the next D_PDU to an address, from the EOW scheduler (P7-3; C-0426, C-1079,
+    /// interp C-1260): an owed UNRECOGNIZED-TYPE-ERROR first, CAPABILITY to a peer recorded Ed4,
+    /// EMPTY to any other peer and to group and broadcast destinations.
     /// </summary>
     private int TakeEow(uint dst, bool dstIsGroup)
     {
@@ -1466,12 +1487,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             _sentPeers.Add(dst);   // every placed D_PDU's header takes its EOW here (C-1250)
         }
 
-        if (dstIsGroup || !_owedEow.Remove(dst, out int eow))
-        {
-            return 0;
-        }
-
-        return eow;
+        return _eows.Next(dst, dstIsGroup);
     }
 
     /// <summary>
