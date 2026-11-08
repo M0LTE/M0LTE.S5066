@@ -5,6 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
     <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+    <ProjectReference Include="../../samples/HfChat/HfChat.csproj" />
   </ItemGroup>
 
 </Project>

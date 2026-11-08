@@ -1,0 +1,10 @@
+{
+  "local_address": "0.0.1.1",
+  "csma": { "mode": "jitter" },
+  "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
+  "cas": { "max_links": 4 },
+  "host": {
+    "sis_listen": "127.0.0.1:5066",
+    "modem": { "kind": "ms110d", "audio_listen": "0.0.0.0:7300", "audio_peer": "127.0.0.1:7301" }
+  }
+}
