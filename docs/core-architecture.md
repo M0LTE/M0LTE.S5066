@@ -216,9 +216,9 @@ Within one input, the core's own order is fixed by four rules, and they are the 
    |---|---|
    | `config` | replace `NodeConfig`; `OnConfigChanged` on SIS, CAS, DTS, MAC (none emits; section 7.3) |
    | `timer_expired` | the owning sublayer's `OnTimer(name)` |
-   | `burst_started` | DTS (new burst: reset the stream buffer and the per-burst EOT and heard-address records), then MAC (DCD true) |
+   | `burst_started` | DTS (new burst: reset the stream buffer and the per-burst EOT and heard-address records), then SIS (records that a burst is being received; no output), then MAC (DCD true) |
    | `bytes_received` | DTS |
-   | `burst_ended` | DTS (drop any partial D_PDU, record quality, then the clean close check, then the Annex J channel analysis judges the burst, P5-3), then MAC (DCD false) |
+   | `burst_ended` | DTS (drop any partial D_PDU, record quality, then the clean close check, then the Annex J channel analysis judges the burst, P5-3), then SIS (decides, in peer address order, each soft link idle wait that ran out during the burst, interp A-0320, issue #88), then MAC (DCD false) |
    | `transmit_done` | DTS (in-flight bookkeeping, section 5.7), then MAC (own transmission ended) |
    | `channel_busy` | MAC |
    | `sis_*` | SIS |

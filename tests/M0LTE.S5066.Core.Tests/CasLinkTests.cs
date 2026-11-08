@@ -380,6 +380,9 @@ public class CasLinkTests
             Take();
         }
 
+        /// <summary>Hands the node any input, such as a received burst's start or end.</summary>
+        public void Input(CoreInput input) => Run(input);
+
         public void Expire(TimerName name, long? at = null)
         {
             long t = at ?? Context.Timers.Deadline(name) ?? throw new InvalidOperationException("not running");
