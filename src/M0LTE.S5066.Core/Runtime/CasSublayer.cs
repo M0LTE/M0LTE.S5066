@@ -198,7 +198,8 @@ internal sealed class CasSublayer : ICasSublayer
             case DWarningTransmitted:
                 break;   // nothing in the CAS depends on WARNINGs we send
             case DUnidataRequestConfirm c:
-                // The DTS delivered an ARQ C_PDU (C-0679): the request is confirmed upward, handle
+                // The DTS delivered an ARQ C_PDU (C-0679), or is finished with a non-ARQ one (interp
+                // C-1255, which the SIS uses only for flow control): the request is confirmed upward, handle
                 // unchanged (B-0018), unless it is our own PHYSICAL LINK BREAK REQUEST (B-0312).
                 _arqHandles.Remove(c.Handle);
                 if (!_ownHandles.Remove(c.Handle))

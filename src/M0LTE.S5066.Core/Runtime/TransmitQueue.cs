@@ -570,7 +570,8 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         // Interp C-1255: a normal non-ARQ request whose remaining copies were dropped is finished
-        // with, having been sent at least once, and is confirmed now, after any TTL rejections.
+        // with (placed at least once, though a partly placed one never went whole), and is
+        // confirmed now, after any TTL rejections.
         foreach (int handle in _droppedNormal)
         {
             _context.Enqueue(new DUnidataRequestConfirm(handle));
@@ -630,7 +631,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
 
             // Dropped without a rejection: the TTL has not expired (C-1052). A normal request has been
-            // sent at least once, so it is finished with and will be confirmed (interp C-1255).
+            // placed at least once, so the DTS is finished with it and will confirm it (interp C-1255).
             foreach (Entry e in late)
             {
                 _entries.Remove(e);
