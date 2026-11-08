@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using M0LTE.S5066.Core.Dts;
+using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Core.Tests.T2;
 
 namespace M0LTE.S5066.Core.Tests;
@@ -194,9 +195,56 @@ public class CorpusHarnessTests
             case "spdu":
                 return CpduSpduCorpus.Run(line, kind);
 
+            case "drc_smooth":
+            case "drc_ed3_basic_rate":
+                if (dir != "encode")
+                {
+                    return CorpusResults.Unsupported($"dir '{dir}' for kind '{kind}'");
+                }
+
+                if (UnknownKey(root, T1Keys) is { } rkey)
+                {
+                    return CorpusResults.Unsupported($"unknown key '{rkey}'");
+                }
+
+                Convert.ToHexStringLower(RunDrc(kind, root.GetProperty("value"))).Should().Be(root.GetProperty("bytes").GetString(), $"{line.Where}, bytes");
+                return null;
+
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
         }
+    }
+
+    /// <summary>
+    /// The P7-6 kinds (corpus-format.md 3.2): <c>drc_smooth</c> gives the smoothed estimate after each
+    /// sample, 16-bit two's complement big-endian, 8000 while empty; <c>drc_ed3_basic_rate</c> gives
+    /// the 2-byte ED3-BASIC-RATE EOW for a rung.
+    /// </summary>
+    private static byte[] RunDrc(string kind, JsonElement value)
+    {
+        if (kind == "drc_ed3_basic_rate")
+        {
+            var rung = new Speed(value.GetProperty("wn").GetInt32(), InterleaverNames.Parse(value.GetProperty("interleaver").GetString()!));
+            int eow = EowCodec.Encode(Recommender.Ed3BasicRate(rung));
+            return [(byte)(eow >> 8), (byte)eow];
+        }
+
+        int weight = value.GetProperty("weight").GetInt32();
+        var output = new List<byte>();
+        int? s = null;
+        foreach (JsonElement x in value.GetProperty("samples").EnumerateArray())
+        {
+            if (x.ValueKind != JsonValueKind.Null)
+            {
+                s = Recommender.Smooth(s, x.GetInt32(), weight);
+            }
+
+            ushort v = s is int k ? unchecked((ushort)(short)k) : (ushort)0x8000;
+            output.Add((byte)(v >> 8));
+            output.Add((byte)v);
+        }
+
+        return [.. output];
     }
 
     private static string? RunCodec(CorpusLine line, string kind, string dir)
