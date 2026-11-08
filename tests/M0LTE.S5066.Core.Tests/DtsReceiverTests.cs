@@ -199,6 +199,33 @@ public class DtsReceiverTests
     }
 
     [Fact]
+    public void With_the_block_duration_the_eot_counts_from_the_start_of_the_dpdus_block()
+    {
+        // Interp C-1289: the block holding the D_PDU's first byte arrived at 6000 and lasts 4800 ms,
+        // so it began on air no later than 1200; D_PDU A at offset 0 ends by 1200 + 10000 = 11200.
+        // D_PDU B at offset n/2 of the block counts from 1200 + 2400 = 3600, end 3600 + 8000 = 11600.
+        // The burst's estimate is the earliest (C-0843); without block_ms it would be 6000 + 8000.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000, 4800));
+        rig.Queue(1500);
+        byte[] a = T7(Peer, Other, 20, id: 1);
+        rig.Handle(new BytesReceived(6000, Cat(a, T7(Peer, Other, 16, id: 2)))).Should().BeEmpty();
+        rig.Handle(EndEom with { T = 7000 }).Should().Equal(new TimerStart(Vdcd, 4200));
+        rig.Mac.PredictedEndTime.Should().Be(11200);
+    }
+
+    [Fact]
+    public void Without_the_block_duration_the_eot_counts_from_the_header_arrival()
+    {
+        // C-1024: no block_ms, so t_rx anchors; 6000 + 8000 is the earliest.
+        var rig = new NodeRig(CsmaMode.Jitter);
+        rig.Handle(new BurstStarted(1000));
+        rig.Queue(1500);
+        rig.Handle(new BytesReceived(6000, Cat(T7(Peer, Other, 20, id: 1), T7(Peer, Other, 16, id: 2)))).Should().BeEmpty();
+        rig.Handle(EndEom with { T = 7000 }).Should().Equal(new TimerStart(Vdcd, 7000));
+    }
+
+    [Fact]
     public void A_new_burst_cancels_vdcd_end_and_the_earlier_prediction_still_binds()
     {
         // C-0844, C-1024: the old end time is carried; the later of the two is used. K-0111: the

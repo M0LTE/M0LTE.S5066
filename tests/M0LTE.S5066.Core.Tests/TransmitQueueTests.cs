@@ -72,6 +72,39 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void The_eom_counts_against_the_length_limit()
+    {
+        // Interp C-1290: one 64-byte block within the limit, 4 bytes of it the EOM, so it carries 60.
+        // 8-byte segments make 32-byte D_PDUs; two would fill the block and push the EOM into a
+        // second block, over dts.max_transmission_ms. Every transmission stays within the limit.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, blockBytes: 64, maxSegment: 8, eomBytes: 4);
+        q.Tx.Add(Normal(X, 0, new byte[64]) with { Ttd = long.MaxValue });
+        int transmissions = 0;
+        while (q.Observer.Log.Last(l => l.StartsWith("QueueState", StringComparison.Ordinal)) == "QueueState:True")
+        {
+            Transmit t = q.Tx.Build();
+            t.Bytes.Length.Should().BeLessThanOrEqualTo(60);
+            q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).DurationMs.Should().BeLessThanOrEqualTo(720 + 4800);
+            q.Context.Now += 720 + 4800;
+            transmissions++;
+        }
+
+        transmissions.Should().BeGreaterThan(1);
+    }
+
+    [Fact]
+    public void A_dpdu_too_long_for_the_limit_takes_the_blocks_it_needs_with_the_eom()
+    {
+        // Interp C-1042, C-1290: a 40-byte D_PDU (16-byte segment) does not fit the 36 bytes one block
+        // carries after the EOM, so it goes alone in ceil((40 + 4) / 40) = 2 blocks.
+        var q = new Rig(maxTransmissionMs: 720 + 4800, blockBytes: 40, eomBytes: 4);
+        q.Tx.Add(Normal(X, 0, new byte[16]));
+        Transmit t = q.Tx.Build();
+        t.Bytes.Length.Should().Be(40);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).Blocks.Should().Be(2);
+    }
+
+    [Fact]
     public void C_pdu_ids_wrap_modulo_4096()
     {
         // C-0326, C-0329. Each build is a minute after the last, so every earlier window has ended (C-0327).
@@ -455,11 +488,11 @@ public class TransmitQueueTests
 
     private sealed class Rig
     {
-        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800, int maxSegment = 1023)
+        public Rig(int maxTransmissionMs = 127500, int blockBytes = 96, int blockMs = 4800, int maxSegment = 1023, int eomBytes = 0)
         {
             NodeConfig config = TestConfig.Basic(CsmaMode.Jitter) with
             {
-                Modem = new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, blockBytes, blockMs)]),
+                Modem = new ModemFixture(720, 0, [new ModemWaveform(2, Interleaver.Long, blockBytes, blockMs)], eomBytes),
                 Dts = new DtsConfig(maxSegment, maxTransmissionMs),
             };
             Context = new CoreContext(config, new FixtureModem(config.Modem));
