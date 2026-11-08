@@ -85,7 +85,7 @@ public sealed class Ms110dHostModem : IHostModem
     /// receiver's anchor for an EOT is never early (interp C-1289), or null for a lock the planner
     /// cannot describe.
     /// </summary>
-    internal static int? ReceivedBlockMs(Ms110dLockInfo l)
+    public static int? ReceivedBlockMs(Ms110dLockInfo l)
     {
         try
         {
