@@ -20,8 +20,8 @@ public class TwoNodeAudioTests
     [Fact]
     public async Task Two_nodes_over_audio_exchange_chat_both_ways_and_a_confirmed_file()
     {
-        // About 1 to 2 minutes: two confirmed chat lines (link set-up included) and a 500-byte file
-        // with client delivery confirmation and the receiver's hash verdict.
+        // About 25 s: two confirmed chat lines (link set-up included) and a 500-byte file with client
+        // delivery confirmation and the receiver's hash verdict.
         JsonElement result = await RunAsync("""
             [
               { "do": "chat", "node": "a", "to": "0.0.1.2", "text": "hello from 0.0.1.1" },
@@ -48,7 +48,7 @@ public class TwoNodeAudioTests
     public async Task Long_two_nodes_over_audio_files_both_ways_and_perf_with_echo()
     {
         // Several minutes; run locally with S5066_LONG_TESTS=1. As of 2026-11-08 it fails: a 10 kB file
-        // (five U_PDUs near the MTU) stalls and its last U_PDUs are rejected with reason 3 (docs/status.md log, P6-4).
+        // (five U_PDUs near the MTU) stalls and its last U_PDUs are rejected with reason 3 (issue #86).
         Assert.SkipUnless(Environment.GetEnvironmentVariable("S5066_LONG_TESTS") == "1", "long T4 test: set S5066_LONG_TESTS=1 to run");
         JsonElement result = await RunAsync("""
             [
@@ -67,7 +67,7 @@ public class TwoNodeAudioTests
     private async Task<JsonElement> RunAsync(string steps, TimeSpan timeout)
     {
         string dir = Directory.CreateTempSubdirectory("s5066-t4-").FullName;
-        int sisA = FreeTcpPort(), sisB = FreeTcpPort(), audioA = FreeUdpPort(), audioB = FreeUdpPort();
+        (int sisA, int sisB, int audioA, int audioB) = FreePorts();
         string configA = WriteConfig(dir, "bench-node1.json", sisA, audioA, audioB);
         string configB = WriteConfig(dir, "bench-node2.json", sisB, audioB, audioA);
         string scenario = Path.Combine(dir, "scenario.json");
@@ -76,23 +76,37 @@ public class TwoNodeAudioTests
             """);
 
         var log = new StringBuilder();
-        using Process a = Start("s5066d.dll", configA, "a", log);
-        using Process b = Start("s5066d.dll", configB, "b", log);
+        var processes = new List<Process>();
         try
         {
-            await WaitForListenAsync(sisA);
-            await WaitForListenAsync(sisB);
+            processes.Add(Start("s5066d.dll", configA, "a", log));
+            processes.Add(Start("s5066d.dll", configB, "b", log));
+            await WaitForListenAsync(sisA, processes[0]);
+            await WaitForListenAsync(sisB, processes[1]);
             string json = Path.Combine(dir, "result.json");
-            using Process run = Start("s5066-test.dll", $"run \"{scenario}\" --json \"{json}\"", "test", log);
+            Process run = Start("s5066-test.dll", $"run \"{scenario}\" --json \"{json}\"", "test", log);
+            processes.Add(run);
             using var cts = new CancellationTokenSource(timeout);
-            await run.WaitForExitAsync(cts.Token);
+            try
+            {
+                await run.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException($"s5066-test did not finish within {timeout}");
+            }
+
+            File.Exists(json).Should().BeTrue($"s5066-test writes its result (exit code {run.ExitCode})");
             string text = await File.ReadAllTextAsync(json);
             _output.WriteLine(text);
-            return JsonDocument.Parse(text).RootElement.Clone();
+            JsonElement result = JsonDocument.Parse(text).RootElement.Clone();
+            run.ExitCode.Should().Be(result.GetProperty("pass").GetBoolean() ? 0 : 1, "the exit code agrees with the JSON result");
+            return result;
         }
         finally
         {
-            foreach (Process p in new[] { a, b })
+            // Every process this test started goes, whatever happened, so no s5066d is left behind.
+            foreach (Process p in processes)
             {
                 try
                 {
@@ -103,6 +117,8 @@ public class TwoNodeAudioTests
                 {
                     // Already gone.
                 }
+
+                p.Dispose();
             }
 
             lock (log)
@@ -155,7 +171,7 @@ public class TwoNodeAudioTests
         return p;
     }
 
-    private static async Task WaitForListenAsync(int port)
+    private static async Task WaitForListenAsync(int port, Process node)
     {
         var sw = Stopwatch.StartNew();
         while (true)
@@ -166,23 +182,26 @@ public class TwoNodeAudioTests
                 await c.ConnectAsync(IPAddress.Loopback, port);
                 return;
             }
-            catch (SocketException) when (sw.Elapsed < TimeSpan.FromSeconds(30))
+            catch (SocketException) when (sw.Elapsed < TimeSpan.FromSeconds(30) && !node.HasExited)
             {
                 await Task.Delay(200);
             }
         }
     }
 
-    private static int FreeTcpPort()
+    /// <summary>Two TCP and two UDP ports, all held open until all four are chosen, so none repeats.</summary>
+    private static (int SisA, int SisB, int AudioA, int AudioB) FreePorts()
     {
-        using var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        return ((IPEndPoint)l.LocalEndpoint).Port;
-    }
-
-    private static int FreeUdpPort()
-    {
-        using var u = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
-        return ((IPEndPoint)u.Client.LocalEndPoint!).Port;
+        using var ta = new TcpListener(IPAddress.Loopback, 0);
+        using var tb = new TcpListener(IPAddress.Loopback, 0);
+        ta.Start();
+        tb.Start();
+        using var ua = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        using var ub = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        int Port(EndPoint e) => ((IPEndPoint)e).Port;
+        (int, int, int, int) ports = (Port(ta.LocalEndpoint), Port(tb.LocalEndpoint), Port(ua.Client.LocalEndPoint!), Port(ub.Client.LocalEndPoint!));
+        ta.Stop();
+        tb.Stop();
+        return ports;
     }
 }

@@ -35,7 +35,7 @@ A plain line-mode screen that works over ssh. Type a line to send it as chat. Co
 | `/info` | the node's speed, interleaver and SNR per peer |
 | `/help`, `/quit` | |
 
-Received chat, files and problems show as they happen.
+It starts addressed to all (broadcast), so chat goes non-ARQ until you pick a node with `/to`. Received chat, files and problems show as they happen.
 
 ## Headless mode
 
@@ -49,7 +49,7 @@ s5066-test info --node 127.0.0.1:5066
 s5066-test serve --node 127.0.0.1:5067 --save-dir received
 ```
 
-Other options: `--sap` (the data SAP, default 13), `--priority`, `--ttl` (in 2 s units, 0 for the node's default), `--window` (U_PDUs waiting for an answer at once, default 8), `--mode arq|nonarq`, `--repeats` (non-ARQ), `--no-verdict` (do not wait for the far end's hash), `--timeout` seconds, `--json file` (write the result there instead of stdout).
+Other options: `--sap` (the data SAP, default 13), `--priority`, `--ttl` (in 2 s units, 0 for the node's default), `--window` (U_PDUs waiting for an answer at once, default 8), `--mode arq|nonarq`, `--repeats` (non-ARQ), `--segment-bytes` (data bytes per file U_PDU, default the MTU less 9), `--no-verdict` (do not wait for the far end's hash), `--timeout` seconds, `--json file` (write the result there instead of stdout).
 
 ### Scenarios
 
@@ -79,6 +79,8 @@ The result lists every step with `pass`, `elapsed_ms`, an `error` if it failed, 
 - file: every U_PDU confirmed, none rejected, and the far end's SHA-256 matches;
 - perf: every message sent, every one confirmed when confirmation was asked for, every one echoed with `echo`;
 - expect steps: the line or file arrived before the timeout, and a file's hash matched.
+
+Without confirmation the sender cannot see delivery. A file with `confirm` `none` still waits for the far end's hash, so it proves delivery; with `--no-verdict` as well it passes once the node has taken every U_PDU. Perf with `none` and no `echo` passes once the node has taken every message, and its goodput is then only the rate the node accepted them. Use `echo` or a confirmation to measure the link.
 
 ## On the air
 

@@ -93,4 +93,21 @@ public class TestClientUnitTests
         s.Steps.Should().ContainSingle();
         (s.Steps[0].Count, s.Steps[0].TimeoutS, s.Steps[0].SegmentBytes).Should().Be((3, 5.0, 100));
     }
+
+    [Fact]
+    public async Task A_node_that_cannot_be_reached_is_a_failed_result_not_a_crash()
+    {
+        int port;
+        using (var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+        {
+            l.Start();
+            port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
+        }
+
+        var scenario = new Scenario { Nodes = new() { ["a"] = $"127.0.0.1:{port}" }, Steps = [new ScenarioStep { Do = "info", Node = "a" }] };
+        ScenarioResult r = await ScenarioRunner.RunAsync(scenario, Path.GetTempPath());
+        r.Pass.Should().BeFalse();
+        r.Error.Should().NotBeNullOrEmpty();
+        r.Steps.Should().BeEmpty();
+    }
 }

@@ -128,6 +128,11 @@ internal static class Activities
 
         long t0 = Stopwatch.GetTimestamp();
         uint id = (uint)RandomNumberGenerator.GetInt32(int.MaxValue);
+        if (o.SegmentBytes is < 1)
+        {
+            throw new ArgumentException("segment bytes must be at least 1");
+        }
+
         int segBytes = Math.Min(o.SegmentBytes ?? int.MaxValue, s.DataMtu - Wire.PrefixBytes);
         int segments = (data.Length + segBytes - 1) / segBytes;
         byte[] hash = SHA256.HashData(data);
@@ -151,7 +156,9 @@ internal static class Activities
         return new FileSendResult(Addresses.Show(to), name, data.Length, segments, ConfirmName(o.Confirm), Convert.ToHexStringLower(hash),
             outs.Sent, outs.Confirmed, outs.Rejected, outs.Errors, Math.Round(deliveredMs, 1),
             allDelivered && deliveredMs > 0 ? Math.Round(data.Length * 1000.0 / deliveredMs, 1) : null,
-            verdict?.Match, verdict?.Sha256, Math.Round(Ms(t0), 1));
+            // The receiver's flag and its hash must both agree with ours.
+            verdict is null ? null : verdict.Match && verdict.Sha256 == Convert.ToHexStringLower(hash) && verdict.Received == data.Length,
+            verdict?.Sha256, Math.Round(Ms(t0), 1));
     }
 
     /// <summary>

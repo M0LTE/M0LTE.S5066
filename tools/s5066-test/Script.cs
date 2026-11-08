@@ -151,9 +151,14 @@ internal static class ScenarioRunner
 
             return new ScenarioResult(pass, Math.Round(Stopwatch.GetElapsedTime(t0).TotalMilliseconds, 1), results, null);
         }
-        catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or SisBindRejectedException or FormatException or OperationCanceledException)
+        catch (Exception e)
         {
-            return new ScenarioResult(false, Math.Round(Stopwatch.GetElapsedTime(t0).TotalMilliseconds, 1), results, e.Message);
+            // Anything unexpected still ends in a result that says fail, so a script never has to read
+            // a crash; the steps that ran are kept.
+            string error = e is IOException or System.Net.Sockets.SocketException or SisBindRejectedException or FormatException or OperationCanceledException
+                ? e.Message
+                : $"{e.GetType().Name}: {e.Message}";
+            return new ScenarioResult(false, Math.Round(Stopwatch.GetElapsedTime(t0).TotalMilliseconds, 1), results, error);
         }
         finally
         {
