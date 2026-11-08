@@ -29,7 +29,7 @@ if (config.Modem is not { AudioListen: { } listen, AudioPeer: { } peer })
 }
 
 using var audio = new UdpAudioChannel(listen, peer);
-await using var host = new NodeHost(config.Node, config.PrngSeed, new Ms110dHostModem(audio),
+await using var host = new NodeHost(config.Node, config.PrngSeed, new Ms110dHostModem(audio, log: line => Console.WriteLine(line)),
     new NodeHostOptions { SisEndpoint = config.SisEndpoint, Log = line => Console.WriteLine(line) });
 host.Start();
 Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, MS110D over UDP audio {listen} -> {peer}");

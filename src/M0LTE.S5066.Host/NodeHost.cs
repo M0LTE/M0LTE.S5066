@@ -23,6 +23,12 @@ public sealed record NodeHostOptions
     /// tests shorten it.
     /// </summary>
     internal TimeSpan SisWriteBound { get; init; } = SisServer.DefaultWriteBound;
+
+    /// <summary>
+    /// The interp S-0029 byte bound. Fixed in production at <see cref="SisServer.DefaultQueueByteBound"/>;
+    /// tests lower it.
+    /// </summary>
+    internal long SisQueueByteBound { get; init; } = SisServer.DefaultQueueByteBound;
 }
 
 /// <summary>
@@ -109,7 +115,7 @@ public sealed class NodeHost : IAsyncDisposable
 
         if (_options.SisEndpoint is { } ep)
         {
-            _server = new SisServer(ep, new SisEvents(this), _options.SisWriteBound, _options.Log);
+            _server = new SisServer(ep, new SisEvents(this), _options.SisWriteBound, _options.SisQueueByteBound, _options.Log);
             _server.Start();
             _options.Log?.Invoke($"SIS listening on {_server.LocalEndpoint}");
         }
@@ -132,8 +138,8 @@ public sealed class NodeHost : IAsyncDisposable
 
     /// <summary>
     /// Shuts the node down: every bound client is sent S_UNBIND_INDICATION reason 6 and closed
-    /// (interp A-0059), what is queued to clients is flushed within the S-0029 bound, then the
-    /// server and loop stop.
+    /// (interp A-0059), a client that never bound is closed too, what is queued to clients is
+    /// flushed within the S-0029 bound, then the server and loop stop.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -150,6 +156,9 @@ public sealed class NodeHost : IAsyncDisposable
             await Task.WhenAny(done.Task, _loop).ConfigureAwait(false);
             if (_server is not null)
             {
+                // The core closes only the connections it has bound; close the rest, so the drain
+                // waits only for real output and not for a client that never bound (issue #80).
+                _server.CloseAll();
                 await _server.DrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
         }

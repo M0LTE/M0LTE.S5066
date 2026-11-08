@@ -20,7 +20,8 @@ internal interface ISisServerEvents
 /// The Annex S TCP server of one node (core-architecture.md 12.7). It carries bytes only: framing,
 /// binding and every SIS rule are the core's. It accepts every connection (S-0010; interp S-0015),
 /// numbers them from 1 without reuse, and closes a connection whose oldest unwritten output has
-/// waited <see cref="WriteBound"/> (S-0026; interp S-0029).
+/// waited <see cref="WriteBound"/>, or whose unwritten output exceeds <see cref="QueueByteBound"/>
+/// (S-0026; interp S-0029).
 /// </summary>
 internal sealed class SisServer : IAsyncDisposable
 {
@@ -29,6 +30,17 @@ internal sealed class SisServer : IAsyncDisposable
     /// Not a setting (plan 3.2 principle 5).
     /// </summary>
     public static readonly TimeSpan DefaultWriteBound = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The fixed byte bound of interp S-0029: 1 MiB, sixteen of the largest frames the 16-bit size
+    /// field allows (S-0166). A client that reads never comes near it; one that floods the node with
+    /// requests and never reads the answers is closed here, long before the time bound, so it cannot
+    /// make the node hold hundreds of MB (issue #80). Not a setting (plan 3.2 principle 5).
+    /// </summary>
+    public const int DefaultQueueByteBound = 1024 * 1024;
+
+    /// <summary>How long the accept loop waits after an unexpected accept failure before it tries again.</summary>
+    internal static readonly TimeSpan AcceptRetryDelay = TimeSpan.FromSeconds(1);
 
     private readonly TcpListener _listener;
     private readonly ISisServerEvents _events;
@@ -39,15 +51,31 @@ internal sealed class SisServer : IAsyncDisposable
     private int _lastConn;
 
     public SisServer(IPEndPoint endpoint, ISisServerEvents events, TimeSpan writeBound, Action<string>? log)
+        : this(endpoint, events, writeBound, DefaultQueueByteBound, log)
+    {
+    }
+
+    public SisServer(IPEndPoint endpoint, ISisServerEvents events, TimeSpan writeBound, long queueByteBound, Action<string>? log)
     {
         _listener = new TcpListener(endpoint);
         _events = events;
         WriteBound = writeBound;
+        QueueByteBound = queueByteBound;
         _log = log;
+        Accept = (listener, ct) => listener.AcceptSocketAsync(ct);
     }
 
     /// <summary>How long the oldest unwritten output to a client may wait before the client is closed.</summary>
     public TimeSpan WriteBound { get; }
+
+    /// <summary>How many bytes may wait unwritten to a client before the client is closed.</summary>
+    public long QueueByteBound { get; }
+
+    /// <summary>Accepts the next socket. Tests replace it to make accept fail.</summary>
+    internal Func<TcpListener, CancellationToken, ValueTask<Socket>> Accept { get; set; }
+
+    /// <summary>How long the accept loop waits after an unexpected failure. Tests shorten it.</summary>
+    internal TimeSpan AcceptRetry { get; set; } = AcceptRetryDelay;
 
     /// <summary>The endpoint actually bound, once started (port 0 picks a free port).</summary>
     public IPEndPoint LocalEndpoint => (IPEndPoint)_listener.LocalEndpoint;
@@ -71,6 +99,18 @@ internal sealed class SisServer : IAsyncDisposable
     public void Close(int conn)
     {
         if (_connections.TryGetValue(conn, out Connection? c))
+        {
+            c.CloseAfterFlush();
+        }
+    }
+
+    /// <summary>
+    /// Closes every connection after flushing what is queued to it, within the bounds (shutdown,
+    /// after the core has unbound its clients; a client that never bound is closed the same way).
+    /// </summary>
+    public void CloseAll()
+    {
+        foreach (Connection c in _connections.Values)
         {
             c.CloseAfterFlush();
         }
@@ -108,19 +148,26 @@ internal sealed class SisServer : IAsyncDisposable
             Socket socket;
             try
             {
-                socket = await _listener.AcceptSocketAsync(_stop.Token).ConfigureAwait(false);
+                socket = await Accept(_listener, _stop.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception) when (_stop.IsCancellationRequested)
             {
                 return;
             }
-            catch (SocketException) when (_stop.IsCancellationRequested)
+            catch (Exception e)
             {
-                return;
-            }
-            catch (ObjectDisposedException)
-            {
-                return;
+                // For example EMFILE: say so once per failure and keep accepting (issue #80).
+                _log?.Invoke($"SIS accept failed: {e.Message}; retrying in {AcceptRetry.TotalSeconds:0.#} s");
+                try
+                {
+                    await Task.Delay(AcceptRetry, _stop.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                continue;
             }
 
             socket.NoDelay = true;
@@ -146,6 +193,7 @@ internal sealed class SisServer : IAsyncDisposable
             Channel.CreateUnbounded<(ReadOnlyMemory<byte>, long)>(new UnboundedChannelOptions { SingleReader = true });
         private readonly CancellationTokenSource _abort = new();
         private readonly TaskCompletionSource _finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private long _queuedBytes;
         private int _finishedFlag;
 
         public Connection(SisServer server, int id, Socket socket)
@@ -159,7 +207,21 @@ internal sealed class SisServer : IAsyncDisposable
 
         public Task Finished => _finished.Task;
 
-        public void Enqueue(ReadOnlyMemory<byte> bytes) => _out.Writer.TryWrite((bytes, Stopwatch.GetTimestamp()));
+        public void Enqueue(ReadOnlyMemory<byte> bytes)
+        {
+            if (Interlocked.Add(ref _queuedBytes, bytes.Length) > _server.QueueByteBound)
+            {
+                if (!_abort.IsCancellationRequested)
+                {
+                    _server._log?.Invoke($"SIS conn {Id}: over {_server.QueueByteBound} bytes waiting for a client not reading, closing (S-0029)");
+                }
+
+                Abort();
+                return;
+            }
+
+            _out.Writer.TryWrite((bytes, Stopwatch.GetTimestamp()));
+        }
 
         public void CloseAfterFlush() => _out.Writer.TryComplete();
 
@@ -220,6 +282,8 @@ internal sealed class SisServer : IAsyncDisposable
                     {
                         sent += await _socket.SendAsync(bytes[sent..], SocketFlags.None, deadline.Token).ConfigureAwait(false);
                     }
+
+                    Interlocked.Add(ref _queuedBytes, -bytes.Length);
                 }
             }
             catch (OperationCanceledException) when (!_abort.IsCancellationRequested)
