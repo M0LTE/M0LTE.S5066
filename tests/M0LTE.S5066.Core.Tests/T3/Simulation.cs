@@ -422,7 +422,7 @@ internal sealed class Simulation
             }
 
             r.Rx = rx;
-            Modem(r, new BurstStarted(rx.StartedInputT));
+            Modem(r, new BurstStarted(rx.StartedInputT, plan.BlockMs));   // the block duration, so the receiver anchors EOTs by block (interp C-1289)
             for (int k = 0; k < plan.Blocks; k++)
             {
                 int block = k;

@@ -61,10 +61,10 @@ internal sealed class DtsSublayer : IDtsSublayer
         }
     }
 
-    public void OnBurstStarted()
+    public void OnBurstStarted(int? blockMs)
     {
         _peers.OnBurstStarted();   // a new transmission from some node (C-1231)
-        _receiver.OnBurstStarted();
+        _receiver.OnBurstStarted(blockMs);
         _analysis.OnBurstStarted();
     }
 

@@ -442,7 +442,7 @@ public sealed class NodeHost : IAsyncDisposable
 
     private sealed class ModemEvents(NodeHost host) : IModemEvents
     {
-        public void BurstStarted() => host.Post(InputClass.Modem, t => new Core.Runtime.BurstStarted(t));
+        public void BurstStarted(int? blockMs) => host.Post(InputClass.Modem, t => new Core.Runtime.BurstStarted(t, blockMs));
 
         public void BytesReceived(ReadOnlyMemory<byte> bytes) => host.Post(InputClass.Modem, t => new Core.Runtime.BytesReceived(t, bytes));
 

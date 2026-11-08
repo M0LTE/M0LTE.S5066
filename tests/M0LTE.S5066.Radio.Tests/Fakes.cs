@@ -196,7 +196,7 @@ internal sealed class RecordingEvents : IModemEvents
 
     public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public void BurstStarted() => Events.Enqueue("started");
+    public void BurstStarted(int? blockMs) => Events.Enqueue("started");
 
     public void BytesReceived(ReadOnlyMemory<byte> bytes)
     {

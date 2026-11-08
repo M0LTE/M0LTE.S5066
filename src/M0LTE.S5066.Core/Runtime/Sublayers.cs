@@ -43,7 +43,8 @@ internal interface ICasSublayer : ISublayer
 /// <summary>The Data Transfer Sublayer (Annex C) and the receive side of the modem.</summary>
 internal interface IDtsSublayer : ISublayer
 {
-    void OnBurstStarted();
+    /// <summary>A burst started; <paramref name="blockMs"/> is its block duration from the modem, or null (interp C-1289).</summary>
+    void OnBurstStarted(int? blockMs);
 
     void OnBytesReceived(ReadOnlyMemory<byte> bytes);
 

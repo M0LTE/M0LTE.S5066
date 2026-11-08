@@ -20,8 +20,9 @@ public static class FixturePlanner
             ?? throw new ArgumentException($"no modem.waveforms entry for wn {wn} interleaver {InterleaverNames.ToName(interleaver)}");
         int preamble = fixture.PreambleMs ?? throw new ArgumentException("modem.preamble_ms is not set");
         int flush = fixture.FlushMs ?? throw new ArgumentException("modem.flush_ms is not set");
-        int blocks = byteCount == 0 ? 1 : (byteCount + entry.BlockBytes - 1) / entry.BlockBytes;
+        long used = (long)byteCount + fixture.EomBytes;
+        int blocks = used == 0 ? 1 : (int)((used + entry.BlockBytes - 1) / entry.BlockBytes);
         return new BurstPlan(preamble, entry.BlockMs, flush, entry.BlockBytes, blocks,
-            preamble + ((long)blocks * entry.BlockMs) + flush);
+            preamble + ((long)blocks * entry.BlockMs) + flush, fixture.EomBytes);
     }
 }

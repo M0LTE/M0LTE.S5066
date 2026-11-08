@@ -102,8 +102,8 @@ internal sealed class Dispatcher
                 }
 
                 break;
-            case BurstStarted:
-                _dts.OnBurstStarted();
+            case BurstStarted started:
+                _dts.OnBurstStarted(started.BlockMs);
                 Quiet("the SIS's OnReceiveStarted", _sis.OnReceiveStarted);
                 Quiet("the MAC's OnBurstStarted", _mac.OnBurstStarted);
                 break;

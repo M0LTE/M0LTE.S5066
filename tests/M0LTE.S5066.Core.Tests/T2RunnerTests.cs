@@ -90,7 +90,7 @@ public class FixtureModemTests
     [InlineData(1920, 10)]
     public void Plans_by_the_corpus_format_arithmetic(int bytes, int blocks)
     {
-        Modem.PlanBurst(6, Interleaver.Short, bytes).Should().Be(new BurstPlan(720, 1000, 40, 192, blocks, 720 + (blocks * 1000) + 40));
+        Modem.PlanBurst(6, Interleaver.Short, bytes).Should().Be(new BurstPlan(720, 1000, 40, 192, blocks, 720 + (blocks * 1000) + 40, 0));
     }
 
     [Fact]

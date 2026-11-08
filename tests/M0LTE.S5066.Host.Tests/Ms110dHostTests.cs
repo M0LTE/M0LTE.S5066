@@ -158,8 +158,11 @@ public class Ms110dHostTests
 
         public int TransmitDones => Volatile.Read(ref _transmitDones);
 
-        public void BurstStarted()
+        public int? StartedBlockMs { get; private set; }
+
+        public void BurstStarted(int? blockMs)
         {
+            StartedBlockMs = blockMs;
         }
 
         public void BytesReceived(ReadOnlyMemory<byte> bytes)
