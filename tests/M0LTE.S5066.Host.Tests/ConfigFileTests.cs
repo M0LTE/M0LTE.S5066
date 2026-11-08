@@ -1,4 +1,6 @@
 using M0LTE.S5066.Core.Runtime;
+using M0LTE.S5066.Host.Audio;
+using M0LTE.S5066.Host.Modem;
 
 namespace M0LTE.S5066.Host.Tests;
 
@@ -34,6 +36,20 @@ public class ConfigFileTests
         }
 
         (a.Node with { LocalAddress = 0 }).Should().BeEquivalentTo(b.Node with { LocalAddress = 0 }, "the two differ only in address and endpoints");
+    }
+
+    [Theory]
+    [InlineData("example.json")]
+    [InlineData("bench-node1.json")]
+    [InlineData("bench-node2.json")]
+    public void Each_shipped_file_is_complete_for_a_node_on_the_110d_modem(string name)
+    {
+        // Issue #83: every setting a node needs in some exchange is set (interp B-0454), and the
+        // modem can send at the default speed.
+        HostConfig c = Load(name);
+        c.Node.Cas.LinkRequestRetries.Should().NotBeNull();
+        c.Node.Cas.BreakRetries.Should().NotBeNull();
+        NodeHost.CheckConfig(c.Node, new Ms110dHostModem(new AudioMedium().CreateChannel()));
     }
 
     private static HostConfig Load(string name) => HostConfig.Load(Path(name));

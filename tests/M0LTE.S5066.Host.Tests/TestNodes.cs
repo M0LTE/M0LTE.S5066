@@ -22,7 +22,7 @@ internal static class TestNodes
             "waveforms": [ { "wn": 6, "interleaver": "short", "block_bytes": 64, "block_ms": 20 } ]
           },
           "drc": { "default_speed": { "wn": 6, "interleaver": "short" } },
-          "cas": { "max_links": 4, "link_request_timeout_ms": 1500, "link_request_retries": 5 },
+          "cas": { "max_links": 4, "link_request_timeout_ms": 1500, "link_request_retries": 5, "break_retries": 3 },
           "sis": { "soft_link_idle_ms": 60000 },
           "dts": { "max_transmission_ms": 2000, "ack_wait_ms": 1500 },
           "host": { "sis_listen": "127.0.0.1:0" }

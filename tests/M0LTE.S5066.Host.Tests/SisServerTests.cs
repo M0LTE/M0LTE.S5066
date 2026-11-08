@@ -18,7 +18,7 @@ public class SisServerTests
     {
         // S-0007, S-0009; plan 10.1 (localhost by default).
         new NodeHostOptions().SisEndpoint.Should().Be(new IPEndPoint(IPAddress.Loopback, 5066));
-        HostConfig.Parse("""{ "local_address": "0.0.1.1" }""").SisEndpoint.Should().Be(new IPEndPoint(IPAddress.Loopback, 5066));
+        HostConfig.Parse("""{ "local_address": "0.0.1.1", "csma": { "mode": "jitter" }, "cas": { "max_links": 1, "link_request_retries": 0, "break_retries": 0 } }""").SisEndpoint.Should().Be(new IPEndPoint(IPAddress.Loopback, 5066));
         SisClient.DefaultPort.Should().Be(5066);
     }
 
@@ -26,7 +26,7 @@ public class SisServerTests
     public void Another_port_can_be_configured()
     {
         // S-0008.
-        HostConfig.Parse("""{ "local_address": "0.0.1.1", "host": { "sis_listen": "0.0.0.0:6000" } }""")
+        HostConfig.Parse("""{ "local_address": "0.0.1.1", "csma": { "mode": "jitter" }, "cas": { "max_links": 1, "link_request_retries": 0, "break_retries": 0 }, "host": { "sis_listen": "0.0.0.0:6000" } }""")
             .SisEndpoint.Should().Be(new IPEndPoint(IPAddress.Any, 6000));
     }
 

@@ -69,6 +69,7 @@ public sealed class NodeHost : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(modem);
+        CheckConfig(config, modem);
         _options = options ?? new NodeHostOptions();
         _modem = modem;
 
@@ -105,6 +106,72 @@ public sealed class NodeHost : IAsyncDisposable
     /// <summary>Host time now: ms since <see cref="Epoch"/>.</summary>
     public long Now => _offsetMs + (long)TimeProvider.System.GetElapsedTime(_startTimestamp).TotalMilliseconds;
 
+    /// <summary>
+    /// Refuses a configuration a hosted node would accept and then stop on (issue #83). The core reads
+    /// some settings only when an exchange needs them, so that a T2 scenario fails with
+    /// <c>missing_setting</c> only if it exercises the setting (corpus-format.md section 6), and an
+    /// exception from the core stops the host. A hosted node meets every exchange sooner or later, so
+    /// the host asks at load for the settings the standard leaves to the operator with no value
+    /// (interp B-0454): <c>csma.mode</c> (decision D7, needed by every transmission),
+    /// <c>csma.node_slot_position</c> when slotted (K-0104), <c>cas.max_links</c> (B-0193, needed when
+    /// any peer calls), <c>cas.link_request_retries</c> (B-0222) and <c>cas.break_retries</c> (B-0288).
+    /// The timers the core derives when null (B-0420, A-0321, C-1120) need nothing here.
+    /// </summary>
+    /// <param name="config">The node configuration.</param>
+    /// <exception cref="MissingSettingException">A setting a node needs is not set; the message names it.</exception>
+    public static void CheckConfig(NodeConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        if (config.Csma.Mode is null)
+        {
+            throw new MissingSettingException("csma.mode", "not set; add jitter, slotted or ed3");
+        }
+
+        if (config.Csma.Mode == CsmaMode.Slotted && config.Csma.NodeSlotPosition is null)
+        {
+            throw new MissingSettingException("csma.node_slot_position", $"not set; slotted mode needs this node's slot, 1 to {config.Csma.NumContSlots}");
+        }
+
+        if (config.Cas.MaxLinks is null)
+        {
+            throw new MissingSettingException("cas.max_links", "not set; add the most links this node keeps at once, 1 or more");
+        }
+
+        if (config.Cas.LinkRequestRetries is null)
+        {
+            throw new MissingSettingException("cas.link_request_retries", "not set; add how many times an unanswered link request is repeated, 0 or more");
+        }
+
+        if (config.Cas.BreakRetries is null)
+        {
+            throw new MissingSettingException("cas.break_retries", "not set; add how many times an unanswered link break is repeated, 0 or more");
+        }
+    }
+
+    /// <summary>
+    /// <see cref="CheckConfig(NodeConfig)"/>, then that <paramref name="modem"/> can plan a burst at
+    /// <c>drc.default_speed</c>, the speed of every transmission until phase 7 (core-architecture.md
+    /// 5.3): the core plans one only when it first transmits, and a speed the modem refuses then
+    /// stops the node (issue #83).
+    /// </summary>
+    /// <param name="config">The node configuration.</param>
+    /// <param name="modem">The modem the node will run on.</param>
+    /// <exception cref="ConfigException">A setting is missing or the modem cannot send at the default speed.</exception>
+    public static void CheckConfig(NodeConfig config, IModemPort modem)
+    {
+        CheckConfig(config);
+        ArgumentNullException.ThrowIfNull(modem);
+        Speed speed = config.Drc.DefaultSpeed;
+        try
+        {
+            modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+        }
+        catch (ArgumentException e)
+        {
+            throw new ConfigException("drc.default_speed", $"wn {speed.Wn} {InterleaverNames.ToName(speed.Interleaver)} is not a speed this modem can send ({e.Message})");
+        }
+    }
+
     /// <summary>Starts the modem, the SIS server and the loop.</summary>
     public void Start()
     {
@@ -131,6 +198,7 @@ public sealed class NodeHost : IAsyncDisposable
     public void UpdateConfig(NodeConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
+        CheckConfig(config, _modem);
         NodeConfig c = config with { Time = Config.Time };
         Post(InputClass.Config, t => new ConfigInput(t, c));
         Config = c;
