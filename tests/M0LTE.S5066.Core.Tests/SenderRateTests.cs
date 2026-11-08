@@ -113,4 +113,24 @@ public class SenderRateTests
         s.OnConnectionEnded();
         s.AnsweredRung.Should().BeNull();
     }
+
+    [Fact]
+    public void A_ceiling_and_its_hold_off_outlive_the_connection_and_silence_steps_down_once_per_run()
+    {
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(1, true);
+        s.OnAckWaitExpired(Table);   // a failed trial: ceiling 0 for 2 transmissions, next length 4
+        s.OnConnectionEnded();
+        s.OnConnectionMade(0);
+        (s.Ceiling, s.CeilingLeft, s.HoldOff).Should().Be((0, 2, 4));   // interp C-1281: a property of the path
+        (s.SilentWaits, s.StepDown, s.TrialRung).Should().Be((0, 0, (int?)null));
+
+        for (int i = 1; i <= 4; i++)
+        {
+            s.OnSent(0, true);
+            s.OnAckWaitExpired(Table);
+            s.StepDown.Should().Be(i / 2);   // every tx_step_down_waits silent waits, one more rung (interp C-1282)
+        }
+    }
 }
