@@ -18,7 +18,7 @@ public class HfChatTests
         HfChatSession.Encode("hello", 100).Should().Equal(Encoding.ASCII.GetBytes("hello\r\n"));
         HfChatSession.Encode("hello\r\n", 100).Should().Equal(Encoding.ASCII.GetBytes("hello\r\n"));
         HfChatSession.Encode("hello", 100).Should().OnlyContain(b => b < 0x80);
-        FluentActions.Invoking(() => HfChatSession.Encode("café", 100)).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => HfChatSession.Encode("caf\u00e9", 100)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => HfChatSession.Encode("two\r\nlines", 100)).Should().Throw<ArgumentException>();
         HfChatSession.Encode("12345", 7).Should().HaveCount(7, "the CR LF counts against the MTU");
         FluentActions.Invoking(() => HfChatSession.Encode("123456", 7)).Should().Throw<ArgumentException>();
