@@ -56,7 +56,22 @@ public class DtsReceiverTests
 
         rig.Now = 3000;
         rig.Receiver.OnBurstEnded(EndEom);
-        rig.Receiver.Quality[Peer].Should().Be(new RxQuality(3000, 85, 2, Interleaver.Long, 7, 1, 1, LastBurstStart: 2000));
+        rig.Receiver.Quality[Peer].Should().Be(new RxQuality(3000, 85, 2, Interleaver.Long, 7, 1, 1));
+        rig.HeardToUs.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_burst_is_recorded_as_heard_to_us_only_for_senders_that_addressed_this_node()
+    {
+        // Interp A-0320: the soft link idle wait counts a peer as heard only in a burst carrying a
+        // valid header from it to our individual address; one to another node or a group does not.
+        var rig = new ReceiverRig { Now = 2000 };
+        rig.Receiver.OnBurstStarted();
+        rig.Now = 2500;
+        rig.Receiver.OnBytesReceived(Cat(T7(Peer, Us, 4), T7(Other, Peer, 4), T7(Other, Us, 4, group: true)));
+        rig.Now = 3000;
+        rig.Receiver.OnBurstEnded(EndEom);
+        rig.HeardToUs.Should().Equal(new Dictionary<uint, HeardBurst> { [Peer] = new HeardBurst(2000, 3000) });
     }
 
     [Fact]
@@ -314,6 +329,8 @@ public class DtsReceiverTests
         }
 
         public DtsReceiver Receiver { get; }
+
+        public IReadOnlyDictionary<uint, HeardBurst> HeardToUs => _context.HeardToUs;
 
         public List<Dpdu> Delivered { get; } = [];
 

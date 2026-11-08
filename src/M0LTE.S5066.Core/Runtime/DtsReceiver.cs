@@ -10,8 +10,16 @@ namespace M0LTE.S5066.Core.Runtime;
 /// <param name="K">The constraint length the modem locked to.</param>
 /// <param name="ValidHeaders">D_PDU headers from this sender with a good header CRC, all bursts.</param>
 /// <param name="DataCrcFailures">D_PDUs from this sender discarded for a bad data CRC, all bursts (C-0836, C-0839).</param>
-/// <param name="LastBurstStart">Core time at which the burst of <paramref name="LastHeard"/> started (interp A-0320: the SIS counts a soft link's idle wait from a burst begun during it).</param>
-internal sealed record RxQuality(long LastHeard, int? SnrTenthDb, int Wn, Interleaver Interleaver, int K, long ValidHeaders, long DataCrcFailures, long LastBurstStart = 0);
+internal sealed record RxQuality(long LastHeard, int? SnrTenthDb, int Wn, Interleaver Interleaver, int K, long ValidHeaders, long DataCrcFailures);
+
+/// <summary>
+/// The last burst in which a sender was heard addressing this node: a D_PDU header with a good
+/// header CRC from it, to our individual address (C-0833, C-0394). Read by the SIS: interp A-0320
+/// counts a soft link's idle wait from such a burst begun during it.
+/// </summary>
+/// <param name="Start">Core time of the burst's burst_started.</param>
+/// <param name="End">Core time of the burst's burst_ended.</param>
+internal sealed record HeardBurst(long Start, long End);
 
 /// <summary>
 /// The D_PDU stream receiver of the DTS (core-architecture.md 4.3). It turns the modem's bytes
@@ -62,6 +70,8 @@ internal sealed class DtsReceiver
     private readonly SortedDictionary<uint, RxQuality> _quality = new();
     private long _burstStart;
     private readonly SortedSet<uint> _heardThisBurst = new();
+    private readonly SortedSet<uint> _toUsThisBurst = new();
+    private readonly SortedDictionary<uint, HeardBurst> _heardToUs = new();
     private readonly SortedDictionary<uint, (long Headers, long DataCrc)> _countsThisBurst = new();
 
     private byte[] _buffer = new byte[256];
@@ -79,6 +89,7 @@ internal sealed class DtsReceiver
         _toStateMachine = toStateMachine;
         _onHeader = onHeader;
         context.RxQuality = _quality;   // read by the SIS for node information (interp S-0164)
+        context.HeardToUs = _heardToUs; // read by the SIS for the soft link idle wait (interp A-0320)
     }
 
     /// <summary>Headers with a sync that failed a header check (bad CRC, impossible sizes), all bursts.</summary>
@@ -93,6 +104,7 @@ internal sealed class DtsReceiver
         _burstStart = _context.Now;
         Reset();
         _heardThisBurst.Clear();
+        _toUsThisBurst.Clear();
         _countsThisBurst.Clear();
     }
 
@@ -118,10 +130,16 @@ internal sealed class DtsReceiver
             _quality.TryGetValue(src, out RxQuality? old);
             _quality[src] = new RxQuality(
                 _context.Now, burst.SnrTenthDb, burst.Wn, burst.Interleaver, burst.K,
-                (old?.ValidHeaders ?? 0) + headers, (old?.DataCrcFailures ?? 0) + dataCrc, _burstStart);
+                (old?.ValidHeaders ?? 0) + headers, (old?.DataCrcFailures ?? 0) + dataCrc);
+        }
+
+        foreach (uint src in _toUsThisBurst)
+        {
+            _heardToUs[src] = new HeardBurst(_burstStart, _context.Now);
         }
 
         _heardThisBurst.Clear();
+        _toUsThisBurst.Clear();
         _countsThisBurst.Clear();
     }
 
@@ -223,6 +241,11 @@ internal sealed class DtsReceiver
         _onHeader?.Invoke(info);   // channel analysis (J-0043, J-0070)
 
         _heardThisBurst.Add(h.Src);
+        if (!info.GroupAddress && h.Dst == _context.Config.LocalAddress)
+        {
+            _toUsThisBurst.Add(h.Src);
+        }
+
         _countsThisBurst.TryGetValue(h.Src, out (long Headers, long DataCrc) c);
         _countsThisBurst[h.Src] = (c.Headers + 1, c.DataCrc);
     }

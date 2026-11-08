@@ -40,6 +40,12 @@ internal sealed class CoreContext
     public IReadOnlyDictionary<uint, RxQuality> RxQuality { get; internal set; } = new SortedDictionary<uint, RxQuality>();
 
     /// <summary>
+    /// Per sender, the last burst in which it addressed this node, in address order; kept by the DTS
+    /// receiver and read by the SIS (interp A-0320).
+    /// </summary>
+    public IReadOnlyDictionary<uint, HeardBurst> HeardToUs { get; internal set; } = new SortedDictionary<uint, HeardBurst>();
+
+    /// <summary>
     /// A diagnostic sink (issue #86), or null. It sees internal state changes the T2 outputs do not
     /// carry; it is never read by protocol code and changes no output.
     /// </summary>
