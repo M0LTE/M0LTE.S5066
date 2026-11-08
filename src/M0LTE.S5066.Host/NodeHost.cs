@@ -80,6 +80,7 @@ public sealed class NodeHost : IAsyncDisposable
         CheckConfig(config, modem);
         _options = options ?? new NodeHostOptions();
         _modem = modem;
+        LogWarnings(config);
 
         DateTimeOffset utc = TimeProvider.System.GetUtcNow();
         _startTimestamp = TimeProvider.System.GetTimestamp();
@@ -175,34 +176,64 @@ public sealed class NodeHost : IAsyncDisposable
     /// <see cref="CheckConfig(NodeConfig)"/>, then that <paramref name="modem"/> can plan a burst at
     /// <c>drc.default_speed</c>, the speed of every transmission until phase 7 (core-architecture.md
     /// 5.3): the core plans one only when it first transmits, and a speed the modem refuses then
-    /// stops the node (issue #83). Then that <c>csma.cont_slot_width_ms</c> is longer than the
-    /// preamble at that speed, the least channel-sensing delay the modem can have (K-0048, issue #86).
+    /// stops the node (issue #83). A contention slot no longer than the modem's preamble is not
+    /// refused (see <see cref="ConfigWarnings"/>).
     /// </summary>
     /// <param name="config">The node configuration.</param>
     /// <param name="modem">The modem the node will run on.</param>
-    /// <exception cref="ConfigException">A setting is missing, the modem cannot send at the default speed, or the contention slot is no longer than its preamble.</exception>
+    /// <exception cref="ConfigException">A setting is missing, or the modem cannot send at the default speed.</exception>
     public static void CheckConfig(NodeConfig config, IModemPort modem)
     {
         CheckConfig(config);
         ArgumentNullException.ThrowIfNull(modem);
+        _ = PlanDefaultSpeed(config, modem);
+    }
+
+    /// <summary>
+    /// Settings <see cref="CheckConfig(NodeConfig, IModemPort)"/> accepts but that are probably wrong,
+    /// one line each; <see cref="NodeHost"/> writes them to <see cref="NodeHostOptions.Log"/> when it
+    /// is made and on <see cref="UpdateConfig"/>. Today one: a <c>csma.cont_slot_width_ms</c> no longer
+    /// than the modem's preamble at <c>drc.default_speed</c>. K-0048 wants the slot longer than the
+    /// whole channel-sensing delay, and the modem declares carrier only once the preamble is in, so
+    /// with the modem alone such slots make two contending nodes collide whatever slots they draw
+    /// (issue #86). It is a warning, not a refusal, because an external busy input (K-0006), ORed
+    /// into DCD, can sense a burst sooner than the modem, and the host cannot know that delay.
+    /// </summary>
+    /// <param name="config">The node configuration, already accepted by <see cref="CheckConfig(NodeConfig, IModemPort)"/>.</param>
+    /// <param name="modem">The modem the node will run on.</param>
+    /// <returns>The warnings, empty when there are none.</returns>
+    public static IReadOnlyList<string> ConfigWarnings(NodeConfig config, IModemPort modem)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(modem);
+        BurstPlan plan = PlanDefaultSpeed(config, modem);
+        var warnings = new List<string>();
+        if (config.Csma.ContSlotWidthMs <= plan.PreambleMs)
+        {
+            warnings.Add($"warning: csma.cont_slot_width_ms {config.Csma.ContSlotWidthMs} is not longer than this modem's {plan.PreambleMs} ms preamble at drc.default_speed; slots shorter than the time the far station needs to detect a burst cause collisions (K-0048), so use a longer slot unless an external busy input senses bursts sooner");
+        }
+
+        return warnings;
+    }
+
+    private static BurstPlan PlanDefaultSpeed(NodeConfig config, IModemPort modem)
+    {
         Speed speed = config.Drc.DefaultSpeed;
-        BurstPlan plan;
         try
         {
-            plan = modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
+            return modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         }
         catch (ArgumentException e)
         {
             throw new ConfigException("drc.default_speed", $"wn {speed.Wn} {InterleaverNames.ToName(speed.Interleaver)} is not a speed this modem can send ({e.Message})");
         }
+    }
 
-        // K-0048: a slot must outlast the channel-sensing delay, so a node in a later slot hears an
-        // earlier one before it starts. The modem declares carrier only once the preamble is in, so
-        // the preamble is the least that delay can be; audio and radio delays come on top. Narrower
-        // slots make two contending nodes collide whatever slots they pick (issue #86).
-        if (config.Csma.ContSlotWidthMs <= plan.PreambleMs)
+    private void LogWarnings(NodeConfig config)
+    {
+        foreach (string line in ConfigWarnings(config, _modem))
         {
-            throw new ConfigException("csma.cont_slot_width_ms", $"{config.Csma.ContSlotWidthMs} is not longer than this modem's {plan.PreambleMs} ms preamble at drc.default_speed, so contending nodes cannot hear each other in time (K-0048); allow the preamble plus audio and radio delays");
+            _options.Log?.Invoke(line);
         }
     }
 
@@ -233,6 +264,7 @@ public sealed class NodeHost : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(config);
         CheckConfig(config, _modem);
+        LogWarnings(config);
         NodeConfig c = config with { Time = Config.Time };
         Post(InputClass.Config, t => new ConfigInput(t, c));
         Config = c;
