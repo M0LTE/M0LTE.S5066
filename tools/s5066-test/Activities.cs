@@ -101,7 +101,7 @@ internal static class Activities
         byte[] u = Station.EncodeChat(text, s.ChatMtu);
         long t0 = Stopwatch.GetTimestamp();
         SendResult r = await s.Chat.SendAsync(new UnidataSend(to, Station.ChatSap, u) { Priority = Station.ChatPriority, DeliveryMode = Station.ChatMode(to) }, cancellationToken).ConfigureAwait(false);
-        return new ChatSendResult(Addresses.Show(to), Station.DecodeChat(u), r.Status.ToString().ToLowerInvariant(), r.Reason, Ms(t0));
+        return new ChatSendResult(Addresses.Show(to), Station.DecodeChat(u), r.Status.ToString().ToLowerInvariant(), r.Reason, Math.Round(Ms(t0), 1));
     }
 
     /// <summary>Waits for a chat line, from a node and with a text if given.</summary>
@@ -111,7 +111,7 @@ internal static class Activities
         string? want = text is null ? null : Station.DecodeChat(Station.EncodeChat(text, int.MaxValue));
         ChatReceived got = await s.ChatLines.TakeAsync(
             l => (from is null || l.From.Value == from.Value.Value) && (want is null || l.Text == want), cancellationToken).ConfigureAwait(false);
-        return new ChatExpectResult(Addresses.Show(got.From), got.Text, Ms(t0));
+        return new ChatExpectResult(Addresses.Show(got.From), got.Text, Math.Round(Ms(t0), 1));
     }
 
     /// <summary>

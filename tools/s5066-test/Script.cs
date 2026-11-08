@@ -236,7 +236,7 @@ internal static class ScenarioRunner
                 {
                     SisAddress? from = step.From is null ? null : Addresses.Parse(step.From);
                     FileReceived r = await s.Files.TakeAsync(f => from is null || f.From.Value == from.Value.Value, ct).ConfigureAwait(false);
-                    return Done(r.Match, r with { });
+                    return Done(r.Match, new { From = Addresses.Show(r.From), r.Id, r.Name, r.Size, r.Match, r.Sha256, ElapsedMs = Math.Round(r.ElapsedMs, 1), r.SavedTo });
                 }
 
                 case "perf":
