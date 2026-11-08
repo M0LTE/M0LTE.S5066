@@ -119,6 +119,14 @@ internal enum DtsPeerState
 /// </remarks>
 internal sealed class DtsPeers
 {
+    /// <summary>
+    /// Our SENDER-APPROACH (open question 8; interp C-1286): variable speed (Fixed 0, C-1018), strategy
+    /// mixed (10), EOW 12 not needed since our modem reports the received waveform (C-0481, C-0482),
+    /// reserved bits zero (C-0483). Sent only with a calibrated table: without one we vary nothing and
+    /// want no recommendation (design shape item 6).
+    /// </summary>
+    internal static readonly SenderApproachEow OurApproach = new(false, 2, false);
+
     /// <summary>RX MANAGEMENT FRAME ID NUMBER before any MANAGEMENT D_PDU is received: above 255 (C-0310).</summary>
     private const int NoFrameId = 256;
 
@@ -147,6 +155,8 @@ internal sealed class DtsPeers
         _tx.Eows.TopPriority = p => Wanted(p).Top;
         _tx.Eows.RepeatingSet = p => Wanted(p).Set;
         _tx.Eows.Ed3Recommendation = p => Recommender.Ed3(_context.Config.Drc.Table, _peers.TryGetValue(p, out Peer? peer) ? peer.Recommendations : null);
+        _tx.RateStateOf = p => _peers.TryGetValue(p, out Peer? peer) ? (peer.Received, peer.Sender) : null;
+        _tx.Eows.SenderApproach = p => _context.Config.Drc.Table.IsEmpty ? null : OurApproach;
     }
 
     private (IReadOnlyList<Eow> Top, IReadOnlyList<Eow> Set) Wanted(uint p) =>
@@ -327,6 +337,12 @@ internal sealed class DtsPeers
         peer.PeerIsEd4 = c.PeerIsEd4;
         peer.ShortFamily = c.ShortFamily;
         peer.State = peer.State == DtsPeerState.ManagementUnconnected ? DtsPeerState.ManagementConnected : DtsPeerState.IdleConnected;
+        DrcConfig drc = _context.Config.Drc;
+        if (!drc.Table.IsEmpty)
+        {
+            peer.Sender.OnConnectionMade(RateChoice.Map(drc.Table, drc.DefaultSpeed));   // interp C-1281
+        }
+
         _tx.OpenLink(c.Peer, c.ShortFamily);   // the ARQ machine starts from the initial window edges of its family (C-0782, C-0787)
     }
 
@@ -481,6 +497,14 @@ internal sealed class DtsPeers
 
         peer.Connected = false;
         peer.State = DtsPeerState.IdleUnconnected;
+
+        // Open question 4 (interp C-1287): the peer's recommendations stand until its connection ends;
+        // the next link starts again at drc.default_speed. A failed-trial ceiling stays (interp C-1281).
+        peer.Received.MaxSpeed = null;
+        peer.Received.LowSpeed = null;
+        peer.Received.MaxSegment = null;
+        peer.Received.Ed3BasicRate = null;
+        peer.Sender.OnConnectionEnded();
         EndExchange(peerAddress, peer);
         peer.Expedited.Reset();
         _tx.RemoveControl(c => c is ResetItem or ExpeditedAckItem && c.Dst == peerAddress);
@@ -753,8 +777,26 @@ internal sealed class DtsPeers
     /// has been silent too long and the connection has been lost (C-1250); the caller then does not
     /// retransmit (C-1120).
     /// </summary>
-    public bool OnAckWaitExpired(uint address) =>
-        _peers.TryGetValue(address, out Peer? peer) && peer.Connected && TooSilent(address, peer);
+    public bool OnAckWaitExpired(uint address)
+    {
+        if (!_peers.TryGetValue(address, out Peer? peer) || !peer.Connected)
+        {
+            return false;
+        }
+
+        if (TooSilent(address, peer))
+        {
+            return true;
+        }
+
+        DrcTable table = _context.Config.Drc.Table;
+        if (!table.IsEmpty)
+        {
+            peer.Sender.OnAckWaitExpired(table);   // a failed trial, the step down (P7-7; open question 16)
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Our transmission has ended, before its answer waits start (C-1250): each connected peer it
@@ -808,7 +850,11 @@ internal sealed class DtsPeers
     }
 
     /// <summary>The peer answered: a D_PDU from it that its ARQ machine acted on (C-1250). Its silence is timed afresh from the next answer wait.</summary>
-    private static void Answered(Peer peer) => peer.SilentSince = null;
+    private static void Answered(Peer peer)
+    {
+        peer.SilentSince = null;
+        peer.Sender.OnAnswered();   // P7-7: the answer of open question 16
+    }
 
     /// <summary>
     /// The DTS abandons the connection itself (C-0739): D_CONNECTION_LOST to the CAS, then, as for
@@ -1145,6 +1191,8 @@ internal sealed class DtsPeers
 
         /// <summary>What we measure of this peer and recommend to it (P7-6).</summary>
         public RecommendationState Recommendations { get; } = new();
+        /// <summary>The sender half of rate selection for this peer (P7-7).</summary>
+        public SenderRate Sender { get; } = new();
 
         /// <summary>RX MANAGEMENT FRAME ID NUMBER (C-0308, C-0310). TX MANAGEMENT FRAME ID NUMBER is not kept: no MANAGEMENT message is sent before phase 7.</summary>
         public int RxFrameId { get; set; } = NoFrameId;

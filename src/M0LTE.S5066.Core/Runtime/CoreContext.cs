@@ -46,6 +46,18 @@ internal sealed class CoreContext
     public IReadOnlyDictionary<uint, HeardBurst> HeardToUs { get; internal set; } = new SortedDictionary<uint, HeardBurst>();
 
     /// <summary>
+    /// The waveform of the last transmission built, or null before the first: written by the DTS
+    /// planner, read by the SIS for the node information message (interp S-0164; P7-7).
+    /// </summary>
+    public Speed? LastTransmitSpeed { get; internal set; }
+
+    /// <summary>
+    /// Per individual peer, in address order, the waveform of the last transmission that carried a
+    /// D_PDU to it: written by the DTS planner, read by the SIS (interp S-0164; P7-7).
+    /// </summary>
+    public SortedDictionary<uint, Speed> TransmitSpeeds { get; } = new();
+
+    /// <summary>
     /// A diagnostic sink (issue #86), or null. It sees internal state changes the T2 outputs do not
     /// carry; it is never read by protocol code and changes no output.
     /// </summary>
