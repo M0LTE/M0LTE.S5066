@@ -145,7 +145,7 @@ public sealed class NodeHost : IAsyncDisposable
         CalibratedTable c = CalibratedTable.Default;
         if (!c.Matches(Ms110dHostModem.ModemPackage, Ms110dHostModem.ModemVersion))
         {
-            log?.Invoke($"warning: drc.table calibration {c.Calibration} is for {c.ModemPackage} {c.ModemVersion}, not {Ms110dHostModem.ModemVersion}; not loaded, so no rate selection: recalibrate for this modem version");
+            log?.Invoke($"warning: drc.table calibration {c.Calibration} is for {c.ModemPackage} {c.ModemVersion}, not {Ms110dHostModem.ModemVersion}; not loaded; the configured drc.table stays (empty: no rate selection)");
             return null;
         }
 
