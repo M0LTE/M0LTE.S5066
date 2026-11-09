@@ -274,7 +274,7 @@ public static class ConfigReader
     private static readonly string[] TableKeys =
     [
         "ladder", "thresholds", "smoothing_weight", "clean_run", "rx_error_limit_ppt", "rx_ceiling_initial",
-        "rx_ceiling_cap", "tx_step_down_waits", "tx_ceiling_initial", "tx_ceiling_cap",
+        "rx_ceiling_cap", "tx_step_down_waits", "tx_ceiling_initial", "tx_ceiling_cap", "probe_run",
     ];
 
     /// <summary>
@@ -369,7 +369,8 @@ public static class ConfigReader
             Positive(table, "rx_ceiling_cap"),
             Positive(table, "tx_step_down_waits"),
             Positive(table, "tx_ceiling_initial"),
-            Positive(table, "tx_ceiling_cap"));
+            Positive(table, "tx_ceiling_cap"),
+            Positive(table, "probe_run"));
 
         // corpus-format.md 6.1: a cap is at least its initial length.
         static void CapAtLeastInitial(JsonObject t, string initial, string cap)

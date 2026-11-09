@@ -369,7 +369,7 @@ internal sealed class CasSublayer : ICasSublayer
                 Made(peer, link, called: true);
                 break;
             case Phase.Linked when link.AwaitingFirstData:
-                _context.Timers.Start(FirstDataTimer(peer), _context.Config.FirstDataTimeoutMs());
+                _context.Timers.Start(FirstDataTimer(peer), _context.Config.FirstDataTimeoutMs(_context.Modem));
                 break;
             case Phase.Breaking:
                 _context.Timers.Start(BreakTimer(peer), _context.Config.BreakTimeoutMs());   // B-0283, B-0400
@@ -392,7 +392,7 @@ internal sealed class CasSublayer : ICasSublayer
         if (called)
         {
             link.AwaitingFirstData = true;
-            _context.Timers.Start(FirstDataTimer(peer), _context.Config.FirstDataTimeoutMs());
+            _context.Timers.Start(FirstDataTimer(peer), _context.Config.FirstDataTimeoutMs(_context.Modem));
         }
     }
 

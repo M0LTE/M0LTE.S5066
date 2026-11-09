@@ -218,13 +218,13 @@ public class CasBreakTests
         defaults["local_address"] = "0.0.1.2";
         NodeConfig c = ConfigReader.Read(defaults);
         long wait = 127500 + 30000 + (16 * 3000);
-        (c.LinkRequestTimeoutMs(), c.BreakTimeoutMs(), c.FirstDataTimeoutMs(), c.CleanCloseTimeoutMs()).Should().Be((wait, wait, 3 * wait, 3 * wait));
+        (c.LinkRequestTimeoutMs(), c.BreakTimeoutMs(), c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)), c.CleanCloseTimeoutMs()).Should().Be((wait, wait, 3 * wait, 3 * wait));
         defaults["dts"]!["ack_wait_ms"] = 40000;
         c = ConfigReader.Read(defaults);
-        (c.LinkRequestTimeoutMs(), c.BreakTimeoutMs(), c.FirstDataTimeoutMs(), c.CleanCloseTimeoutMs()).Should().Be((40000L, 40000L, 120000L, 120000L));
+        (c.LinkRequestTimeoutMs(), c.BreakTimeoutMs(), c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)), c.CleanCloseTimeoutMs()).Should().Be((40000L, 40000L, 120000L, 120000L));
         defaults["cas"] = JsonNode.Parse("""{"max_links":1,"link_request_timeout_ms":7,"link_request_retries":0,"first_data_timeout_ms":8,"break_timeout_ms":9,"break_retries":0,"clean_close_timeout_ms":10}""");
         c = ConfigReader.Read(defaults);
-        (c.LinkRequestTimeoutMs(), c.FirstDataTimeoutMs(), c.BreakTimeoutMs(), c.CleanCloseTimeoutMs(), c.Cas.RequireBreakRetries()).Should().Be((7L, 8L, 9L, 10L, 0));
+        (c.LinkRequestTimeoutMs(), c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)), c.BreakTimeoutMs(), c.CleanCloseTimeoutMs(), c.Cas.RequireBreakRetries()).Should().Be((7L, 8L, 9L, 10L, 0));
         foreach (string key in new[] { "break_timeout_ms", "clean_close_timeout_ms" })
         {
             JsonObject bad = defaults.DeepClone().AsObject();
