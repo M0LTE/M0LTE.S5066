@@ -170,7 +170,7 @@ internal sealed class DtsPeers
     /// updated. A sender heard for the first time gets its entry here (core-architecture.md 6 rule
     /// 11: first D_PDU heard). Nothing is done with an empty table.
     /// </summary>
-    public void OnBurstMeasured(BurstEnded burst, IReadOnlyList<(uint Src, long Headers, long DataCrcFailures)> heard)
+    public void OnBurstMeasured(BurstEnded burst, IReadOnlyList<(uint Src, long Checked, long DataCrcFailures)> heard)
     {
         DrcTable table = _context.Config.Drc.Table;
         if (table.IsEmpty)
@@ -179,10 +179,10 @@ internal sealed class DtsPeers
         }
 
         var rung = new Speed(burst.Wn, burst.Interleaver);
-        foreach ((uint src, long headers, long errors) in heard)
+        foreach ((uint src, long dataChecked, long errors) in heard)
         {
             Peer peer = PeerOf(src);
-            Recommender.OnBurst(table, peer.Recommendations, rung, burst.SnrTenthDb, headers, errors, peer.Received.SenderApproach?.Fixed == true);
+            Recommender.OnBurst(table, peer.Recommendations, rung, burst.SnrTenthDb, dataChecked, errors, peer.Received.SenderApproach?.Fixed == true);
         }
     }
 

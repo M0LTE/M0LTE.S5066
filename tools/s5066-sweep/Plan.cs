@@ -35,7 +35,9 @@ internal sealed record SweepConfig(string Id, Rung? DefaultSpeed, JsonObject? Ta
             string path = ResolveTable(rest, tablesDir);
             JsonNode root = JsonNode.Parse(File.ReadAllText(path), documentOptions: new() { CommentHandling = System.Text.Json.JsonCommentHandling.Skip })
                 ?? throw new FormatException($"{path} is empty");
-            JsonObject table = root["drc"]?["table"]?.AsObject() ?? root.AsObject();
+            // A node config ({"drc": {"table": ...}}), a calibrated drc-table.json ({"source": ..., "table": ...},
+            // corpus-format.md 6.1), or the bare table.
+            JsonObject table = root["drc"]?["table"]?.AsObject() ?? root["table"]?.AsObject() ?? root.AsObject();
             if (table["ladder"] is null)
             {
                 throw new FormatException($"{path} holds no drc.table (no ladder key)");

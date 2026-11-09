@@ -13,7 +13,7 @@ namespace M0LTE.S5066.Core.Tests.T2;
 /// scenarios by hand for the safe wait of interp B-0420 and the minimum hold of interp A-0321, so the two
 /// written here are the 0.33.0 traces: do not write them over the corpus.
 /// </summary>
-public class P79cScenarios
+public partial class P79cScenarios
 {
     private const string Padding = "90ebe000006610210331f2";   // PADDING from 0.0.1.3 to 0.0.1.2, EOT 0, EOW 0
     private const string Errored = "90eb7000006f102103000b00000b0000000ae42b00005540000168656c6c6f5398c0d5";   // a type 7 to us whose data CRC fails
@@ -167,7 +167,7 @@ public class P79cScenarios
     private static List<JsonObject> ErroredBurstMovesDown() => ProbeScenario(
         "drc-rx-errored-burst-estimate-moves-down",
         "With probe_run set, a burst with a D_PDU error below the error limit still lets its estimate move MAX-SPEED down at once.",
-        "At 100 a clean burst on WN 7 Long, estimate 450: MAX-SPEED WN 7 Long, LOW-SPEED WN 6 Long (as drc-rx-clean-burst-holds-against-estimate). At 200 a burst on WN 7 Long, estimate -300, holds a PADDING and a type 7 whose data CRC fails: h = 2, e = 1, and 1 x 1000 is not above 500 x 2, so no cap, but the burst is not clean: WN 7 Long's clean run goes to 0. S = 75 (d = -750, q = 375), bulk target 1 and latency target 1: after an errored burst the estimate moves MAX-SPEED down at once (interp C-1291), to WN 4 Long, and LOW-SPEED to WN 4 Long (interp C-1270). The CAPABILITY burst, clean, on WN 4 Long, estimate 100: S = 100 on WN 4 Long; bulk target 2 (100) is above MAX-SPEED, but WN 4 Long's clean run is 1, short of clean_run 2, so no trial, and the probe needs a target not above the recommendation; MAX-SPEED holds. Latency target 1 (100; 300 is above) equals LOW-SPEED, which holds. EOWs: 0x8A4, 0x9A4, 0xB04, then 0x8A4, 0x9A4, 0xAFF repeated, 21 in all.",
+        "At 100 a clean burst on WN 7 Long, estimate 450: MAX-SPEED WN 7 Long, LOW-SPEED WN 6 Long (as drc-rx-clean-burst-holds-against-estimate). At 200 a burst on WN 7 Long, estimate -300, holds a PADDING and a type 7 whose data CRC fails: the PADDING has no data part, so h = 1 and e = 1 (corpus 0.35.0; before, every valid header counted, h = 2, and there was no cap), 1000 is above 500, so WN 7 Long (position 3) fails for the first time and is capped for 2 bursts, a ceiling of position 2; the burst is not clean: WN 7 Long's clean run goes to 0. S = 75 (d = -750, q = 375), bulk target 1 and latency target 1: after an errored burst the estimate moves MAX-SPEED down at once (interp C-1291), to WN 4 Long, and LOW-SPEED to WN 4 Long (interp C-1270). The CAPABILITY burst, clean, on WN 4 Long, estimate 100: the cap counts down to 1 and stays, its ceiling above both recommendations; S = 100 on WN 4 Long; bulk target 2 (100) is above MAX-SPEED, but WN 4 Long's clean run is 1, short of clean_run 2, so no trial, and the probe needs a target not above the recommendation; MAX-SPEED holds. Latency target 1 (100; 300 is above) equals LOW-SPEED, which holds. EOWs: 0x8A4, 0x9A4, 0xB04, then 0x8A4, 0x9A4, 0xAFF repeated, 21 in all.",
         [(7, 450, Padding), (7, -300, Padding + Errored)],
         (4, 100),
         4,

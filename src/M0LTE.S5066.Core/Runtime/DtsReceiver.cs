@@ -80,7 +80,7 @@ internal sealed class DtsReceiver
     private readonly SortedSet<uint> _heardThisBurst = new();
     private readonly SortedSet<uint> _toUsThisBurst = new();
     private readonly SortedDictionary<uint, HeardBurst> _heardToUs = new();
-    private readonly SortedDictionary<uint, (long Headers, long DataCrc)> _countsThisBurst = new();
+    private readonly SortedDictionary<uint, (long Headers, long Checked, long DataCrc)> _countsThisBurst = new();
 
     private byte[] _buffer = new byte[256];
     private int _length;
@@ -144,8 +144,11 @@ internal sealed class DtsReceiver
     /// The burst ended: finish the search over what is left, drop any partial D_PDU, and record the
     /// burst's quality for every sender heard in it (C-0833; core-architecture.md 3.5 rule 1).
     /// </summary>
-    /// <returns>Each sender heard in the burst, in address order, with its valid headers and data CRC failures in it (for P7-6).</returns>
-    public IReadOnlyList<(uint Src, long Headers, long DataCrcFailures)> OnBurstEnded(BurstEnded burst)
+    /// <returns>
+    /// Each sender heard in the burst, in address order, with its D_PDUs in it whose data part was checked by a CRC-32
+    /// and the data CRC failures among them (for P7-6; corpus-format.md 6.2, interp C-1270 as revised in corpus 0.35.0).
+    /// </returns>
+    public IReadOnlyList<(uint Src, long Checked, long DataCrcFailures)> OnBurstEnded(BurstEnded burst)
     {
         Scan(endOfBurst: true);
         Reset();
@@ -153,8 +156,8 @@ internal sealed class DtsReceiver
         var heard = new List<(uint, long, long)>();
         foreach (uint src in _heardThisBurst)
         {
-            (long headers, long dataCrc) = _countsThisBurst[src];
-            heard.Add((src, headers, dataCrc));
+            (long headers, long dataChecked, long dataCrc) = _countsThisBurst[src];
+            heard.Add((src, dataChecked, dataCrc));
             _quality.TryGetValue(src, out RxQuality? old);
             _quality[src] = new RxQuality(
                 _context.Now, burst.SnrTenthDb, burst.Wn, burst.Interleaver, burst.K,
@@ -287,8 +290,8 @@ internal sealed class DtsReceiver
             _toUsThisBurst.Add(h.Src);
         }
 
-        _countsThisBurst.TryGetValue(h.Src, out (long Headers, long DataCrc) c);
-        _countsThisBurst[h.Src] = (c.Headers + 1, c.DataCrc);
+        _countsThisBurst.TryGetValue(h.Src, out (long Headers, long Checked, long DataCrc) c);
+        _countsThisBurst[h.Src] = (c.Headers + 1, c.Checked, c.DataCrc);
     }
 
     /// <summary>
@@ -334,11 +337,23 @@ internal sealed class DtsReceiver
             _ => true,
         };
 
+        // The D_PDUs whose data part a CRC-32 checked (a segment, or the ACK data of a long type 10): the
+        // denominator of the burst's error rate for rate selection, so that header-only D_PDUs, such as the
+        // ACK-ONLY copies that fill a block, do not dilute it (interp C-1270 as revised in corpus 0.35.0).
+        bool checkedData = pdu is Ed3DataOnly or Ed3DataAck or ExpeditedDataOnly or NonArqData or ExpeditedNonArqData or DataOnly or DataAck
+            || (pdu is AckOnly a && a.AckDataCrcOk is not null);
+        if (checkedData)
+        {
+            uint src = pdu.Header.Src;
+            (long headers, long dataChecked, long dataCrc) = _countsThisBurst[src];
+            _countsThisBurst[src] = (headers, dataChecked + 1, dataCrc);
+        }
+
         if (!dataOk)
         {
             uint src = pdu.Header.Src;
-            (long headers, long dataCrc) = _countsThisBurst[src];
-            _countsThisBurst[src] = (headers, dataCrc + 1);
+            (long headers, long dataChecked, long dataCrc) = _countsThisBurst[src];
+            _countsThisBurst[src] = (headers, dataChecked, dataCrc + 1);
             if (pdu is not (DataAck or Ed3DataAck))
             {
                 return;

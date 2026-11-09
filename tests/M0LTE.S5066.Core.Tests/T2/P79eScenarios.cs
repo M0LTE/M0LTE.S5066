@@ -1,0 +1,158 @@
+using M0LTE.S5066.Core.Dts;
+using M0LTE.S5066.Core.Runtime;
+
+namespace M0LTE.S5066.Core.Tests.T2;
+
+/// <summary>
+/// Authoring aid for the P7-9 round 2 sender scenarios (corpus 0.35.0): the answered rung of interp C-1281 as
+/// revised, the highest rung answered since the connection was made or since the last silent wait. Built
+/// like the P7-7 scenarios, from field values with the phase 1 codecs, nothing read back from the
+/// implementation. Set S5066_WRITE_P79E to a directory to write the files; otherwise the test does nothing.
+/// </summary>
+public partial class P77Scenarios
+{
+    /// <summary>WN 4 Short with a 50-byte block, so a 29-byte DATA-ONLY fits one block and a 64-byte one does not (test data).</summary>
+    private static readonly Wf A4S50 = new(4, Interleaver.Short, 50, 1200);
+
+    [Fact]
+    public void WriteRound2()
+    {
+        string? dir = Environment.GetEnvironmentVariable("S5066_WRITE_P79E");
+        if (dir is null)
+        {
+            return;
+        }
+
+        void Save(string area, string name, ScenarioBuilder b)
+        {
+            string path = Path.Combine(dir, area, name + ".jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, string.Join("\n", b.Lines()) + "\n");
+        }
+
+        Save("drc", "tx-lower-answer-keeps-answered-rung", LowerAnswerKeepsAnsweredRung());
+        Save("drc", "tx-silence-unproves-answered-rung", SilenceUnprovesAnsweredRung());
+    }
+
+    /// <summary>An ACK-ONLY from the peer (RX LWE <paramref name="rxLwe"/>) carrying an EOW, EOT 10.</summary>
+    private static string AckWith(int rxLwe, int eow) => Hex(Enc(new AckOnly(H(Us, P3, eow, 10), rxLwe, 0, 0, new Octets([]), null)));
+
+    private static ScenarioBuilder LowerAnswerKeepsAnsweredRung()
+    {
+        var d = new Draws();
+        int low2L = LowSpeed(2, Interleaver.Long);
+        var b = new ScenarioBuilder(
+            "drc-tx-lower-answer-keeps-answered-rung",
+            ["C-1281", "C-0929", "C-0894", "C-0930", "C-1250", "C-1120", "C-1284", "C-1285", "C-1286", "C-0904"],
+            "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.4.4, p.C-115",
+            "An answer to a short transmission at the LOW-SPEED rung does not lower the answered rung: the next bulk transmission goes straight back to the MAX-SPEED rung already answered.",
+            ArqConfig(Table(), A2L, A4L, A4S50),
+            ArqCommon.Replace("MAX-SPEED WN 4 Long (0x885: interleaver 101, speed 4)", "MAX-SPEED WN 4 Short (0x864: interleaver 011, speed 4)")
+                .Replace(" Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285).", string.Empty)
+            + TableNote
+            + "Fixture WN 4 Short: 50 bytes and 1200 ms a block (test data). The U_PDUs 'big1', 'big2' and 'big3' are 39 bytes (the text then 0x00 fill), so each DATA-ONLY is 64 bytes, more than one block of the MAX-SPEED rung WN 4 Short: a bulk transmission, at the MAX-SPEED rung (open question 7, interp C-1285). 'ping' is a 29-byte DATA-ONLY, one block: a latency transmission, at the LOW-SPEED rung once one has come (interp C-1284). "
+            + "At 108000 'big1' (FSN 0) would go at WN 4 Short, position 2, but the answered rung is drc.default_speed, position 0, so it goes at WN 4 Long, one above it: a trial (interp C-1281). The ACK-ONLY at 116000 (RX LWE 1) answers it and carries LOW-SPEED WN 2 Long (0x9A2), recorded (interp C-1262): the answered rung is WN 4 Long. 'big2' (FSN 1, requested at 120000) goes at WN 4 Short, one above, a trial, answered by an ACK-ONLY (RX LWE 2) with LOW-SPEED WN 2 Long again: the answered rung is WN 4 Short. 'ping' (FSN 2) is for latency and goes at the LOW-SPEED rung WN 2 Long (two blocks there, as in the P7-7 scenarios), below the answered rung, so not a trial; its answer (RX LWE 3) leaves the answered rung at WN 4 Short, the highest answered (interp C-1281 as revised in corpus 0.35.0; before, the answer made WN 2 Long the answered rung and 'big3' could go no higher than WN 4 Long). 'big3' (FSN 3) goes at WN 4 Short, the MAX-SPEED rung. Each request after an answer cancels sis.soft_link_idle (A-0320) and restarts dts.ttd; the answer that confirms the queue's last C_PDU cancels dts.ttd and starts the idle wait (A-0321: three answer waits, 180000).");
+        long t = CallerOpeningWith(b, d, MaxSpeed(4, Interleaver.Short), Big("big1"));
+        (string Name, long At, Wf Rung, int Fsn)[] sends =
+        [
+            ("big1", 0, A4L, 0),
+            ("big2", 120000, A4S50, 1),
+            ("ping", 0, A2L, 2),
+            ("big3", 0, A4S50, 3),
+        ];
+        for (int i = 0; i < sends.Length; i++)
+        {
+            (string name, long at, Wf rung, int fsn) = sends[i];
+            byte[] updu = name == "ping" ? "ping"u8.ToArray() : Big(name);
+            if (i > 0)
+            {
+                at = t + 10000;
+                b.SisBytes(at, 1, ArqRequest(updu))
+                    .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000);
+                int w = d.Next();
+                b.ExpectTimerStart("csma.cont_wait", w);
+                t = at + w;
+            }
+
+            byte[] cpdu = ArqCpdu(at, updu);
+            var tx = DataTx(rung, fsn, cpdu);
+            b.TimerExpired(t, "csma.cont_wait");
+            Transmit(b, tx, rung);
+            t += tx.Duration;
+            b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+            if (i == sends.Length - 1)
+            {
+                break;
+            }
+
+            long burst = (t + 5000) / 1000 * 1000;
+            b.BurstStarted(burst).BytesReceived(burst + 1000, AckWith(fsn + 1, low2L))
+                .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+            b.BurstEnded(burst + 2000, snrTenthDb: 60);
+            t = burst + 2000;
+        }
+
+        return b;
+    }
+
+    private static byte[] Big(string name)
+    {
+        byte[] u = new byte[39];
+        System.Text.Encoding.ASCII.GetBytes(name).CopyTo(u, 0);
+        return u;
+    }
+
+    private static ScenarioBuilder SilenceUnprovesAnsweredRung()
+    {
+        var d = new Draws();
+        var b = new ScenarioBuilder(
+            "drc-tx-silence-unproves-answered-rung",
+            ["C-1281", "C-1282", "C-0929", "C-0894", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
+            "A silent answer wait on the answered rung makes that rung unproven: the retransmission there is a trial again, and when it too draws no answer the failed-trial ceiling sends the next one a rung lower.",
+            ArqConfig(Table(stepDownWaits: 3), A2L, A4L),
+            ArqCommon + TableNote.Replace("tx_step_down_waits 2", "tx_step_down_waits 3")
+            + "At 108000 'ping' (FSN 0) goes at WN 4 Long, a trial, and is answered by the ACK-ONLY at 116000 (RX LWE 1): WN 4 Long is the answered rung. 'pong' (FSN 1, requested at 120000) goes at WN 4 Long, not a trial. Nothing is heard: at its dts.ack_wait expiry, a silent wait (open question 16) on the answered rung, the answered rung goes one below the unanswered data's rung, to WN 2 Long (interp C-1281 as revised in corpus 0.35.0). FSN 1 is retransmitted at WN 4 Long, now one above the answered rung: a trial. Nothing is heard again: a failed trial, so the peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions, and the second silent wait in a row is still below tx_step_down_waits 3. The next retransmission goes at WN 2 Long under the ceiling, keeping its size (C-0549); before corpus 0.35.0 the answered rung stayed WN 4 Long and it went at WN 4 Long a third time. The ACK-ONLY (RX LWE 2) answers it. The connection is not lost: 2 answer waits, not 16 (C-1250).");
+        long t = CallerOpening(b, d);
+        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+        byte[] pong = ArqCpdu(120000, "pong"u8.ToArray());
+        var tx = DataTx(A4L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A4L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        b.BurstStarted(115000).BytesReceived(116000, Ack(1))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(117000, snrTenthDb: 60);
+        b.SisBytes(120000, 1, ArqRequest("pong"u8.ToArray()))
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
+        int w = d.Next();
+        b.TimerExpired(121000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t = 121000 + w;
+        foreach (Wf wf in (Wf[])[A4L, A4L])
+        {
+            tx = DataTx(wf, 1, pong);
+            b.TimerExpired(t, "csma.cont_wait");
+            Transmit(b, tx, wf);
+            t += tx.Duration;
+            b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+            t += 60000;
+            b.TimerExpired(t, "dts.ack_wait/0.0.1.3").ExpectTimerStart("csma.lbt_wait", 3000);
+            t += 3000;
+            w = d.Next();
+            b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
+            t += w;
+        }
+
+        tx = DataTx(A2L, 1, pong);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        long burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        return b;
+    }
+}

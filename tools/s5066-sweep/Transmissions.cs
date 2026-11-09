@@ -120,6 +120,39 @@ internal sealed class TxRecord
         return (Blocks[^1].Time, 0);
     }
 
+    /// <summary>
+    /// The rate selection EOWs in the transmission's headers, for the timeline: the last MAX-SPEED and
+    /// LOW-SPEED it carried, as " max wn8-long low wn13-long", or empty when it carried neither.
+    /// </summary>
+    public string Recommendations()
+    {
+        string? max = null;
+        string? low = null;
+        foreach (SentDpdu d in AllDpdus)
+        {
+            DecodeResult<DpduHeaderInfo> h = DpduCodec.DecodeHeader(Bytes.AsSpan(d.Offset, d.HeaderLength), PeerEdition.Ed4);
+            if (!h.IsSuccess)
+            {
+                continue;
+            }
+
+            switch (EowCodec.Decode(h.Value!.Header.Eow))
+            {
+                case MaxSpeedEow m:
+                    max = Name(m.Value);
+                    break;
+                case LowSpeedEow l:
+                    low = Name(l.Value);
+                    break;
+            }
+        }
+
+        return (max is null ? "" : " max " + max) + (low is null ? "" : " low " + low);
+
+        static string Name(SpeedInterleaver v) => "wn" + v.Speed.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-"
+            + (v.Interleaver switch { 1 => "ultrashort", 2 => "veryshort", 3 => "short", 4 => "medium", 5 => "long", _ => "il" + v.Interleaver.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+    }
+
     /// <summary>Lays the sender's bytes out as D_PDUs, as a receiver would find them from the start.</summary>
     public static List<SentDpdu> Parse(ReadOnlySpan<byte> bytes, Func<Dpdu, bool> isRetransmission)
     {
