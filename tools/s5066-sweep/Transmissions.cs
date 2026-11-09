@@ -18,6 +18,9 @@ internal sealed class TxRecord
 
     public required long StartMs { get; init; }
 
+    /// <summary>The sending node had set a failed-trial ceiling before this transmission (open question 14).</summary>
+    public bool AfterFirstCeiling { get; init; }
+
     /// <summary>When the last sample went into the channel, ms (exact, not chunk-rounded).</summary>
     public required long EndMs { get; init; }
 

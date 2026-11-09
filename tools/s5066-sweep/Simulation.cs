@@ -90,6 +90,9 @@ internal sealed class SimNode
 
     public SimModem Modem { get; }
 
+    /// <summary>When the core's first failed trial set a ceiling (interp C-1281), or null; open question 14.</summary>
+    public long? FirstCeilingMs { get; private set; }
+
     public void Attach(int conn, SisApp app, long now)
     {
         _apps[conn] = app;
@@ -133,6 +136,11 @@ internal sealed class SimNode
             }
 
             Core.Handle(input);
+            if (FirstCeilingMs is null && Core.FailedTrials > 0)
+            {
+                FirstCeilingMs = Core.Now;   // before the outputs, so a transmission the same input causes counts as after it
+            }
+
             foreach (CoreOutput o in Core.DrainOutputs())
             {
                 Dispatch(o, now);
@@ -320,6 +328,7 @@ internal sealed class Simulation
             Rung = new Rung(t.Wn, t.Interleaver),
             Bytes = bytes,
             StartMs = start,
+            AfterFirstCeiling = node.FirstCeilingMs is not null,
             EndMs = start + (long)Math.Ceiling(samples * 1000.0 / ChannelSpec.SampleRate),
             AllDpdus = TxRecord.Parse(bytes, _retx[node.Index].IsRetransmission),
         };
@@ -424,6 +433,8 @@ internal sealed class Simulation
             ns.DataDpdus += data;
             ns.RetransmittedDpdus += retx;
             rs.Count++;
+            rs.CountAfterFirstCeiling = (rs.CountAfterFirstCeiling ?? 0) + (t.AfterFirstCeiling ? 1 : 0);
+            ns.TransmissionsAfterFirstCeiling = (ns.TransmissionsAfterFirstCeiling ?? 0) + (t.AfterFirstCeiling ? 1 : 0);
             rs.AirtimeMs += t.EndMs - t.StartMs;
             rs.Bytes += t.Bytes.Length;
             rs.Dpdus += t.DpduCount;
@@ -466,6 +477,13 @@ internal sealed class Simulation
 
             lastOwn[t.Node] = t;
             prev = t;
+        }
+
+        for (int i = 0; i < 2; i++)
+        {
+            _stats[i].FailedTrials = _nodes[i].Core.FailedTrials;
+            _stats[i].FirstCeilingMs = _nodes[i].FirstCeilingMs;
+            _stats[i].TransmissionsAfterFirstCeiling ??= 0;
         }
 
         result.Nodes["a"] = _stats[0];

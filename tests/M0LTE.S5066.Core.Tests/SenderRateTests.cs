@@ -63,11 +63,11 @@ public class SenderRateTests
         s.AnsweredRung.Should().Be(2);     // before: 0, and the next bulk transmission could go no higher than 1
         s.OnSent(2, true, 4);
         s.TrialRung.Should().BeNull();
-        s.OnAckWaitExpired(Table);         // silent, not a trial: rung 2 is no longer answered
+        s.OnAckWaitExpired(Table).Should().BeFalse("silent, not a trial, so no ceiling");   // rung 2 is no longer answered
         (s.AnsweredRung, s.Ceiling).Should().Be((1, null));
         s.OnSent(2, true, 5);
         s.TrialRung.Should().Be(2);        // going back to it is a trial
-        s.OnAckWaitExpired(Table);
+        s.OnAckWaitExpired(Table).Should().BeTrue();
         (s.Ceiling, s.AnsweredRung).Should().Be((1, 1));
         var low = new SenderRate();
         low.OnConnectionMade(0);
@@ -83,7 +83,7 @@ public class SenderRateTests
         s.OnConnectionMade(0);
         s.OnSent(1, true, 7);
         s.TrialRung.Should().Be(1);
-        s.OnAckWaitExpired(Table);
+        s.OnAckWaitExpired(Table).Should().BeTrue("a failed trial sets a ceiling (the stack sweep counts them, open question 14)");
         (s.Ceiling, s.CeilingLeft, s.HoldOff).Should().Be((0, 2, 4));
         s.OnSent(0, true, 8);
         s.OnSent(0, true, 9);

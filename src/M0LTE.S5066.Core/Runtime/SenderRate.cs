@@ -183,9 +183,9 @@ internal sealed class SenderRate
     /// peer has sent meanwhile) it is a silent wait: a trial in flight has failed and caps the peer below it (design shape item 7); otherwise the rung of the
     /// unanswered data no longer counts as answered, so the answered rung goes below it and going back
     /// to it is a trial again (interp C-1281); and every <c>tx_step_down_waits</c> silent waits in a
-    /// row step one rung down (plan 6.2).
+    /// row step one rung down (plan 6.2). Returns true when a failed trial set a ceiling.
     /// </summary>
-    public void OnAckWaitExpired(DrcTable table) => Unanswered(table);
+    public bool OnAckWaitExpired(DrcTable table) => Unanswered(table);
 
     /// <summary>
     /// An ACK-ONLY or DATA-ACK from the peer acknowledged none of the D_PDUs last placed in build number
@@ -194,22 +194,20 @@ internal sealed class SenderRate
     /// is the transmission whose acknowledgement is awaited it is unanswered, as at an expiry (reviewer
     /// decision on ruling 2026-11-10 (g), interp C-1281): the peer has reported its data lost.
     /// </summary>
-    public void OnDataAllFailed(long transmission, DrcTable table)
+    public bool OnDataAllFailed(long transmission, DrcTable table)
     {
-        if (transmission == DataTransmission)
-        {
-            Unanswered(table);
-        }
+        return transmission == DataTransmission && Unanswered(table);
     }
 
-    private void Unanswered(DrcTable table)
+    private bool Unanswered(DrcTable table)
     {
         if (!DataAwaited)
         {
-            return;
+            return false;
         }
 
         DataAwaited = false;
+        bool failedTrial = false;
 
         if (TrialRung is int failed)
         {
@@ -220,6 +218,7 @@ internal sealed class SenderRate
             HoldOff = (int)Math.Min(length * 2L, cap);
             TrialRung = null;
             FailedSinceAnswer = true;
+            failedTrial = true;
         }
         else if (AnsweredRung is int answered && DataRung is int data && data <= answered)
         {
@@ -231,6 +230,8 @@ internal sealed class SenderRate
         {
             StepDown++;
         }
+
+        return failedTrial;
     }
 }
 

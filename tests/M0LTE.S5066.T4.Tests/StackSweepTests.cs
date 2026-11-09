@@ -35,6 +35,10 @@ public class StackSweepTests
         first.Nodes["a"].Rungs.Keys.Should().Equal("wn6-short");
         first.Nodes["b"].Rungs.Keys.Should().Equal("wn6-short");
         first.SameSenderGapMs.Should().ContainKey("wn6-short");
+        first.Nodes["a"].FailedTrials.Should().Be(0, "a fixed rung has an empty table, so no trials");
+        first.Nodes["a"].FirstCeilingMs.Should().BeNull();
+        first.Nodes["a"].TransmissionsAfterFirstCeiling.Should().Be(0);
+        first.Nodes["a"].Rungs["wn6-short"].CountAfterFirstCeiling.Should().Be(0);
 
         Strip(first).Should().Be(Strip(second), "a run repeats exactly for a seed");
     }
@@ -211,18 +215,19 @@ public class StackSweepTests
         ];
         string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
         gate.Should().HaveCount(6);
-        gate[1].Should().Be("awgn\t0\tadaptive-t\t0.0\tfixed-wn8-long\t0.0\t2000.0\tno\tgoodput\t0\t0.0\tnot gated");
-        gate[2].Should().EndWith("\tno\tgoodput\t0\t0.0\tpass", "800 is above the baseline's 0 where another rung delivers");
-        gate[3].Should().EndWith("\tno\tgoodput\t0\t0.0\tfail", "equal is not strictly above, and 1500 is not at the ceiling");
-        gate[4].Should().EndWith("\tyes\tgoodput\t0\t0.0\tpass", "1961 is within 2% of the 2000 ceiling");
-        gate[5].Should().EndWith("\tyes\tgoodput\t0\t0.0\tfail", "1959 is more than 2% below the ceiling");
+        gate[1].Should().Be("awgn\t0\tadaptive-t\t0.0\tfixed-wn8-long\t0.0\t2000.0\tno\tgoodput\t0\t0\t0\t0.0\t0.0\tnot gated");
+        gate[2].Should().EndWith("\tno\tgoodput\t0\t0\t0\t0.0\t0.0\tpass", "800 is above the baseline's 0 where another rung delivers");
+        gate[3].Should().EndWith("\tno\tgoodput\t0\t0\t0\t0.0\t0.0\tfail", "equal is not strictly above, and 1500 is not at the ceiling");
+        gate[4].Should().EndWith("\tyes\tgoodput\t0\t0\t0\t0.0\t0.0\tpass", "1961 is within 2% of the 2000 ceiling");
+        gate[5].Should().EndWith("\tyes\tgoodput\t0\t0\t0\t0.0\t0.0\tfail", "1959 is more than 2% below the ceiling");
     }
 
     [Fact]
     public void On_an_ssb_channel_the_gate_is_no_link_lost_and_under_5_percent_on_rungs_that_never_decode()
     {
-        // Ruling (d) of 2026-11-09 (open question 14): on poor-ssb, not goodput. wn8-long never decodes on the
-        // channel (its fixed run delivers no D_PDU, and neither do adaptive's transmissions on it); wn7-long does.
+        // Ruling (d) of 2026-11-09 (open question 14): on poor-ssb, not goodput. These stand-in results carry no
+        // transmissions after the first ceiling (results written before ruling (f)), so every transmission
+        // counts (rule ssb-all-tx). wn8-long never decodes on the channel (its fixed run delivers no D_PDU, and neither do adaptive's transmissions on it); wn7-long does.
         static NodeStats Node(params (string Rung, long Count, long Ok)[] rungs)
         {
             var n = new NodeStats();
@@ -251,14 +256,88 @@ public class StackSweepTests
         ];
         string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
         gate.Should().HaveCount(4);
-        gate[1].Should().Be("poor-ssb\t120\tadaptive-t\t1000.0\tfixed-wn7-long\t900.0\t1133.0\tno\tssb\t1\t0.0\tfail", "a link was lost, whatever the goodput");
-        gate[2].Should().EndWith("\tssb\t0\t3.0\tpass", "below the baseline's goodput, but no link lost and 3 of 100 transmissions on wn8-long");
-        gate[3].Should().EndWith("\tssb\t0\t10.0\tfail", "10 of 100 transmissions on a rung that never decodes");
+        gate[1].Should().Be("poor-ssb\t120\tadaptive-t\t1000.0\tfixed-wn7-long\t900.0\t1133.0\tno\tssb-all-tx\t1\t-\t-\t0.0\t0.0\tfail", "a link was lost, whatever the goodput");
+        gate[2].Should().EndWith("\tssb-all-tx\t0\t-\t-\t3.0\t3.0\tpass", "below the baseline's goodput, but no link lost and 3 of 100 transmissions on wn8-long");
+        gate[3].Should().EndWith("\tssb-all-tx\t0\t-\t-\t10.0\t10.0\tfail", "10 of 100 transmissions on a rung that never decodes");
 
         // Adaptive runs alone (a targeted re-run): no baseline, still gated on an SSB channel, and not on AWGN.
         string[] alone = Merge.Gate([results[2], new RunResult { Id = "x", Channel = "awgn", SnrTenthDb = 180, Config = "adaptive-t", Seed = 1, GoodputBps = 2000 }]).TrimEnd('\n').Split('\n');
         alone.Should().HaveCount(2);
-        alone[1].Should().Be("poor-ssb\t180\tadaptive-t\t983.0\t-\t-\t-\tno\tssb\t0\t3.0\tpass");
+        alone[1].Should().Be("poor-ssb\t180\tadaptive-t\t983.0\t-\t-\t-\tno\tssb-all-tx\t0\t-\t-\t3.0\t3.0\tpass");
+    }
+
+    [Fact]
+    public void On_an_ssb_channel_the_gate_counts_only_the_transmissions_after_the_first_ceiling()
+    {
+        // Ruling (f) of 2026-11-09 (open question 14 as written): the learning before a node's first failed-trial
+        // ceiling is not counted. wn8-long never decodes on poor-ssb. Each node: (rung, all, after the first ceiling, ok).
+        static NodeStats Node(long after, params (string Rung, long Count, long After, long Ok)[] rungs)
+        {
+            var n = new NodeStats { TransmissionsAfterFirstCeiling = after };
+            foreach ((string rung, long count, long a, long ok) in rungs)
+            {
+                n.Rungs[rung] = new RungStats { Count = count, CountAfterFirstCeiling = a, DpdusOk = ok };
+            }
+
+            return n;
+        }
+
+        RunResult R(string config, int snr, int seed, NodeStats a, NodeStats b) => new()
+        {
+            Id = $"{config}-{snr}-{seed}", Channel = "poor-ssb", SnrTenthDb = snr, Config = config, Seed = seed, GoodputBps = 1000,
+            Nodes = new(StringComparer.Ordinal) { ["a"] = a, ["b"] = b },
+        };
+
+        RunResult[] results =
+        [
+            R("fixed-wn8-long", 180, 1, Node(0, ("wn8-long", 40, 0, 0)), Node(0, ("wn8-long", 40, 0, 0))),
+            // 8 of 100 on wn8-long, but 6 of them before node a's first ceiling: 2 of the 90 after it.
+            R("adaptive-t", 180, 1, Node(80, ("wn7-long", 82, 78, 900), ("wn8-long", 8, 2, 0)), Node(10, ("wn7-long", 10, 10, 100))),
+            // Seed 2: no ceiling at all on either node, so nothing is counted after one.
+            R("adaptive-t", 180, 2, Node(0, ("wn7-long", 100, 0, 900)), Node(0, ("wn7-long", 10, 0, 100))),
+            // At 300: 3 of 20 after the ceiling are on wn8-long (15%), a fail though only 3 of 130 overall (2.3%).
+            R("adaptive-t", 300, 1, Node(20, ("wn7-long", 117, 17, 900), ("wn8-long", 3, 3, 0)), Node(0, ("wn7-long", 10, 0, 100))),
+        ];
+        string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
+        gate.Should().HaveCount(3);
+        gate[1].Should().EndWith("\tssb\t0\t2\t90\t2.2\t3.8\tpass", "2 of the 90 transmissions after the first ceiling over both seeds, though 8 of 210 overall");
+        gate[2].Should().EndWith("\tssb\t0\t3\t20\t15.0\t2.3\tfail", "3 of 20 after the ceiling, though 3 of 130 overall");
+    }
+
+    [Fact]
+    public void The_final_profile_is_the_baseline_rungs_and_the_calibrated_table_with_one_first_data_wait()
+    {
+        // P7-10 (calibration plan "Final"): AWGN, Poor, Poor-SSB; 0 to 30 dB in 3 dB steps; fixed WN 1 to 8 and 13
+        // Long plus the calibrated table; 5 seeds of 30 minutes; both arms with the wait the table derives.
+        SweepSettings f = SweepSettings.ForProfile("final");
+        f.Configs.Should().HaveCount(10).And.Contain("adaptive:ms110d-cs-0.6.1").And.Contain("fixed:wn13-long");
+        f.Jobs().Should().HaveCount(3 * 11 * 10 * 5);
+        SweepConfig adaptive = SweepConfig.Parse("adaptive:ms110d-cs-0.6.1");
+        adaptive.Id.Should().Be("adaptive-ms110d-cs-0.6.1");
+        long derived = SweepSettings.DerivedFirstDataMs(adaptive, f.NodeOverlay());
+        derived.Should().BeGreaterThan(3 * 57_000L, "the ladder's slowest rung, WN 1 Long, needs more than three answer waits for a 2054-byte C_PDU");
+        f.Jobs().Should().OnlyContain(j => ConfigReader.Read(j.NodeJson(true)).Cas.FirstDataTimeoutMs == derived, "both arms wait alike");
+        f.Describe()["node_overlay"]!["cas"]!["first_data_timeout_ms"]!.GetValue<long>().Should().Be(derived, "the plan records it, so a resume with another wait is refused");
+
+        // The other profiles leave it unset, and a number or unset can be given.
+        SweepSettings.ForProfile("baseline").EffectiveOverlay()["cas"]!["first_data_timeout_ms"].Should().BeNull();
+        (f with { FirstData = "600000" }).EffectiveOverlay()["cas"]!["first_data_timeout_ms"]!.GetValue<long>().Should().Be(600_000);
+        FluentActions.Invoking(() => (f with { Configs = ["fixed:wn8-long"] }).EffectiveOverlay()).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void The_points_file_puts_adaptive_beside_the_baseline_and_the_best_fixed_rung()
+    {
+        RunResult R(string config, int snr, int seed, double bps) => new() { Id = $"{config}-{snr}-{seed}", Channel = "awgn", SnrTenthDb = snr, Config = config, Seed = seed, GoodputBps = bps };
+        RunResult[] results =
+        [
+            R("fixed-wn8-long", 0, 1, 0), R("fixed-wn2-long", 0, 1, 100), R("adaptive-t", 0, 1, 150), R("adaptive-t", 0, 2, 50),
+            R("fixed-wn8-long", 300, 1, 2000), R("fixed-wn2-long", 300, 1, 300), R("adaptive-t", 300, 1, 2400), R("adaptive-t", 300, 2, 2000),
+        ];
+        string[] lines = Merge.Points(results, Merge.Gate(results)).TrimEnd('\n').Split('\n');
+        lines.Should().HaveCount(3);
+        lines[1].Should().Be("awgn\t0.0\tadaptive-t\t100.0\t50.0\t150.0\tfixed-wn8-long\t0.0\t0.0\t0.0\tfixed-wn2-long\t100.0\t-\t0.0\t0\tgoodput\tpass");
+        lines[2].Should().Be("awgn\t30.0\tadaptive-t\t2200.0\t2000.0\t2400.0\tfixed-wn8-long\t2000.0\t2000.0\t2000.0\tfixed-wn8-long\t2000.0\t10.0\t10.0\t0\tgoodput\tpass");
     }
 
     [Fact]

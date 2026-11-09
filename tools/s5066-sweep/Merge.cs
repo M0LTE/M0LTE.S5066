@@ -6,7 +6,7 @@ namespace M0LTE.S5066.Sweep;
 /// <summary>
 /// Merges the per-run JSON files into the small aggregates that come back from a spot instance:
 /// <c>curve-&lt;channel&gt;.tsv</c> per channel (one line per set SNR and configuration, over the seeds),
-/// <c>baseline.tsv</c> (per channel, the fixed rung with the highest goodput summed over the sweep,
+/// <c>points.tsv</c> (the published curve, <see cref="Points"/>), <c>baseline.tsv</c> (per channel, the fixed rung with the highest goodput summed over the sweep,
 /// open question 14, and each point's best fixed rung), <c>gate.tsv</c> (the P7-10 gate per point,
 /// <see cref="Gate"/>), <c>turnaround.tsv</c> and <c>overshoot.tsv</c>
 /// (the gap between bursts and the EOT overshoot per channel and rung, all runs pooled), and
@@ -37,8 +37,11 @@ internal static class Merge
 
         string[] failed = Directory.Exists(runs) ? [.. Directory.GetFiles(runs, "*.failed").Select(Path.GetFileNameWithoutExtension).OfType<string>()] : [];
         Write(aggDir, results);
+        // The builds the runs came from (docs/rate-selection.md quotes them): normally one set.
+        string versions = string.Join(", ", results.Select(r => string.Join(",", r.Versions.Select(kv => $"\"{kv.Key}\": \"{kv.Value}\""))).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(v => "{" + v + "}"));
         string summary = string.Create(CultureInfo.InvariantCulture,
             $"{{\n  \"planned\": {jobs.Count},\n  \"merged\": {results.Count},\n  \"complete\": {(missing.Count == 0 ? "true" : "false")},\n" +
+            $"  \"versions\": [{versions}],\n" +
             $"  \"missing\": [{string.Join(", ", missing.Select(m => "\"" + m + "\""))}],\n  \"failed\": [{string.Join(", ", failed.Select(m => "\"" + m + "\""))}]\n}}\n");
         File.WriteAllText(Path.Combine(aggDir, "merge.json"), summary);
         File.Copy(Path.Combine(outDir, "plan.json"), Path.Combine(aggDir, "plan.json"), overwrite: true);
@@ -58,14 +61,18 @@ internal static class Merge
     /// of the transmissions on rungs that never decode there, at every point; the goodput columns are
     /// reported for information. A rung never decodes on a channel when every transmission on it, over every
     /// run of that channel in the merge (any configuration, SNR and seed, both nodes), delivered no D_PDU
-    /// whole. Open question 14 counts the transmissions after the first ceiling; the run JSON keeps no
-    /// order, so every transmission is counted, the learning ones before the first ceiling included. That
-    /// usually raises the share, but it is not stricter in every case: the larger denominator can dilute it.
+    /// whole. Open question 14 counts the transmissions after the first ceiling (ruling (f) of 2026-11-09):
+    /// per node, those that started after the node's first failed trial set a failed-trial ceiling (interp
+    /// C-1281), so the learning before it is not counted. The share is the transmissions on rungs that never
+    /// decode after the first ceiling over all transmissions after it, both nodes, every seed of the point
+    /// (0 when no node set a ceiling). Results written before the runs recorded the order (no
+    /// <c>transmissions_after_first_ceiling</c>) fall back to every transmission, rule <c>ssb-all-tx</c>.
+    /// Column <c>never_decode_tx_pct_all_tx</c> gives that share over every transmission, for information.
     /// </summary>
     internal static string Gate(IReadOnlyList<RunResult> results)
     {
         var inv = CultureInfo.InvariantCulture;
-        var sb = new StringBuilder("channel\tset_snr_tenth_db\tadaptive_config\tadaptive_mean_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_ceiling_bps\tat_ceiling\trule\tlinks_lost\tnever_decode_tx_pct\tverdict\n");
+        var sb = new StringBuilder("channel\tset_snr_tenth_db\tadaptive_config\tadaptive_mean_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_ceiling_bps\tat_ceiling\trule\tlinks_lost\tnever_decode_tx_after_ceiling\ttx_after_ceiling\tnever_decode_tx_pct\tnever_decode_tx_pct_all_tx\tverdict\n");
         foreach (IGrouping<string, RunResult> ch in results.GroupBy(r => r.Channel).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             bool ssb = ch.Key.EndsWith("-ssb", StringComparison.Ordinal);
@@ -101,13 +108,24 @@ internal static class Merge
                 long links = pt.Sum(r => r.LinksLost);
                 long tx = 0;
                 long txNever = 0;
-                foreach ((string rung, RungStats s) in pt.SelectMany(r => r.Nodes.Values).SelectMany(n => n.Rungs))
+                long txAfter = 0;
+                long txNeverAfter = 0;
+                bool exact = true;
+                foreach (NodeStats n in pt.SelectMany(r => r.Nodes.Values))
                 {
-                    tx += s.Count;
-                    txNever += never.Contains(rung) ? s.Count : 0;
+                    exact &= n.TransmissionsAfterFirstCeiling is not null;
+                    txAfter += n.TransmissionsAfterFirstCeiling ?? 0;
+                    foreach ((string rung, RungStats s) in n.Rungs)
+                    {
+                        tx += s.Count;
+                        txNever += never.Contains(rung) ? s.Count : 0;
+                        exact &= s.CountAfterFirstCeiling is not null;
+                        txNeverAfter += never.Contains(rung) ? s.CountAfterFirstCeiling ?? 0 : 0;
+                    }
                 }
 
-                double pct = tx == 0 ? 0 : 100.0 * txNever / tx;
+                double pctAll = tx == 0 ? 0 : 100.0 * txNever / tx;
+                double pct = !exact ? pctAll : txAfter == 0 ? 0 : 100.0 * txNeverAfter / txAfter;
                 double? b = baseline is not null && means.TryGetValue((baseline, snr), out double bb) ? bb : null;
                 bool atCeiling = b is double bv && ceiling > 0 && bv >= 0.98 * ceiling;
                 string verdict;
@@ -126,7 +144,54 @@ internal static class Merge
                         : mean > bm || (atCeiling && mean >= 0.98 * ceiling) ? "pass" : "fail";
                 }
 
-                sb.Append(inv, $"{ch.Key}\t{snr}\t{config}\t{mean:F1}\t{baseline ?? "-"}\t{(b is double x ? x.ToString("F1", inv) : "-")}\t{(baseline is null ? "-" : ceiling.ToString("F1", inv))}\t{(atCeiling ? "yes" : "no")}\t{(ssb ? "ssb" : "goodput")}\t{links}\t{pct:F1}\t{verdict}\n");
+                sb.Append(inv, $"{ch.Key}\t{snr}\t{config}\t{mean:F1}\t{baseline ?? "-"}\t{(b is double x ? x.ToString("F1", inv) : "-")}\t{(baseline is null ? "-" : ceiling.ToString("F1", inv))}\t{(atCeiling ? "yes" : "no")}\t{(!ssb ? "goodput" : exact ? "ssb" : "ssb-all-tx")}\t{links}\t{(exact ? txNeverAfter.ToString(inv) : "-")}\t{(exact ? txAfter.ToString(inv) : "-")}\t{pct:F1}\t{pctAll:F1}\t{verdict}\n");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The published curve (P7-10, docs/rate-selection.md): one line per channel, set SNR and adaptive
+    /// configuration, with the channel's baseline rung (open question 14) and the point's best fixed rung
+    /// (the oracle, reported with the gap, not gated) at the same point, goodput mean, minimum and maximum
+    /// over the seeds, adaptive's gain over each in percent (empty where the other delivers nothing), its
+    /// links lost and the verdict and rule of <see cref="Gate"/>.
+    /// </summary>
+    internal static string Points(IReadOnlyList<RunResult> results, string gate)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var verdicts = new Dictionary<(string, string, string), (string Rule, string Verdict)>();
+        foreach (string line in gate.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1))
+        {
+            string[] f = line.Split('\t');
+            verdicts[(f[0], f[1], f[2])] = (f[8], f[^1]);
+        }
+
+        static string Stats(IReadOnlyCollection<RunResult>? g, IFormatProvider inv) => g is null || g.Count == 0 ? "-\t-\t-"
+            : string.Create(inv, $"{g.Average(r => r.GoodputBps):F1}\t{g.Min(r => r.GoodputBps):F1}\t{g.Max(r => r.GoodputBps):F1}");
+        static string Gain(double a, double? b, IFormatProvider inv) => b is double v && v > 0 ? (100.0 * (a - v) / v).ToString("F1", inv) : "-";
+
+        var sb = new StringBuilder("channel\tset_snr_db\tadaptive_config\tadaptive_mean_bps\tadaptive_min_bps\tadaptive_max_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_min_bps\tbaseline_max_bps\tbest_fixed_config\tbest_fixed_mean_bps\tgain_over_baseline_pct\tgain_over_best_fixed_pct\tadaptive_links_lost\trule\tverdict\n");
+        foreach (IGrouping<string, RunResult> ch in results.GroupBy(r => r.Channel).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var byPoint = ch.GroupBy(r => (r.Config, r.SnrTenthDb)).ToDictionary(g => g.Key, g => g.ToList());
+            var fixedSums = byPoint.Where(kv => kv.Key.Config.StartsWith("fixed-", StringComparison.Ordinal))
+                .GroupBy(kv => kv.Key.Config).Select(g => (Config: g.Key, Sum: g.Sum(kv => kv.Value.Average(r => r.GoodputBps))))
+                .OrderByDescending(x => x.Sum).ThenBy(x => x.Config, StringComparer.Ordinal).ToList();
+            string? baseline = fixedSums.Count > 0 ? fixedSums[0].Config : null;
+            foreach (((string config, int snr), List<RunResult> a) in byPoint.Where(kv => kv.Key.Config.StartsWith("adaptive-", StringComparison.Ordinal))
+                .OrderBy(kv => kv.Key.Config, StringComparer.Ordinal).ThenBy(kv => kv.Key.SnrTenthDb))
+            {
+                double mean = a.Average(r => r.GoodputBps);
+                List<RunResult>? b = baseline is not null && byPoint.TryGetValue((baseline, snr), out List<RunResult>? bl) ? bl : null;
+                var best = byPoint.Where(kv => kv.Key.SnrTenthDb == snr && kv.Key.Config.StartsWith("fixed-", StringComparison.Ordinal))
+                    .Select(kv => (kv.Key.Config, Mean: kv.Value.Average(r => r.GoodputBps)))
+                    .OrderByDescending(x => x.Mean).ThenBy(x => x.Config, StringComparer.Ordinal).ToList();
+                (string Rule, string Verdict) v = verdicts.TryGetValue((ch.Key, snr.ToString(inv), config), out var vv) ? vv : ("-", "-");
+                sb.Append(inv, $"{ch.Key}\t{snr / 10.0:0.0}\t{config}\t{Stats(a, inv)}\t{baseline ?? "-"}\t{Stats(b, inv)}\t")
+                  .Append(inv, $"{(best.Count > 0 ? best[0].Config : "-")}\t{(best.Count > 0 ? best[0].Mean.ToString("F1", inv) : "-")}\t")
+                  .Append(inv, $"{Gain(mean, b?.Average(r => r.GoodputBps), inv)}\t{Gain(mean, best.Count > 0 ? best[0].Mean : null, inv)}\t{a.Sum(r => r.LinksLost)}\t{v.Rule}\t{v.Verdict}\n");
             }
         }
 
@@ -184,7 +249,9 @@ internal static class Merge
         }
 
         File.WriteAllText(Path.Combine(aggDir, "baseline.tsv"), bl.ToString());
-        File.WriteAllText(Path.Combine(aggDir, "gate.tsv"), Gate(results));
+        string gate = Gate(results);
+        File.WriteAllText(Path.Combine(aggDir, "gate.tsv"), gate);
+        File.WriteAllText(Path.Combine(aggDir, "points.tsv"), Points(results, gate));
 
         var ta = new StringBuilder("channel\tconfig_kind\trung\tkind\tn\tmin_ms\tp10_ms\tmedian_ms\tmean_ms\tp90_ms\tmax_ms\n");
         var os = new StringBuilder("channel\tconfig_kind\trung\tn\tmin_ms\tp10_ms\tmedian_ms\tmean_ms\tp90_ms\tmax_ms\n");

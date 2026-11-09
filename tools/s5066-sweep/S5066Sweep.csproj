@@ -25,6 +25,8 @@
   <ItemGroup>
     <None Include="sweep-node.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="tables/*.json" CopyToOutputDirectory="PreserveNewest" LinkBase="tables" />
+    <!-- The calibrated table the host loads by default (P7-9a), as tables/ms110d-cs-0.6.1.json for the final profile. -->
+    <None Include="../../conformance/calibration/ms110d-cs-0.6.1/drc-table.json" Link="tables/ms110d-cs-0.6.1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -141,6 +141,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// the EOWs received from it and the sender's own evidence, or null for a peer with no entry.
     /// Set by <see cref="DtsPeers"/>.
     /// </summary>
+    /// <summary>Called when a failed trial sets a ceiling on the all-failed path (diagnostic count only).</summary>
+    public Action? FailedTrialSet { get; set; }
+
     public Func<uint, (ReceivedEows Received, SenderRate Sender)?> RateStateOf { get; set; } = _ => null;
 
     /// <summary>The queued normal-delivery requests, in arrival order.</summary>
@@ -530,7 +533,10 @@ internal sealed class TransmitQueue : ITransmissionSource
             && rate.DataAwaited && rate.DataTransmission is long awaited && failedIn.Contains(awaited)
             && !link.Outstanding.Any(f => f.SentIn == awaited && f.State == ArqFrameState.Awaiting))
         {
-            rate.OnDataAllFailed(awaited, _context.Config.Drc.Table);
+            if (rate.OnDataAllFailed(awaited, _context.Config.Drc.Table))
+            {
+                FailedTrialSet?.Invoke();
+            }
         }
 
         if (!link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))

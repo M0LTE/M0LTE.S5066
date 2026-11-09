@@ -94,6 +94,12 @@ internal sealed class RungStats
 
     public long AckOnlyTransmissions { get; set; }
 
+    /// <summary>
+    /// Transmissions on this rung that started after the node's first failed-trial ceiling (interp C-1281;
+    /// open question 14, ruling (f) of 2026-11-09), or null in results written before it was recorded.
+    /// </summary>
+    public long? CountAfterFirstCeiling { get; set; }
+
     /// <summary>clean, partial, failed, missed, collided.</summary>
     public SortedDictionary<string, long> Outcomes { get; set; } = new(StringComparer.Ordinal);
 
@@ -111,6 +117,7 @@ internal sealed class RungStats
         DataDpdus += o.DataDpdus;
         RetransmittedDpdus += o.RetransmittedDpdus;
         AckOnlyTransmissions += o.AckOnlyTransmissions;
+        CountAfterFirstCeiling = CountAfterFirstCeiling is long a && o.CountAfterFirstCeiling is long b ? a + b : null;
         SnrCount += o.SnrCount;
         SnrSumTenths += o.SnrSumTenths;
         foreach ((string k, long c) in o.Outcomes)
@@ -127,6 +134,21 @@ internal sealed class NodeStats
     public long Transmissions { get; set; }
 
     public long AckOnlyTransmissions { get; set; }
+
+    /// <summary>Failed trials of this node, each setting a failed-trial ceiling (interp C-1281).</summary>
+    public long FailedTrials { get; set; }
+
+    /// <summary>
+    /// When the node's first failed trial set a ceiling, ms from the start of the run, or null when none
+    /// did (or in results written before ruling (f) of 2026-11-09).
+    /// </summary>
+    public long? FirstCeilingMs { get; set; }
+
+    /// <summary>
+    /// Transmissions that started after <see cref="FirstCeilingMs"/> (0 when there was none), or null in
+    /// results written before ruling (f) of 2026-11-09: the denominator of the SSB gate (open question 14).
+    /// </summary>
+    public long? TransmissionsAfterFirstCeiling { get; set; }
 
     public long DataDpdus { get; set; }
 

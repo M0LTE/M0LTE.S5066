@@ -14,6 +14,7 @@ public sealed class Node
 {
     private readonly CoreContext _context;
     private readonly Dispatcher _dispatcher;
+    private readonly DtsSublayer _dts;
 
     /// <summary>Creates a node at time 0.</summary>
     /// <param name="config">The configuration.</param>
@@ -26,6 +27,7 @@ public sealed class Node
         _context = new CoreContext(config, modem);
         var mac = new MacSublayer(_context, new SplitMix64(prngSeed));
         var dts = new DtsSublayer(_context, mac);
+        _dts = dts;
         mac.Transmitter = dts.Transmitter;
         _dispatcher = new Dispatcher(_context, new SisSublayer(_context), new CasSublayer(_context), dts, mac);
     }
@@ -40,6 +42,12 @@ public sealed class Node
         get => _context.Trace;
         set => _context.Trace = value;
     }
+
+    /// <summary>
+    /// Failed trials since creation, each of which set a failed-trial ceiling (interp C-1281). A
+    /// diagnostic for the stack sweep (open question 14), never part of the T2 outputs.
+    /// </summary>
+    internal long FailedTrials => _dts.Peers.FailedTrials;
 
     /// <summary>The time of the last input handled, in ms since creation.</summary>
     public long Now => _context.Now;
