@@ -13,7 +13,7 @@ namespace M0LTE.S5066.Core.Tests.T2;
 /// the fill (C-1154). Nothing is read back from the implementation. Set S5066_WRITE_P77 to a
 /// directory to write the files; otherwise the test does nothing.
 /// </summary>
-public class P77Scenarios
+public partial class P77Scenarios
 {
     private const uint Us = 0x0102;
     private const uint P3 = 0x0103;
@@ -502,16 +502,19 @@ public class P77Scenarios
     /// carrying MAX-SPEED WN 4 Long (0x885) in its EOW, up to the burst end at 92000 and the contention
     /// that follows (draws 1 and 2 of seed 0). Returns the time of the first data transmission.
     /// </summary>
-    private static long CallerOpening(ScenarioBuilder b, Draws d)
+    private static long CallerOpening(ScenarioBuilder b, Draws d) => CallerOpeningWith(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+
+    /// <summary>As <see cref="CallerOpening"/>, with the EOW of the peer's PHYSICAL LINK ACCEPTED and the first U_PDU given.</summary>
+    private static long CallerOpeningWith(ScenarioBuilder b, Draws d, int acceptedEow, byte[] firstUpdu)
     {
         b.SisConnect(0, 1);
         b.SisBytes(0, 1, "90eb00000401501000").ExpectSisBytes(1, "90eb00000403500800");
-        b.SisBytes(0, 1, ArqRequest("ping"u8.ToArray())).ExpectLinkState("0.0.1.3", LinkStateName.Calling).ExpectTimerStart("csma.lbt_wait", 30000);
+        b.SisBytes(0, 1, ArqRequest(firstUpdu)).ExpectLinkState("0.0.1.3", LinkStateName.Calling).ExpectTimerStart("csma.lbt_wait", 30000);
         b.TimerExpired(30000, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", d.Next());
         b.TimerExpired(75000, "csma.cont_wait").ExpectTransmit("90eb80000a6f10310200010000010000000a5cf612977d6864", 2, Interleaver.Long);
         b.TransmitDone(80550).ExpectTimerStart("cas.link_request/0.0.1.3", 60000);
         var accepted = Decode("90eb80000a6f10210300010000010000000a8bb22269d8f546");
-        accepted = accepted with { Header = accepted.Header with { Eow = MaxSpeed(4, Interleaver.Long) } };
+        accepted = accepted with { Header = accepted.Header with { Eow = acceptedEow } };
         b.BurstStarted(90000).BytesReceived(91000, Hex(Enc(accepted)))
             .ExpectTimerCancel("cas.link_request/0.0.1.3").ExpectLinkState("0.0.1.3", LinkStateName.Linked)
             .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 360000).ExpectTimerStart("dts.ttd", 1295909000);
