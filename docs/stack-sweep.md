@@ -167,20 +167,19 @@ No link was lost in any run. On Poor-SSB the gate of open question 14 is not goo
 
 ## P7-9 round 4 (2026-11-09)
 
-The coordinator rulings (a) to (d) of 2026-11-09 (corpus 0.37.0): (a) with the probe, a burst that is not clean moves MAX-SPEED down one position of the bulk walk at most, the caps still applying; (b) a move up of LOW-SPEED may be backed by a clean run on a higher received rung; (c) issue #38, the reception window allows each later transmission one block and 1.5 s of host latency (non-ARQ only, so no effect on these runs); (d) `gate.tsv` gates SSB channels on no link lost and under 5% of transmissions on rungs that never decode. Studybox, 1800 s, seeds 1 to 3, the same table and `sweep-node.json` as round 3. The gate column is `gate.tsv` from a merge of these runs with the round 1 fixed runs (all 891, so the baseline rungs and ceilings are the full sweep's).
+The coordinator rulings (a) to (d) of 2026-11-09 and the further ruling the same day (corpus 0.37.0): (a) with the probe, MAX-SPEED moves down only after a burst whose D_PDU error rate is over `rx_error_limit_ppt` or which has a lost block, and then one position of the bulk walk at most, the caps still applying; (b) a move up of LOW-SPEED may be backed by a clean run on a higher received rung; (c) issue #38, the reception window allows each later transmission one block and 1.5 s of host latency (non-ARQ only, so no effect on these runs); (d) `gate.tsv` gates SSB channels on no link lost and under 5% of transmissions on rungs that never decode. Studybox, 1800 s, seeds 1 to 3, the same table and `sweep-node.json` as round 3. The gate column is `gate.tsv` from a merge of these runs with the round 1 fixed runs (all 891, so the baseline rungs and ceilings are the full sweep's). "First form" is (a) as first ruled, where any burst that was not clean moved MAX-SPEED down one bulk rung.
 
-| Point | Round 3 | Round 4 | Per seed | Gate baseline | Gate |
-|---|---|---|---|---|---|
-| AWGN 9 dB | 1089 | 1161 | 1328, 1045, 1111 | 0 | pass |
-| AWGN 12 dB | 1921 | 1874 | 2015, 1798, 1808 | 0 | pass |
-| AWGN 18 dB | 2408 | 2367 | 2505, 2486, 2109 | 2175 | pass |
-| AWGN 30 dB | 2408 | 2367 | 2505, 2486, 2109 | 2175 | pass |
-| Poor 12 dB | 976 | 1039 | 1064, 1158, 895 | 0 | pass |
-| Poor 18 dB | 1660 | 1698 | 1516, 1968, 1610 | 1924 | fail (-12%) |
-| Poor 30 dB | 2407 | 2185 | 2335, 2260, 1959 | 2059 | pass |
-| Poor-SSB 18 dB | 983 | 998 | 979, 923, 1092 | 1133 (WN 7 Long) | pass (SSB rule: no link lost, 0% on rungs that never decode) |
+| Point | Round 3 | Round 4, first form | Round 4 | Per seed | Gate baseline | Gate |
+|---|---|---|---|---|---|---|
+| AWGN 9 dB | 1089 | 1161 | 1161 | 1328, 1045, 1111 | 0 | pass |
+| AWGN 12 dB | 1921 | 1874 | 1874 | 2015, 1798, 1808 | 0 | pass |
+| AWGN 18 dB | 2408 | 2367 | 2367 | 2505, 2486, 2109 | 2175 | pass |
+| AWGN 30 dB | 2408 | 2367 | 2367 | 2505, 2486, 2109 | 2175 | pass |
+| Poor 12 dB | 976 | 1039 | 1001 | 1017, 1121, 866 | 0 | pass |
+| Poor 18 dB | 1660 | 1698 | 1999 | 2156, 2194, 1648 | 1924 | pass |
+| Poor 30 dB | 2407 | 2185 | 2185 | 2335, 2260, 1959 | 2059 | pass |
+| Poor-SSB 18 dB | 983 | 998 | 1168 | 1234, 1064, 1205 | 1133 (WN 7 Long) | pass (SSB rule: no link lost, 0% on rungs that never decode; goodput also above) |
 
-No link was lost in any run. Every change is within the 10 to 20% a single seed moves when contention order diverges, except that the slow start of LOW-SPEED is gone: the bulk sender spent 0 to 87 s on WN 1 Medium early in each round 3 run on Poor and Poor-SSB, and 0 s in every round 4 run.
+No link was lost in any run. All eight points pass. AWGN and Poor 30 dB are identical to the bit between the two forms (no burst there had errors under the limit). Apart from Poor 18 dB and Poor-SSB 18 dB, the changes from round 3 are within the 10 to 20% a single seed moves when contention order diverges, except that the slow start of LOW-SPEED is gone: the bulk sender spent 0 to 87 s on WN 1 Medium early in each round 3 run on Poor and Poor-SSB, and 0 s in every round 4 run.
 
-- **Poor 18 dB, what (a) did.** The bulk sender's air time on WN 13 Long and WN 6 Medium fell from 29 to 45% to 14 to 28%, as intended, but WN 7 Medium took it: 28 to 35% of its air time (11 to 18% in round 3), and there WN 7 Medium lost 22% of its D_PDUs (270 of 1247), against 0.4% in round 3, where it was only reached by climbing in good spells. The step down follows a fade, and the next burst meets a new one: on Poor at 18 dB the fades are short against a 25 s burst and hit WN 7 Medium as they hit WN 8 Long. Fixed WN 8 Long at the same point delivers 99% of its D_PDUs (round 1, 13 of 32 bursts partial, a few D_PDUs each). So the remaining loss is moving off WN 8 Long at all on a burst with a few errors, not how far it moves.
-- **Trial, not in the code (for a ruling):** on top of round 4, MAX-SPEED moves down after a burst only when its data D_PDU error rate is over `rx_error_limit_ppt` or it has a lost block; a burst with a few corrupted D_PDUs and every block accounted for holds it. Same runs, bit/s: Poor 18 dB 1999 (2156, 2194, 1648) against 1698, above the 1924 gate; Poor 12 dB 1001 against 1039 (within noise); AWGN 12 dB 1874, identical to the bit. It differs from the P7-9d trial, which round 2 rejected at AWGN 12 dB and Poor 12 dB, in two ways: a lost block (a collision, or a fade that took whole blocks) still moves MAX-SPEED down, and the move is one bulk rung.
+- **Poor 18 dB, why the first form was not enough.** It cut the bulk sender's air time on WN 13 Long and WN 6 Medium from 29 to 45% to 14 to 28%, but the step landed on WN 7 Medium: 28 to 35% of its air time (11 to 18% in round 3), where WN 7 Medium lost 22% of its D_PDUs (270 of 1247), against 0.4% in round 3, where it was only reached by climbing in good spells. The step down follows a fade, and the next burst meets a new one: at 18 dB on Poor the fades are short against a 25 s burst and hit WN 7 Medium as they hit WN 8 Long. Fixed WN 8 Long at the same point delivers 99% of its D_PDUs (round 1, 13 of 32 bursts partial, a few D_PDUs each). Holding the rung on a burst with a few corrupted D_PDUs and no lost block took Poor 18 dB from 1698 to 1999 and Poor-SSB 18 dB from 998 to 1168; Poor 12 dB 1039 to 1001 is within noise. It differs from the P7-9d trial, which round 2 rejected at AWGN 12 dB and Poor 12 dB, in two ways: a lost block (a collision, or a fade that took whole blocks) still moves MAX-SPEED down, and the move is one bulk rung.
