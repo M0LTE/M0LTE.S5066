@@ -351,7 +351,7 @@ public class SoftLinkSessionTests
         NodeConfig unset = ConfigReader.Read(config);
         unset.Sis.Should().Be(new SisConfig(SisConfig.MaxTtl));
         unset.SoftLinkIdleMs().Should().Be(3 * 205500);
-        unset.SoftLinkMinHoldMs().Should().Be(3 * 205500);
+        unset.SoftLinkMinHoldMs(new T2.FixtureModem(unset.Modem)).Should().Be(3 * 205500);
         unset.SoftLinkMaxMs().Should().Be(6 * 205500);
         ConfigReader.Read(ConfigMerge.Merge(config, JsonNode.Parse("""{"dts":{"ack_wait_ms":40000}}""")!.AsObject()))
             .SoftLinkMaxMs().Should().Be(240000);

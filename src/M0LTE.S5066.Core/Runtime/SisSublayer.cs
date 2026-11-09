@@ -993,7 +993,7 @@ internal sealed class SisSublayer : ISisSublayer
             link = new SoftLink(SoftLinkState.Established) { Called = called, EstablishedAt = _context.Now };
             _softLinks[peer] = link;
             NodeConfig config = _context.Config;
-            if (called && config.SoftLinkMinHoldMs() is long hold and > 0)
+            if (called && config.SoftLinkMinHoldMs(_context.Modem) is long hold and > 0)
             {
                 _context.Timers.Start(MinHoldTimer(peer), hold);
             }

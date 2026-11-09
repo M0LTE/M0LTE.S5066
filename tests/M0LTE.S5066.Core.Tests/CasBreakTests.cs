@@ -213,7 +213,8 @@ public class CasBreakTests
     [Fact]
     public void Unset_first_data_wait_covers_a_largest_cpdu_on_the_slowest_rung()
     {
-        // Interp B-0420 as revised in corpus 0.33.0 (P7-9c): max(3, ceil(2054 / c)) answer waits.
+        // Interp B-0420 as revised in corpus 0.34.0 (P7-9d): max(3, ceil(2054 / c) + 2) answer waits, c the user
+        // octets after D_PDU overheads of at most 23 octets per DATA-ONLY D_PDU of up to dts.max_segment_size.
         JsonObject defaults = Corpus.T2Defaults.DeepClone().AsObject();
         defaults["local_address"] = "0.0.1.2";
         defaults["modem"] = JsonNode.Parse("""{"preamble_ms":600,"flush_ms":150,"eom_bytes":2,"waveforms":[{"wn":1,"interleaver":"long","block_bytes":50,"block_ms":9600},{"wn":2,"interleaver":"long","block_bytes":3000,"block_ms":9600}]}""");
@@ -222,17 +223,33 @@ public class CasBreakTests
         NodeConfig c = ConfigReader.Read(defaults);
         var modem = new T2.FixtureModem(c.Modem);
         long wait = 30000 + 30000 + (16 * 3000);
-        c.FirstDataTimeoutMs(modem).Should().Be(14 * wait);   // 3 x 50 - 2 = 148 bytes; 13 x 148 = 1924 is short, so 14
-        defaults["dts"]!["max_transmission_ms"] = 5000;          // shorter than a block: one block, 48 bytes, ceil(2054 / 48) = 43
+        c.FirstDataTimeoutMs(modem).Should().Be(19 * wait);   // 3 x 50 - 2 = 148 octets, 125 after overhead; ceil(2054 / 125) = 17, + 2
+        c.SoftLinkMinHoldMs(modem).Should().Be(19 * wait);   // the minimum hold follows it (interp A-0321)
+        defaults["dts"]!["max_transmission_ms"] = 5000;          // shorter than a block: one block, 48 octets, 25 after overhead, ceil(2054 / 25) = 83
         c = ConfigReader.Read(defaults);
-        c.FirstDataTimeoutMs(modem).Should().Be(43L * (5000 + 30000 + (16 * 3000)));
+        c.FirstDataTimeoutMs(modem).Should().Be(85L * (5000 + 30000 + (16 * 3000)));
+        defaults["cas"]!["first_data_timeout_ms"] = 1000;      // set: used as is, and the minimum hold stays three answer waits
+        c = ConfigReader.Read(defaults);
+        (c.FirstDataTimeoutMs(modem), c.SoftLinkMinHoldMs(modem)).Should().Be((1000L, 3L * (5000 + 30000 + (16 * 3000))));
+        defaults["cas"]!["first_data_timeout_ms"] = null;
         defaults["drc"]!["table"]!["ladder"] = JsonNode.Parse("""[{"wn":2,"interleaver":"long"}]""");
         c = ConfigReader.Read(defaults);
-        c.FirstDataTimeoutMs(modem).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // one block holds 2998: the floor of three
+        c.FirstDataTimeoutMs(modem).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // one block holds 2998, 2929 after overhead: the floor of three
+        c.SoftLinkMinHoldMs(modem).Should().Be(3L * (5000 + 30000 + (16 * 3000)));
+        defaults["dts"]!["max_segment_size"] = 100;             // 2998 = 24 x 123 + 46: 2400 + 23 = 2423 octets, still one transmission, so 3
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(modem).Should().Be(3L * (5000 + 30000 + (16 * 3000)));
+        defaults["dts"]!["max_segment_size"] = 50;              // 2998 = 41 x 73 + 5: 2050 octets, 4 short of 2054, so ceil = 2, + 2 = 4
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(modem).Should().Be(4L * (5000 + 30000 + (16 * 3000)));
+        defaults["dts"]!["max_segment_size"] = 1023;
         defaults["modem"]!["eom_bytes"] = 50;
         defaults["drc"]!["table"]!["ladder"] = JsonNode.Parse("""[{"wn":1,"interleaver":"long"}]""");
         c = ConfigReader.Read(defaults);
         c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // a block carries nothing: three
+        defaults["modem"]!["eom_bytes"] = 27;
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // 23 octets, all overhead: three
     }
 
     [Fact]

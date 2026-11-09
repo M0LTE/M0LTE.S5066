@@ -63,39 +63,64 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
     public const int MaxDataCpduBytes = 1 + 5 + 2048;
 
     /// <summary>
-    /// cas.first_data_timeout_ms, or when unset the larger of three answer waits (issue #49) and the time to
-    /// deliver one largest DATA C_PDU at the slowest ladder rung (P7-9c): one answer wait per transmission,
-    /// for as many transmissions of the configured length as its bytes need (interp B-0420, revised corpus
-    /// 0.33.0). Each transmission is counted at the capacity the DTS gives it (whole blocks within the
-    /// smaller of 127.5 s and <c>dts.max_transmission_ms</c>, at least one block, less the end-of-message
-    /// room; C-1042, C-1290), with no D_PDU overhead. With an empty <c>drc.table</c>, or a slowest rung
-    /// whose transmission carries nothing, three answer waits, as before. What ends the wait is unchanged.
+    /// The most octets of D_PDU overhead around one DATA-ONLY segment (type 9): the 2-octet sync (C-0082),
+    /// the 10-octet header with its CRC (C-0111, C-0175, C-0092), the largest address field, 7 octets
+    /// (C-0074, C-0123), and the 4-octet CRC-32 after the segment (C-0157). The derived first-data wait
+    /// counts it (interp B-0420, revised P7-9d).
+    /// </summary>
+    public const int MaxDataOnlyOverheadBytes = 2 + 10 + 7 + 4;
+
+    /// <summary>
+    /// cas.first_data_timeout_ms, or when unset <see cref="DerivedFirstDataWaits"/> answer waits
+    /// (interp B-0420, revised corpus 0.34.0). What ends the wait is unchanged.
     /// </summary>
     /// <param name="modem">The modem port, for the slowest rung's block structure.</param>
     public long FirstDataTimeoutMs(IModemPort modem)
     {
         ArgumentNullException.ThrowIfNull(modem);
-        if (Cas.FirstDataTimeoutMs is int set)
+        return Cas.FirstDataTimeoutMs is int set ? set : DerivedFirstDataWaits(modem) * AnswerWaitMs();
+    }
+
+    /// <summary>
+    /// The answer waits of the derived first-data wait (interp B-0420, revised P7-9d): three (issue #49),
+    /// or, with a <c>drc.table</c> ladder, max(3, ceil(2054 / c) + 2), where c is the user octets one
+    /// transmission of the configured length carries on the slowest rung, ladder[0]: the rung's capacity
+    /// within the limit (whole blocks within the smaller of 127.5 s and <c>dts.max_transmission_ms</c>,
+    /// at least one block, less the end-of-message room; C-0551, C-1042, C-1290), cut into DATA-ONLY
+    /// D_PDUs of at most <c>dts.max_segment_size</c> octets, each less
+    /// <see cref="MaxDataOnlyOverheadBytes"/>. The two added waits are the floor's own reasoning: a
+    /// retransmission and the turn. A slowest rung whose transmission carries no user octet, or an empty
+    /// ladder, gives three.
+    /// </summary>
+    /// <param name="modem">The modem port, for the slowest rung's block structure.</param>
+    public long DerivedFirstDataWaits(IModemPort modem)
+    {
+        ArgumentNullException.ThrowIfNull(modem);
+        if (Drc.Table.IsEmpty)
         {
-            return set;
+            return 3;
         }
 
-        long wait = AnswerWaitMs();
-        long transmissions = 3;
-        if (!Drc.Table.IsEmpty)
-        {
-            Speed slowest = Drc.Table.Ladder[0];
-            BurstPlan shape = modem.PlanBurst(slowest.Wn, slowest.Interleaver, 0);
-            long room = Math.Min(DtsConfig.MaxTransmissionLimitMs, Dts.MaxTransmissionMs) - shape.PreambleMs - shape.FlushMs;
-            long blocks = Math.Max(1, room <= 0 ? 0 : room / shape.BlockMs);
-            long capacity = shape.CapacityOf(blocks);
-            if (capacity > 0)
-            {
-                transmissions = Math.Max(transmissions, (MaxDataCpduBytes + capacity - 1) / capacity);
-            }
-        }
+        Speed slowest = Drc.Table.Ladder[0];
+        BurstPlan shape = modem.PlanBurst(slowest.Wn, slowest.Interleaver, 0);
+        long room = Math.Min(DtsConfig.MaxTransmissionLimitMs, Dts.MaxTransmissionMs) - shape.PreambleMs - shape.FlushMs;
+        long blocks = Math.Max(1, room <= 0 ? 0 : room / shape.BlockMs);
+        long capacity = shape.CapacityOf(blocks);
+        long user = UserBytesIn(capacity, Dts.MaxSegmentSize);
+        return user <= 0 ? 3 : Math.Max(3, ((MaxDataCpduBytes + user - 1) / user) + 2);
+    }
 
-        return transmissions * wait;
+    /// <summary>
+    /// The user octets <paramref name="capacity"/> octets carry as DATA-ONLY D_PDUs of at most
+    /// <paramref name="maxSegment"/> octets: q = floor(capacity / (maxSegment + o)) full D_PDUs and a last
+    /// one with what is left less o, where o is <see cref="MaxDataOnlyOverheadBytes"/> (interp B-0420).
+    /// </summary>
+    private static long UserBytesIn(long capacity, int maxSegment)
+    {
+        long whole = maxSegment + MaxDataOnlyOverheadBytes;
+        long q = capacity / whole;
+        long r = capacity % whole;
+        return (q * maxSegment) + Math.Max(0, r - MaxDataOnlyOverheadBytes);
     }
 
     /// <summary>cas.break_timeout_ms, or when unset one answer wait (B-0283; issue #49; interp B-0420).</summary>
@@ -107,8 +132,23 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
     /// <summary>sis.soft_link_idle_ms, or when unset three answer waits (A-0011; interp A-0321).</summary>
     public long SoftLinkIdleMs() => Sis.SoftLinkIdleMs ?? (3 * AnswerWaitMs());
 
-    /// <summary>sis.soft_link_min_hold_ms, or when unset three answer waits, the called node's wait for the first DATA C_PDU (A-0197; interp A-0321).</summary>
-    public long SoftLinkMinHoldMs() => Sis.SoftLinkMinHoldMs ?? (3 * AnswerWaitMs());
+    /// <summary>
+    /// sis.soft_link_min_hold_ms, or when unset the called node's wait for the first DATA C_PDU (A-0197;
+    /// interp A-0321): three answer waits, or with cas.first_data_timeout_ms unset the derived first-data
+    /// wait's <see cref="DerivedFirstDataWaits"/> answer waits when that is more than three (P7-9d).
+    /// </summary>
+    /// <param name="modem">The modem port, for the derived first-data wait.</param>
+    public long SoftLinkMinHoldMs(IModemPort modem)
+    {
+        ArgumentNullException.ThrowIfNull(modem);
+        if (Sis.SoftLinkMinHoldMs is int set)
+        {
+            return set;
+        }
+
+        long waits = Cas.FirstDataTimeoutMs is null ? Math.Max(3, DerivedFirstDataWaits(modem)) : 3;
+        return waits * AnswerWaitMs();
+    }
 
     /// <summary>sis.soft_link_max_ms, or when unset six answer waits, twice the minimum hold (A-0014, A-0015; interp A-0321).</summary>
     public long SoftLinkMaxMs() => Sis.SoftLinkMaxMs ?? (6 * AnswerWaitMs());
