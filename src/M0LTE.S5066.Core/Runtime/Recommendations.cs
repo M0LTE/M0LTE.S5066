@@ -149,7 +149,9 @@ internal static class Recommender
         int? probeRun = table.ProbeRun;
         // P7-9 round 4 (interp C-1291): with the probe, only a burst over the error limit or with a lost block
         // moves MAX-SPEED down; a few corrupted D_PDUs in a burst whose every block is accounted for hold it.
-        bool downTrigger = lostBlock || errors * 1000 > (long)DrcTable.Need(table.RxErrorLimitPpt, "rx_error_limit_ppt") * headers;
+        // Read only with the probe on: without it 6.2 reads rx_error_limit_ppt only for a burst on the ladder (step 2).
+        bool downTrigger = probeRun is not null
+            && (lostBlock || errors * 1000 > (long)DrcTable.Need(table.RxErrorLimitPpt, "rx_error_limit_ppt") * headers);
         st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, downTrigger, bulk: true);
         st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, downTrigger, bulk: false);
 

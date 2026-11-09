@@ -372,4 +372,16 @@ public class RecommendationTests
         Recommender.OnBurst(Table, st, R(2), 400, 1, 0, false);   // a lower rung's run never backs it: WN 2 run 2 backs MAX-SPEED
         (st.MaxSpeed, st.LowSpeed).Should().Be((2, 2));
     }
+
+    [Fact]
+    public void Without_the_probe_a_burst_off_the_ladder_does_not_read_the_error_limit()
+    {
+        // corpus-format.md 6.2 reads rx_error_limit_ppt only in step 2 (a burst on the ladder) and, since corpus
+        // 0.37.0, in the probe's step 6; a table that leaves it null without the probe must not need it here.
+        var off = new DrcTable(Table.Ladder, [.. Table.Thresholds, new DrcThresholds(R(1), [-100, 0, 100], [-100, 100, 200])],
+            SmoothingWeight: 8, CleanRun: 2, RxErrorLimitPpt: null, RxCeilingInitial: 2, RxCeilingCap: 5);
+        var st = new RecommendationState();
+        FluentActions.Invoking(() => Recommender.OnBurst(off, st, R(1), 150, 4, 1, false)).Should().NotThrow();
+        (st.MaxSpeed, st.LowSpeed).Should().Be((2, 1));
+    }
 }

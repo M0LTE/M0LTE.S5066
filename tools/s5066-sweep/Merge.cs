@@ -59,7 +59,8 @@ internal static class Merge
     /// reported for information. A rung never decodes on a channel when every transmission on it, over every
     /// run of that channel in the merge (any configuration, SNR and seed, both nodes), delivered no D_PDU
     /// whole. Open question 14 counts the transmissions after the first ceiling; the run JSON keeps no
-    /// order, so every transmission is counted, which is stricter.
+    /// order, so every transmission is counted, the learning ones before the first ceiling included. That
+    /// usually raises the share, but it is not stricter in every case: the larger denominator can dilute it.
     /// </summary>
     internal static string Gate(IReadOnlyList<RunResult> results)
     {
