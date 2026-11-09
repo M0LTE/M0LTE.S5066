@@ -72,6 +72,27 @@ public class StackSweepTests
     }
 
     [Fact]
+    public void An_adaptive_config_reads_the_calibrated_source_and_table_wrapper()
+    {
+        // A calibrated drc-table.json is {"source": ..., "table": ...} (corpus-format.md 6.1); round 1 had to unwrap it by hand.
+        JsonObject bare = SweepConfig.Parse("adaptive:synthetic-test").Table!;
+        string dir = Directory.CreateTempSubdirectory("s5066-sweep-").FullName;
+        try
+        {
+            string path = Path.Combine(dir, "drc-table.json");
+            File.WriteAllText(path, new JsonObject { ["source"] = new JsonObject { ["calibration"] = "test" }, ["table"] = bare.DeepClone() }.ToJsonString());
+            SweepConfig c = SweepConfig.Parse("adaptive:" + path);
+            c.Id.Should().Be("adaptive-drc-table");
+            c.Table!.ContainsKey("source").Should().BeFalse();
+            c.Table.ToJsonString().Should().Be(bare.ToJsonString());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Rungs_snr_lists_and_channels_parse()
     {
         Rung.Parse("wn13-ultrashort").Should().Be(new Rung(13, Interleaver.UltraShort));

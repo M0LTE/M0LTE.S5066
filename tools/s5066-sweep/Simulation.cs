@@ -286,7 +286,7 @@ internal sealed class Simulation
             foreach (TxRecord t in _txs)
             {
                 tl(string.Create(CultureInfo.InvariantCulture,
-                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.DpduCount}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}"));
+                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.DpduCount}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}{t.Recommendations()}"));
             }
         }
 
