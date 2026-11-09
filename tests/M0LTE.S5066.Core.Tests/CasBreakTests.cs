@@ -211,6 +211,31 @@ public class CasBreakTests
     }
 
     [Fact]
+    public void Unset_first_data_wait_covers_a_largest_cpdu_on_the_slowest_rung()
+    {
+        // Interp B-0420 as revised in corpus 0.33.0 (P7-9c): max(3, ceil(2054 / c)) answer waits.
+        JsonObject defaults = Corpus.T2Defaults.DeepClone().AsObject();
+        defaults["local_address"] = "0.0.1.2";
+        defaults["modem"] = JsonNode.Parse("""{"preamble_ms":600,"flush_ms":150,"eom_bytes":2,"waveforms":[{"wn":1,"interleaver":"long","block_bytes":50,"block_ms":9600},{"wn":2,"interleaver":"long","block_bytes":3000,"block_ms":9600}]}""");
+        defaults["dts"]!["max_transmission_ms"] = 30000;
+        defaults["drc"]!["table"]!["ladder"] = JsonNode.Parse("""[{"wn":1,"interleaver":"long"}]""");
+        NodeConfig c = ConfigReader.Read(defaults);
+        var modem = new T2.FixtureModem(c.Modem);
+        long wait = 30000 + 30000 + (16 * 3000);
+        c.FirstDataTimeoutMs(modem).Should().Be(14 * wait);   // 3 x 50 - 2 = 148 bytes; 13 x 148 = 1924 is short, so 14
+        defaults["dts"]!["max_transmission_ms"] = 5000;          // shorter than a block: one block, 48 bytes, ceil(2054 / 48) = 43
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(modem).Should().Be(43L * (5000 + 30000 + (16 * 3000)));
+        defaults["drc"]!["table"]!["ladder"] = JsonNode.Parse("""[{"wn":2,"interleaver":"long"}]""");
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(modem).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // one block holds 2998: the floor of three
+        defaults["modem"]!["eom_bytes"] = 50;
+        defaults["drc"]!["table"]!["ladder"] = JsonNode.Parse("""[{"wn":1,"interleaver":"long"}]""");
+        c = ConfigReader.Read(defaults);
+        c.FirstDataTimeoutMs(new T2.FixtureModem(c.Modem)).Should().Be(3L * (5000 + 30000 + (16 * 3000)));   // a block carries nothing: three
+    }
+
+    [Fact]
     public void Unset_cas_timers_are_derived_from_the_answer_wait_and_counts_stay_required()
     {
         // B-0420, issue #49 (a).

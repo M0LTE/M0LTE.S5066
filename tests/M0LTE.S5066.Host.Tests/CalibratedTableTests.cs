@@ -31,7 +31,7 @@ public class CalibratedTableTests
         t.Ladder[0].Should().Be(new Speed(1, Interleaver.Long));
         t.Thresholds.Should().HaveCount(36);
         t.Thresholds.Should().OnlyContain(e => e.Bulk.Count == t.Ladder.Count && e.Latency.Count == t.Ladder.Count);
-        new int?[] { t.SmoothingWeight, t.CleanRun, t.RxErrorLimitPpt, t.RxCeilingInitial, t.RxCeilingCap, t.TxStepDownWaits, t.TxCeilingInitial, t.TxCeilingCap }
+        new int?[] { t.SmoothingWeight, t.CleanRun, t.RxErrorLimitPpt, t.RxCeilingInitial, t.RxCeilingCap, t.TxStepDownWaits, t.TxCeilingInitial, t.TxCeilingCap, t.ProbeRun }
             .Should().OnlyContain(v => v != null);
     }
 

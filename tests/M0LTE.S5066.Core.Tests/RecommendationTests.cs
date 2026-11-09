@@ -249,4 +249,35 @@ public class RecommendationTests
         s.Next(0x104, false).Should().Be(0xF01);
         s.Next(0x103, true).Should().Be(0);
     }
+    [Fact]
+    public void The_probe_stops_at_the_top_rung_and_holds_without_an_estimate()
+    {
+        // Interp C-1291: the probe needs a rung above, and an estimate on a rung with thresholds.
+        DrcTable t = Table with { ProbeRun = 1 };
+        var st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);   // first: bulk target 2 (300), MAX-SPEED WN 6, the top
+        st.MaxSpeed.Should().Be(2);
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);
+        st.MaxSpeed.Should().Be(2);
+
+        st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);    // bulk target 1 (0; 100 is above): MAX-SPEED WN 4
+        st.MaxSpeed.Should().Be(1);
+        Recommender.OnBurst(t, st, R(4), null, 1, 0, false);  // no estimate: only the ceiling applies
+        st.MaxSpeed.Should().Be(1);
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);    // clean run 3 on WN 4: probe to WN 6
+        st.MaxSpeed.Should().Be(2);
+        st.LowSpeed.Should().Be(0);                           // LOW-SPEED is never probed
+    }
+
+    [Fact]
+    public void Probe_run_is_read_and_checked()
+    {
+        var table = JsonNode.Parse("""{"ladder": [], "thresholds": [], "probe_run": 4}""")!.AsObject();
+        ConfigReader.ReadDrcTable(table).ProbeRun.Should().Be(4);
+        table["probe_run"] = null;
+        ConfigReader.ReadDrcTable(table).ProbeRun.Should().BeNull();
+        table["probe_run"] = 0;
+        FluentActions.Invoking(() => ConfigReader.ReadDrcTable(table)).Should().Throw<ConfigException>();
+    }
 }
