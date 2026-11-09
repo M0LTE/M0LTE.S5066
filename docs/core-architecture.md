@@ -494,7 +494,7 @@ Each is added to `defaults.json` and corpus-format.md section 6 by the PR that f
 | `drc.default_speed` | `{"wn": 2, "interleaver": "long"}` | plan 6.2 (conservative start; phase 7 adapts) | P3-4 |
 | `cas.max_links` | `null` | B-0193, B-0209, B-0313 | P4-1 |
 | `cas.link_request_timeout_ms`, `cas.link_request_retries` | `null` | B-0203, B-0204, B-0222; the timeout derived when null, one answer wait (B-0420, P5-1) | P4-1 |
-| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216; derived when null, three answer waits (B-0420, P5-1) | P4-1 |
+| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216; derived when null: three answer waits (B-0420, P5-1), or since P7-9c more when a `drc.table` ladder needs more transmissions for one largest DATA C_PDU on `ladder[0]` (interp B-0420 revised; corpus-format.md 6) | P4-1 |
 | `cas.break_timeout_ms`, `cas.break_retries` | `null` | B-0283, B-0288, B-0424; the timeout derived when null, one answer wait (B-0420) | P5-1 |
 | `cas.clean_close_timeout_ms` | `null` | B-0322; derived when null, three answer waits (B-0420) | P5-1 |
 | `sis.default_ttl` | 648000 | A-0087, A-0088, A-0091 (TTL 0 = default maximum = the field maximum, 2 s units) | P3-1 |

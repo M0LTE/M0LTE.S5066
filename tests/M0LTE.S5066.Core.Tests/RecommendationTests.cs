@@ -249,6 +249,7 @@ public class RecommendationTests
         s.Next(0x104, false).Should().Be(0xF01);
         s.Next(0x103, true).Should().Be(0);
     }
+
     [Fact]
     public void The_probe_stops_at_the_top_rung_and_holds_without_an_estimate()
     {
