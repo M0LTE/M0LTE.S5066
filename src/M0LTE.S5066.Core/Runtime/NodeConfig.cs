@@ -56,8 +56,47 @@ public sealed record NodeConfig(uint LocalAddress, CsmaConfig Csma, ModemFixture
     /// <summary>cas.link_request_timeout_ms, or when unset one answer wait (issue #49; interp B-0420).</summary>
     public long LinkRequestTimeoutMs() => Cas.LinkRequestTimeoutMs ?? AnswerWaitMs();
 
-    /// <summary>cas.first_data_timeout_ms, or when unset three answer waits (issue #49; interp B-0420).</summary>
-    public long FirstDataTimeoutMs() => Cas.FirstDataTimeoutMs ?? (3 * AnswerWaitMs());
+    /// <summary>
+    /// The largest DATA C_PDU: the 1-octet C_PCI (B-0111), the 5-octet S_PCI with a TTD (A-0160) and a
+    /// U_PDU at the 2048-byte MTU (A-0047). The derived first-data wait counts it (interp B-0420).
+    /// </summary>
+    public const int MaxDataCpduBytes = 1 + 5 + 2048;
+
+    /// <summary>
+    /// cas.first_data_timeout_ms, or when unset the larger of three answer waits (issue #49) and the time to
+    /// deliver one largest DATA C_PDU at the slowest ladder rung (P7-9c): one answer wait per transmission,
+    /// for as many transmissions of the configured length as its bytes need (interp B-0420, revised corpus
+    /// 0.33.0). Each transmission is counted at the capacity the DTS gives it (whole blocks within the
+    /// smaller of 127.5 s and <c>dts.max_transmission_ms</c>, at least one block, less the end-of-message
+    /// room; C-1042, C-1290), with no D_PDU overhead. With an empty <c>drc.table</c>, or a slowest rung
+    /// whose transmission carries nothing, three answer waits, as before. What ends the wait is unchanged.
+    /// </summary>
+    /// <param name="modem">The modem port, for the slowest rung's block structure.</param>
+    public long FirstDataTimeoutMs(IModemPort modem)
+    {
+        ArgumentNullException.ThrowIfNull(modem);
+        if (Cas.FirstDataTimeoutMs is int set)
+        {
+            return set;
+        }
+
+        long wait = AnswerWaitMs();
+        long transmissions = 3;
+        if (!Drc.Table.IsEmpty)
+        {
+            Speed slowest = Drc.Table.Ladder[0];
+            BurstPlan shape = modem.PlanBurst(slowest.Wn, slowest.Interleaver, 0);
+            long room = Math.Min(DtsConfig.MaxTransmissionLimitMs, Dts.MaxTransmissionMs) - shape.PreambleMs - shape.FlushMs;
+            long blocks = Math.Max(1, room <= 0 ? 0 : room / shape.BlockMs);
+            long capacity = shape.CapacityOf(blocks);
+            if (capacity > 0)
+            {
+                transmissions = Math.Max(transmissions, (MaxDataCpduBytes + capacity - 1) / capacity);
+            }
+        }
+
+        return transmissions * wait;
+    }
 
     /// <summary>cas.break_timeout_ms, or when unset one answer wait (B-0283; issue #49; interp B-0420).</summary>
     public long BreakTimeoutMs() => Cas.BreakTimeoutMs ?? AnswerWaitMs();
@@ -174,6 +213,11 @@ public sealed record DrcConfig(Speed DefaultSpeed)
 /// <param name="TxStepDownWaits">tx_step_down_waits (P7-7).</param>
 /// <param name="TxCeilingInitial">tx_ceiling_initial (P7-7).</param>
 /// <param name="TxCeilingCap">tx_ceiling_cap (P7-7).</param>
+/// <param name="ProbeRun">
+/// probe_run (P7-9c; interp C-1291): clean bursts in a row on the MAX-SPEED rung before MAX-SPEED moves
+/// up one rung though the estimate does not call for it (the probe); while set, a clean burst never
+/// lets the estimate alone move MAX-SPEED down. Null: no probe, the walk of P7-6 unchanged.
+/// </param>
 public sealed record DrcTable(
     IReadOnlyList<Speed> Ladder,
     IReadOnlyList<DrcThresholds> Thresholds,
@@ -184,7 +228,8 @@ public sealed record DrcTable(
     int? RxCeilingCap = null,
     int? TxStepDownWaits = null,
     int? TxCeilingInitial = null,
-    int? TxCeilingCap = null)
+    int? TxCeilingCap = null,
+    int? ProbeRun = null)
 {
     /// <summary>The empty table of <c>defaults.json</c>.</summary>
     public static DrcTable Empty { get; } = new([], []);

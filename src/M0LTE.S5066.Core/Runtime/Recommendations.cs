@@ -141,9 +141,11 @@ internal static class Recommender
             ceiling = ceiling is int cc ? Math.Min(cc, c) : c;
         }
 
-        // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency).
-        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling);
-        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling);
+        // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency). The probe of interp C-1291 is for
+        // MAX-SPEED only, and only with probe_run set.
+        int? probeRun = table.ProbeRun;
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling, probeRun, errors == 0);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling, null, errors == 0);
 
         // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
         if (fixedSender)
@@ -161,7 +163,15 @@ internal static class Recommender
         }
     }
 
-    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling)
+    /// <summary>
+    /// Step 6 of corpus-format.md 6.2 for one recommendation. With <paramref name="probeRun"/> set
+    /// (MAX-SPEED with <c>probe_run</c>; interp C-1291): after a clean burst the estimate alone never moves
+    /// the recommendation down, only errors (an errored burst, whose estimate may) and caps do; and when the
+    /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts
+    /// on the recommended rung moves it up one rung, the probe, which the sender bounds by its failed-trial
+    /// ceiling and one-rung climb limit (interp C-1281) and the receiver by its caps.
+    /// </summary>
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean)
     {
         if (row is not null && smoothed is int s)
         {
@@ -179,14 +189,25 @@ internal static class Recommender
             {
                 r = pos >= 0 ? Math.Min(target, pos) : target;
             }
-            else if (target < current)
+            else
             {
-                r = target;   // a move down is immediate
-            }
-            else if (target > current
-                && st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[current])) >= DrcTable.Need(table.CleanRun, "clean_run"))
-            {
-                r = current + 1;   // one rung, after the clean run (the trial)
+                int run = st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[current]));
+                if (target < current)
+                {
+                    if (probeRun is null || !clean)
+                    {
+                        r = target;   // a move down is immediate; with the probe, only after an errored burst (interp C-1291)
+                    }
+                }
+                else if (target > current && run >= DrcTable.Need(table.CleanRun, "clean_run"))
+                {
+                    r = current + 1;   // one rung, after the clean run (the trial)
+                }
+
+                if (probeRun is int n && target <= current && r == current && current + 1 < table.Ladder.Count && run >= n)
+                {
+                    r = current + 1;   // the probe: one rung, after probe_run clean bursts on the rung (interp C-1291)
+                }
             }
         }
 

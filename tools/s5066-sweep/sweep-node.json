@@ -4,17 +4,18 @@
 // sweep records this file in its plan.json and a resumed run refuses a different one.
 //
 // Choices (ours, for P7-9 to revisit with the measured turnaround and EOT overshoot):
-// - CSMA as the two-node bench (src/s5066d/bench-node1.json): 4 slots of 1 s, 2 s after DCD, 0.5 s
-//   after VDCD. Two nodes on one channel never need the standard's 16 slots of 3 s and 30 s
-//   listen-before-talk [Ed4 K Table 7, p.K-12]; with those, turnaround and not the rung would set
-//   the throughput. The 0.5 s VDCD wait is shorter than the EOT overshoot on long interleavers
-//   (issue #66); that is measured here, not avoided.
+// - CSMA (coordinator ruling 2026-11-08, from the P7-9b contention measurements in
+//   docs/stack-sweep.md): 8 contention slots of 3 s, 2 s after DCD, 3 s after VDCD. Two nodes on one
+//   channel never need the standard's 16 slots and 30 s listen-before-talk [Ed4 K Table 7, p.K-12];
+//   with those, turnaround and not the rung would set the throughput. With 1 s slots and a 0.5 s VDCD
+//   wait equal or adjacent draws collided on slow rungs; 8 slots of 3 s with VDCD 3 s gave 2 to 3
+//   overlaps per 1800 s run. (P7-8 to P7-9b used the bench's 4 slots of 1 s and VDCD 0.5 s.)
 // - Transmissions of at most 30 s. The standard's 127.5 s (K-0094) would let a single slow
 //   transmission run for minutes; the bench's 6 s is shorter than one Long block on WN 1 and 2.
-//   The answer wait is left derived: 30 s + 2 s + 4 s = 36 s.
+//   The answer wait is left derived: 30 s + 3 s + 8 x 3 s = 57 s.
 // - Links: as the bench (4 links, 5 link request retries, 3 break retries).
 {
-  "csma": { "mode": "jitter", "num_cont_slots": 4, "cont_slot_width_ms": 1000, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 500 },
+  "csma": { "mode": "jitter", "num_cont_slots": 8, "cont_slot_width_ms": 3000, "lbt_wait_dcd_ms": 2000, "lbt_wait_vdcd_ms": 3000 },
   "dts": { "max_transmission_ms": 30000 },
   "cas": { "max_links": 4, "link_request_retries": 5, "break_retries": 3 }
 }
