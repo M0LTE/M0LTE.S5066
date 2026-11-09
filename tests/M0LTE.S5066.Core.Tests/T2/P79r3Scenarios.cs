@@ -13,6 +13,8 @@ namespace M0LTE.S5066.Core.Tests.T2;
 /// </summary>
 public partial class P79cScenarios
 {
+    private const string ZeroFill = "00000000000000000000000000000000";   // a block of the modem's zero fill after the last D_PDU
+
     private const string Garbage = "0102030405060708090a0b0c0d0e0f10";   // a block with no sync and not all zero: D_PDUs whose headers were lost
 
     [Fact]
@@ -36,6 +38,7 @@ public partial class P79cScenarios
         Save("rx-probe-skips-rungs-off-the-walk", ProbeSkipsOffWalk());
         Save("rx-latency-walk-rounds-down", LatencyWalkRoundsDown());
         Save("rx-lost-block-not-clean", LostBlockNotClean());
+        Save("rx-zero-fill-block-not-lost", ZeroFillNotLost());
     }
 
     private static readonly string[] Round3Rows = ["C-1270", "C-1291", "C-1271", "C-1281", "C-0459", "C-0460", "C-0472", "C-0473", "C-0833", "C-0836", "C-0935", "C-0939", "C-0940", "C-1260", "C-1286"];
@@ -140,10 +143,10 @@ public partial class P79cScenarios
 
     private static List<JsonObject> LatencyWalkRoundsDown() => Round3Scenario(
         "drc-rx-latency-walk-rounds-down",
-        "Each recommendation takes only positions of its own walk: the first LOW-SPEED is the highest latency rung not above the burst's rung, and the estimate's target is the highest walk rung it reaches.",
-        "Table (corpus-format.md 6.1) as drc-rx-trial-after-clean-run with bulk_rungs [0, 1, 3] and latency_rungs [0, 2, 3]: WN 4 Long (position 1) is on the ladder for bulk only and WN 6 Long (position 2) for latency only; probe_run null." + Round3Flow + " At 100 a burst on WN 6 Long, estimate 250: S = 250 on WN 6 Long. Bulk: of positions 0, 1 and 3, the highest whose threshold (-100, 0, 500) is not above 250 is 1, which is below WN 6 Long's position 2: MAX-SPEED WN 4 Long. Latency: of positions 0, 2 and 3 (-100, 400, 600) only 0: LOW-SPEED WN 2 Long (with every position on the walk the target was 1, WN 4 Long, as in drc-rx-trial-after-clean-run). At 200 a clean burst on WN 4 Long, estimate 200: S = 200 on WN 4 Long; bulk target 3 (150), but WN 4 Long's clean run is 1, short of clean_run 2: MAX-SPEED holds; latency target 0 (300 at position 2 is above): LOW-SPEED holds. The CAPABILITY burst, clean, on WN 4 Long, estimate 200: the clean run is 2, so MAX-SPEED moves straight to the target 3, WN 7 Long (interp C-1270 as revised in corpus 0.36.0); LOW-SPEED holds at WN 2 Long. EOWs: 0x8A7, 0x9A2, 0xB04, then 0x8A7, 0x9A2, 0xAFF repeated, 21 in all.",
+        "Each recommendation takes only positions of its own walk: the first MAX-SPEED rounds down to the highest bulk rung not above the burst's rung, and the estimate's target is the highest walk rung it reaches.",
+        "Table (corpus-format.md 6.1) as drc-rx-trial-after-clean-run with bulk_rungs [0, 1, 3] and latency_rungs [0, 2, 3]: WN 4 Long (position 1) is on the ladder for bulk only and WN 6 Long (position 2) for latency only; probe_run null." + Round3Flow + " At 100 a burst on WN 6 Long, estimate 500: S = 500 on WN 6 Long. Bulk: of positions 0, 1 and 3 (thresholds -100, 0, 500) the target is 3; the first recommendation is not above WN 6 Long's position 2, which is not on the bulk walk, so it rounds down to 1: MAX-SPEED WN 4 Long (without the rounding it would be WN 6 Long, off the bulk walk, and the rest of the scenario would end on 0x8A6). Latency: of positions 0, 2 and 3 (-100, 400, 600) the target is 2, WN 6 Long's own position: LOW-SPEED WN 6 Long. At 200 a clean burst on WN 4 Long, estimate 200: S = 200 on WN 4 Long; bulk target 3 (150), but WN 4 Long's clean run is 1, short of clean_run 2: MAX-SPEED holds; latency target 0 (300 at position 2 is above; position 1, whose 100 the estimate reaches, is not on the latency walk): LOW-SPEED moves down to WN 2 Long at once (with every position on the walk it would be WN 4 Long). The CAPABILITY burst, clean, on WN 4 Long, estimate 200: the clean run is 2, so MAX-SPEED moves straight to the target 3, WN 7 Long (interp C-1270 as revised in corpus 0.36.0); LOW-SPEED holds at WN 2 Long. EOWs: 0x8A7, 0x9A2, 0xB04, then 0x8A7, 0x9A2, 0xAFF repeated, 21 in all.",
         Walks([0, 1, 3], [0, 2, 3]),
-        [(6, 250, [Padding]), (4, 200, [Padding])],
+        [(6, 500, [Padding]), (4, 200, [Padding])],
         (4, 200),
         7,
         2);
@@ -156,5 +159,15 @@ public partial class P79cScenarios
         [(4, 50, [Padding]), (4, 50, [Garbage, Padding])],
         (4, 50),
         4,
+        2);
+
+    private static List<JsonObject> ZeroFillNotLost() => Round3Scenario(
+        "drc-rx-zero-fill-block-not-lost",
+        "A block that holds no byte of a valid D_PDU but is all zero, the modem's zero fill, is not a lost block: the burst stays clean and the probe follows.",
+        "Table (corpus-format.md 6.1) as drc-rx-trial-after-clean-run with probe_run 3." + Round3Flow + " At 100 a clean burst on WN 4 Long, estimate 50: MAX-SPEED WN 4 Long, LOW-SPEED WN 2 Long (as drc-rx-probe-after-clean-run); WN 4 Long's clean run is 1. At 200 a burst on WN 4 Long, estimate 50, of two blocks: a PADDING, then 16 zero bytes (the modem's zero fill after the last D_PDU). The second block holds no byte of a D_PDU with a valid header, but its bytes are all zero, so it is not a lost block (corpus-format.md 6.2 as revised in corpus 0.36.0, P7-9 round 3) and the burst is clean: the clean run is 2. The CAPABILITY burst, clean, on WN 4 Long, estimate 50: the clean run is 3, the target (1) is not above MAX-SPEED, so the probe moves MAX-SPEED up one rung to WN 6 Long; LOW-SPEED holds at WN 2 Long. EOWs: 0x8A6, 0x9A2, 0xB04, then 0x8A6, 0x9A2, 0xAFF repeated, 21 in all, as drc-rx-probe-after-clean-run; drc-rx-lost-block-not-clean is the same flow with the block not zero.",
+        t => t["probe_run"] = 3,
+        [(4, 50, [Padding]), (4, 50, [Padding, ZeroFill])],
+        (4, 50),
+        6,
         2);
 }

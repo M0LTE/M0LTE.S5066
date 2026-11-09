@@ -157,9 +157,9 @@ The six coordinator rulings of 2026-11-09 (corpus 0.36.0): the receiver's estima
 | Poor 12 dB | 769 | 976 | 951, 951, 1026 | 0 | pass | 1083 (WN 6 Long) |
 | Poor 18 dB | 1466 | 1660 | 1704, 1808, 1469 | 1924 | fail (-14%) | 1924 |
 | Poor 30 dB | 1783 | 2407 | 2505, 2382, 2335 | 2059 | pass | 2059 |
-| Poor-SSB 18 dB | 1008 | 983 | 1008, 810, 1130 | 1133 (WN 7 Long) | SSB gate: no link lost | 1133 |
+| Poor-SSB 18 dB | 1008 | 983 | 1008, 810, 1130 | 1133 (WN 7 Long) | goodput fail (-13%); SSB gate pass | 1133 |
 
-No link was lost in any run. The gate column applies the plan 12 rule to these points alone (the WN 8 Long ceilings from round 1 are 2175 on AWGN and 2184 on Poor, so Poor 30 dB at 2059 is not at its ceiling and needs strictly above); the full re-sweep decides it.
+No link was lost in any run. On Poor-SSB the gate of open question 14 is not goodput but no link lost and under 5% of transmissions on rungs that never decode there: it passes (no link lost, and no transmission on WN 8 or any other rung that never decoded; review of 2026-11-09), while `gate.tsv` applies the goodput rule to every channel and so reads fail there (983 against 1133). The gate column applies the plan 12 rule to these points alone (the WN 8 Long ceilings from round 1 are 2175 on AWGN and 2184 on Poor, so Poor 30 dB at 2059 is not at its ceiling and needs strictly above); the full re-sweep decides it.
 
 - **Why it is faster.** The climb from WN 2 Long now takes four exchanges (WN 2 Long, WN 13 Long, WN 6 Medium, WN 7 Medium, WN 8 Long; each rung's estimate backs only the next few on the table), so AWGN 30 dB reaches WN 8 Long at about 250 s, against 980 s in round 1. And the acknowledging node's turns are short: its transmissions averaged 2.1 to 6.1 s on air (round 2: 7.5 to 8.8 s, a Long block each), its ACK-only bursts 1.1 to 2.7 s. That shortens every cycle, which is why adaptive now beats fixed WN 8 Long, whose acknowledgements still ride a 7.68 s block.
 - **Poor 18 dB, what is left.** The bulk sender spends 29 to 44% of its air time on WN 13 Long and WN 6 Medium after a partial or collided WN 8 Long burst: the cap and the errored burst's estimate (saturated near 4 to 5 dB on fading) drop MAX-SPEED to the estimate's target, and the probe climbs back one bulk rung per clean burst. That is cause 5 of round 2, not addressed by the round 3 rulings.
