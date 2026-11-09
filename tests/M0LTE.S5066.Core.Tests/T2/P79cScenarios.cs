@@ -9,7 +9,9 @@ namespace M0LTE.S5066.Core.Tests.T2;
 /// bursts, configuration and the EOWs or timer values the rows give changed by hand; the EOW rotation
 /// is rebuilt by the rule of interp C-1260 and C-1286 and checked first against the template's own
 /// transmission, so nothing is read back from the implementation. Set S5066_WRITE_P79C to a directory to
-/// write the files; otherwise the test does nothing.
+/// write the files; otherwise the test does nothing. Corpus 0.34.0 (P7-9d) re-derived the first-data
+/// scenarios by hand for the safe wait of interp B-0420 and the minimum hold of interp A-0321, so the two
+/// written here are the 0.33.0 traces: do not write them over the corpus.
 /// </summary>
 public class P79cScenarios
 {
