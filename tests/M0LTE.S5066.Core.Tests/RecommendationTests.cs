@@ -337,16 +337,19 @@ public class RecommendationTests
     [Fact]
     public void An_errored_burst_moves_max_speed_down_one_walk_position_and_the_caps_still_apply()
     {
-        // P7-9 round 4 ruling (a) (interp C-1291 revised, corpus 0.37.0): with the probe, not to the estimate's target.
-        DrcTable t = Table with { ProbeRun = 1 };
+        // P7-9 round 4 rulings (interp C-1291 revised, corpus 0.37.0): with the probe, MAX-SPEED moves down only
+        // after a burst over rx_error_limit_ppt or with a lost block, and then one walk position, not to the target.
+        DrcTable t = Table with { ProbeRun = 1, RxCeilingInitial = 1 };
         var st = new RecommendationState();
         Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);     // first: bulk target 2 (300): MAX-SPEED WN 6
         st.MaxSpeed.Should().Be(2);
-        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // 100 ppt, under the limit, no cap; S = -50, target 0
-        st.MaxSpeed.Should().Be(1);                              // one position, not 0
+        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // 100 ppt, under the limit: S = -50, target 0, but it holds
+        st.MaxSpeed.Should().Be(2);
         st.LowSpeed.Should().Be(0);                              // LOW-SPEED, no probe, moves straight down
         st.Caps.Should().BeEmpty();
-        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // another errored burst: one more position
+        Recommender.OnBurst(t, st, R(6), -500, 0, 0, false, lostBlock: true);   // a lost block: one position
+        st.MaxSpeed.Should().Be(1);
+        Recommender.OnBurst(t, st, R(6), -500, 10, 6, false);   // 600 ppt, over the limit: one more position (cap on 2, ceiling 1)
         st.MaxSpeed.Should().Be(0);
 
         st = new RecommendationState();

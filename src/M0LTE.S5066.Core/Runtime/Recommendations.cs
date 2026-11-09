@@ -147,8 +147,11 @@ internal static class Recommender
         // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency). The probe of interp C-1291 is for
         // MAX-SPEED only, and only with probe_run set.
         int? probeRun = table.ProbeRun;
-        st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, clean, bulk: true);
-        st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, clean, bulk: false);
+        // P7-9 round 4 (interp C-1291): with the probe, only a burst over the error limit or with a lost block
+        // moves MAX-SPEED down; a few corrupted D_PDUs in a burst whose every block is accounted for hold it.
+        bool downTrigger = lostBlock || errors * 1000 > (long)DrcTable.Need(table.RxErrorLimitPpt, "rx_error_limit_ppt") * headers;
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, downTrigger, bulk: true);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, downTrigger, bulk: false);
 
         // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
         if (fixedSender)
@@ -176,12 +179,13 @@ internal static class Recommender
     /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts on
     /// the recommended rung moves it up to the next position of the walk, the probe, which the sender bounds by
     /// its failed-trial ceiling (interp C-1281) and the receiver by its caps. P7-9 round 4 (coordinator rulings
-    /// 2026-11-09): with the probe, a burst that is not clean moves MAX-SPEED down at most one position of the
-    /// walk, however low the estimate's target (interp C-1291); the caps still apply after. And for LOW-SPEED
+    /// 2026-11-09): with the probe, MAX-SPEED moves down on the estimate only after a burst over
+    /// <c>rx_error_limit_ppt</c> or with a lost block (<paramref name="downTrigger"/>), and then at most one
+    /// position of the walk, however low the estimate's target (interp C-1291); the caps still apply after. And for LOW-SPEED
     /// (<paramref name="bulk"/> false) the clean run that backs a move up may be that of the burst's own rung
     /// when it is above the recommendation, not only that of the recommended rung (interp C-1270).
     /// </summary>
-    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean, bool bulk)
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool downTrigger, bool bulk)
     {
         if (row is not null && smoothed is int s)
         {
@@ -215,10 +219,10 @@ internal static class Recommender
                     {
                         r = target;   // a move down is immediate
                     }
-                    else if (!clean)
+                    else if (downTrigger)
                     {
-                        // With the probe, only after a burst that is not clean (interp C-1291), and since round 4
-                        // at most one position of the walk: the estimate alone pulls it no further.
+                        // With the probe, only after a burst over the error limit or with a lost block, and then at
+                        // most one position of the walk: the estimate alone pulls it no further (round 4, interp C-1291).
                         r = Math.Max(target, AtOrBelow(walk, current - 1) ?? target);
                     }
                 }
