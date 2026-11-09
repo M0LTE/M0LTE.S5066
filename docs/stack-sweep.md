@@ -143,3 +143,24 @@ Round 1 (spot box, main 719123f, 8 slots of 3 s, VDCD 3 s, seeds 1 to 3) had the
 | Poor-SSB 18 dB | 860 | 1008 | 1133 | 1133 |
 
 No links were lost in any of these runs. What is left at AWGN 15 dB and above and Poor 18 dB and above is mostly the climb (cause 1) and the latency-only rungs (cause 2), which are rulings, not defects.
+
+## P7-9 round 3 (2026-11-09)
+
+The six coordinator rulings of 2026-11-09 (corpus 0.36.0): the receiver's estimate walk goes straight to its target and the sender straight to the recommendation (no one-rung climb limit; after a failed trial it stays at or below the answered rung until the peer answers); MAX-SPEED walks only the bulk set's rungs and LOW-SPEED only the latency set's (`bulk_rungs`, `latency_rungs`); a burst with a lost block is not clean; the bulk objective is rate x (1 - e)^2; the latency choice is the least time on air for a 128-byte message, so the block duration counts and LOW-SPEED moves to Medium, Short and Ultra Short rungs; and `merge` writes `gate.tsv`. Studybox, 1800 s, seeds 1 to 3, the rebuilt calibrated table, `sweep-node.json` as round 2. Round 2 is main 8d89b5f with its table (the same runs as the round 2 table above).
+
+| Point | Round 2 | Round 3 | Per seed | Gate baseline | Gate | Best fixed rung |
+|---|---|---|---|---|---|---|
+| AWGN 9 dB | 807 | 1089 | 1224, 960, 1083 | 0 | pass | 1055 (WN 6 Long) |
+| AWGN 12 dB | 1208 | 1921 | 2024, 1883, 1855 | 0 | pass | 1466 (WN 7 Long) |
+| AWGN 18 dB | 1758 | 2408 | 2505, 2486, 2232 | 2175 | pass | 2175 |
+| AWGN 30 dB | 1758 | 2408 | 2505, 2486, 2232 | 2175 | pass | 2175 |
+| Poor 12 dB | 769 | 976 | 951, 951, 1026 | 0 | pass | 1083 (WN 6 Long) |
+| Poor 18 dB | 1466 | 1660 | 1704, 1808, 1469 | 1924 | fail (-14%) | 1924 |
+| Poor 30 dB | 1783 | 2407 | 2505, 2382, 2335 | 2059 | pass | 2059 |
+| Poor-SSB 18 dB | 1008 | 983 | 1008, 810, 1130 | 1133 (WN 7 Long) | SSB gate: no link lost | 1133 |
+
+No link was lost in any run. The gate column applies the plan 12 rule to these points alone (the WN 8 Long ceilings from round 1 are 2175 on AWGN and 2184 on Poor, so Poor 30 dB at 2059 is not at its ceiling and needs strictly above); the full re-sweep decides it.
+
+- **Why it is faster.** The climb from WN 2 Long now takes four exchanges (WN 2 Long, WN 13 Long, WN 6 Medium, WN 7 Medium, WN 8 Long; each rung's estimate backs only the next few on the table), so AWGN 30 dB reaches WN 8 Long at about 250 s, against 980 s in round 1. And the acknowledging node's turns are short: its transmissions averaged 2.1 to 6.1 s on air (round 2: 7.5 to 8.8 s, a Long block each), its ACK-only bursts 1.1 to 2.7 s. That shortens every cycle, which is why adaptive now beats fixed WN 8 Long, whose acknowledgements still ride a 7.68 s block.
+- **Poor 18 dB, what is left.** The bulk sender spends 17 to 30% of its air time on WN 13 Long and WN 6 Medium after a partial or collided WN 8 Long burst: the cap and the errored burst's estimate (saturated near 4 to 5 dB on fading) drop MAX-SPEED to the estimate's target, and the probe climbs back one bulk rung per clean burst. That is cause 5 of round 2, not addressed by the round 3 rulings.
+- **Issue #67** (one-block ACK-only bursts all or nothing). Over the 24 runs the acknowledging node sent 135 ACK-only transmissions, 2 were lost (collided or missed, 1.5%), and no link was lost; on Poor 12 dB 0 of 10. With short-block acknowledgements a lost one costs about one answer wait at worst, and the silence rule never came near 16. Evidence for closing: the risk is acceptable at these loss rates.
