@@ -132,7 +132,8 @@ if (radio is not null)
 }
 
 host.Start();
-Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, {describe}");
+string rates = host.Calibration is { } cal ? $"rate selection calibrated ({cal.Calibration})" : "no rate selection calibration";
+Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, {describe}, {rates}");
 
 await Task.WhenAny(stop.Task, host.Completion);
 GC.KeepAlive(signals);
