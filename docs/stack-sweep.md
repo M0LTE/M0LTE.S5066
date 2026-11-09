@@ -164,3 +164,22 @@ No link was lost in any run. On Poor-SSB the gate of open question 14 is not goo
 - **Why it is faster.** The climb from WN 2 Long now takes four exchanges (WN 2 Long, WN 13 Long, WN 6 Medium, WN 7 Medium, WN 8 Long; each rung's estimate backs only the next few on the table), so AWGN 30 dB reaches WN 8 Long at about 250 s, against 980 s in round 1. And the acknowledging node's turns are short: its transmissions averaged 2.1 to 6.1 s on air (round 2: 7.5 to 8.8 s, a Long block each), its ACK-only bursts 1.1 to 2.7 s. That shortens every cycle, which is why adaptive now beats fixed WN 8 Long, whose acknowledgements still ride a 7.68 s block.
 - **Poor 18 dB, what is left.** The bulk sender spends 29 to 44% of its air time on WN 13 Long and WN 6 Medium after a partial or collided WN 8 Long burst: the cap and the errored burst's estimate (saturated near 4 to 5 dB on fading) drop MAX-SPEED to the estimate's target, and the probe climbs back one bulk rung per clean burst. That is cause 5 of round 2, not addressed by the round 3 rulings.
 - **Issue #67** (one-block ACK-only bursts all or nothing). Over the 24 runs the acknowledging node sent 135 ACK-only transmissions, 2 were lost (collided or missed, 1.5%), and no link was lost; on Poor 12 dB 0 of 10. With short-block acknowledgements a lost one costs about one answer wait at worst, and the silence rule never came near 16. Evidence for closing: the risk is acceptable at these loss rates.
+
+## P7-9 round 4 (2026-11-09)
+
+The coordinator rulings (a) to (d) of 2026-11-09 (corpus 0.37.0): (a) with the probe, a burst that is not clean moves MAX-SPEED down one position of the bulk walk at most, the caps still applying; (b) a move up of LOW-SPEED may be backed by a clean run on a higher received rung; (c) issue #38, the reception window allows each later transmission one block and 1.5 s of host latency (non-ARQ only, so no effect on these runs); (d) `gate.tsv` gates SSB channels on no link lost and under 5% of transmissions on rungs that never decode. Studybox, 1800 s, seeds 1 to 3, the same table and `sweep-node.json` as round 3. The gate column is `gate.tsv` from a merge of these runs with the round 1 fixed runs (all 891, so the baseline rungs and ceilings are the full sweep's).
+
+| Point | Round 3 | Round 4 | Per seed | Gate baseline | Gate |
+|---|---|---|---|---|---|
+| AWGN 9 dB | 1089 | 1161 | 1328, 1045, 1111 | 0 | pass |
+| AWGN 12 dB | 1921 | 1874 | 2015, 1798, 1808 | 0 | pass |
+| AWGN 18 dB | 2408 | 2367 | 2505, 2486, 2109 | 2175 | pass |
+| AWGN 30 dB | 2408 | 2367 | 2505, 2486, 2109 | 2175 | pass |
+| Poor 12 dB | 976 | 1039 | 1064, 1158, 895 | 0 | pass |
+| Poor 18 dB | 1660 | 1698 | 1516, 1968, 1610 | 1924 | fail (-12%) |
+| Poor 30 dB | 2407 | 2185 | 2335, 2260, 1959 | 2059 | pass |
+| Poor-SSB 18 dB | 983 | 998 | 979, 923, 1092 | 1133 (WN 7 Long) | pass (SSB rule: no link lost, 0% on rungs that never decode) |
+
+No link was lost in any run. Every change is within the 10 to 20% a single seed moves when contention order diverges, except that the slow start of LOW-SPEED is gone: the bulk sender spent 0 to 87 s on WN 1 Medium early in each round 3 run on Poor and Poor-SSB, and 0 s in every round 4 run.
+
+- **Poor 18 dB, what (a) did.** The bulk sender's air time on WN 13 Long and WN 6 Medium fell from 29 to 45% to 14 to 28%, as intended, but WN 7 Medium took it: 28 to 35% of its air time (11 to 18% in round 3), and there WN 7 Medium lost 22% of its D_PDUs (270 of 1247), against 0.4% in round 3, where it was only reached by climbing in good spells. The step down follows a fade, and the next burst meets a new one: on Poor at 18 dB the fades are short against a 25 s burst and hit WN 7 Medium as they hit WN 8 Long. Fixed WN 8 Long at the same point delivers 99% of its D_PDUs (round 1, 13 of 32 bursts partial, a few D_PDUs each). So the remaining loss is moving off WN 8 Long at all on a burst with a few errors, not how far it moves.
