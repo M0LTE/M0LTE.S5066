@@ -129,3 +129,17 @@ Round 1 (spot box, main 719123f, 8 slots of 3 s, VDCD 3 s, seeds 1 to 3) had the
 6. **The bulk objective at mid SNR.** The table's bulk target is the rung of highest rate x (1 - D_PDU error rate), which ignores what ARQ costs: at AWGN 9 dB it keeps WN 7 Medium at about 30% D_PDU errors, where WN 6 Long delivers twice as much. A table built with rate x (1 - error rate) squared: AWGN 9 dB 775 against 471 (3 seeds, before the dilution fix, which already gives 857). The objective is design shape item 5, so not changed here.
 
 **Tuning.** `clean_run` and `probe_run` from 2 to 1 (s5066-conformance calibration-results.md): on the fixed core, AWGN 18 dB 1758, Poor 18 dB 1466, Poor 30 dB 1783, Poor-SSB 18 dB 998 (+6%, +16%, +18%, +16%), AWGN 12 dB 1142 (-9%) and Poor 12 dB 769 (-3%), no links lost. `clean_run` 1 with `probe_run` 2 was in between and not taken.
+
+**Before and after** (seeds 1 to 3, bit/s; round 1 is main 719123f with the round 1 table; after is this branch, both fixes and `clean_run` 1, `probe_run` 1; the gate is fixed WN 8 Long on AWGN and Poor, WN 7 Long on Poor-SSB):
+
+| Point | Round 1 | After | Gate baseline | Best fixed rung |
+|---|---|---|---|---|
+| AWGN 9 dB | 471 | 807 | 0 | 1055 (WN 6 Long) |
+| AWGN 12 dB | 1256 | 1208 | 0 | 1466 (WN 7 Long) |
+| AWGN 18 dB (30 dB the same) | 1660 | 1758 | 2175 | 2175 |
+| Poor 12 dB | 797 | 769 | 0 | 1083 (WN 6 Long) |
+| Poor 18 dB | 1152 | 1466 | 1924 | 1924 |
+| Poor 30 dB | 1557 | 1783 | 2059 | 2059 |
+| Poor-SSB 18 dB | 860 | 1008 | 1133 | 1133 |
+
+No links were lost in any of these runs. What is left at AWGN 15 dB and above and Poor 18 dB and above is mostly the climb (cause 1) and the latency-only rungs (cause 2), which are rulings, not defects.
