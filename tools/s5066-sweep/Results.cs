@@ -109,6 +109,9 @@ internal sealed class RungStats
 
     public void Merge(RungStats o)
     {
+        // Not recorded (null) on either side stays not recorded, except that an empty accumulator takes the other's.
+        CountAfterFirstCeiling = Count == 0 && CountAfterFirstCeiling is null ? o.CountAfterFirstCeiling
+            : CountAfterFirstCeiling is long a && o.CountAfterFirstCeiling is long b ? a + b : null;
         Count += o.Count;
         AirtimeMs += o.AirtimeMs;
         Bytes += o.Bytes;
@@ -117,7 +120,6 @@ internal sealed class RungStats
         DataDpdus += o.DataDpdus;
         RetransmittedDpdus += o.RetransmittedDpdus;
         AckOnlyTransmissions += o.AckOnlyTransmissions;
-        CountAfterFirstCeiling = CountAfterFirstCeiling is long a && o.CountAfterFirstCeiling is long b ? a + b : null;
         SnrCount += o.SnrCount;
         SnrSumTenths += o.SnrSumTenths;
         foreach ((string k, long c) in o.Outcomes)
