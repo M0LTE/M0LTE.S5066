@@ -76,7 +76,8 @@ internal sealed class DtsSublayer : IDtsSublayer
     /// </summary>
     public void OnBurstEnded(BurstEnded burst)
     {
-        _peers.OnBurstMeasured(burst, _receiver.OnBurstEnded(burst));   // P7-6 recommendations
+        var heard = _receiver.OnBurstEnded(burst);
+        _peers.OnBurstMeasured(burst, heard, _receiver.LastBurstLostBlock);   // P7-6 recommendations; round 3 lost blocks
         _peers.CheckClean();
         _analysis.OnBurstEnded();
     }

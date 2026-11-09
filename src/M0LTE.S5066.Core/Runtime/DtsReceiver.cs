@@ -93,6 +93,12 @@ internal sealed class DtsReceiver
     private int? _blockMs;
     private readonly List<(long Start, int Length, long T)> _blocks = [];
 
+    // Per block of the burst, whether all its bytes are zero (the modem's zero fill), and the stream ranges
+    // [start, end) of the D_PDUs with a valid header: a block with none of them and not all zero lost its
+    // D_PDUs' headers (P7-9 round 3, interp C-1270).
+    private readonly List<bool> _blockZero = [];
+    private readonly List<(long Start, long End)> _covered = [];
+
     // With block_ms: the latest end announced under C-1043 and the earliest bound counting the byte's
     // share of its block, over the burst's headers so far (interp C-1289).
     private long? _latestAnnounced;
@@ -115,6 +121,13 @@ internal sealed class DtsReceiver
     /// <summary>Headers with a sync that failed a header check (bad CRC, impossible sizes), all bursts.</summary>
     public long RejectedHeaders { get; private set; }
 
+    /// <summary>
+    /// Whether the last burst ended had a lost block: a block holding no byte of a D_PDU with a valid header
+    /// whose bytes are not all zero (P7-9 round 3; corpus-format.md 6.2, interp C-1270). Set by
+    /// <see cref="OnBurstEnded"/>.
+    /// </summary>
+    public bool LastBurstLostBlock { get; private set; }
+
     /// <summary>The receive quality record per sender, in address order (C-0833).</summary>
     public IReadOnlyDictionary<uint, RxQuality> Quality => _quality;
 
@@ -136,6 +149,7 @@ internal sealed class DtsReceiver
     public void OnBytesReceived(ReadOnlySpan<byte> bytes)
     {
         _blocks.Add((_streamBase + _length, bytes.Length, _context.Now));
+        _blockZero.Add(!bytes.ContainsAnyExcept((byte)0));
         Append(bytes);
         Scan(endOfBurst: false);
     }
@@ -151,6 +165,7 @@ internal sealed class DtsReceiver
     public IReadOnlyList<(uint Src, long Checked, long DataCrcFailures)> OnBurstEnded(BurstEnded burst)
     {
         Scan(endOfBurst: true);
+        LastBurstLostBlock = HasLostBlock();
         Reset();
 
         var heard = new List<(uint, long, long)>();
@@ -248,12 +263,14 @@ internal sealed class DtsReceiver
 
                 // Truncated at the burst end, or invalid after a good header CRC (an ACK-ONLY whose
                 // header size does not match its form, C-1022): not a D_PDU to act on. Search on.
+                Cover(whole.Error == PduErrorKind.Truncated ? _length - _pos : header.Consumed);
                 _pos++;
                 _headerDoneAt = -1;
                 continue;
             }
 
             // An EXTENSION's count covers its header only; the search resumes after it (C-0365).
+            Cover(whole.Consumed);
             _pos += whole.Consumed;
             _headerDoneAt = -1;
             Deliver(whole.Value!);
@@ -363,6 +380,43 @@ internal sealed class DtsReceiver
         _toStateMachine(pdu);
     }
 
+    /// <summary>Records <paramref name="length"/> bytes from the search position as part of a D_PDU with a valid header.</summary>
+    private void Cover(int length) => _covered.Add((_streamBase + _pos, _streamBase + _pos + Math.Max(1, length)));
+
+    /// <summary>
+    /// A block of the burst that holds no byte of a D_PDU with a valid header and is not all zero: the
+    /// D_PDUs in it lost their headers (P7-9 round 3, interp C-1270). The modem's zero fill after the last
+    /// D_PDU is never lost.
+    /// </summary>
+    private bool HasLostBlock()
+    {
+        for (int i = 0; i < _blocks.Count; i++)
+        {
+            (long start, int length, _) = _blocks[i];
+            if (_blockZero[i] || length == 0)
+            {
+                continue;
+            }
+
+            bool covered = false;
+            foreach ((long s, long e) in _covered)
+            {
+                if (s < start + length && e > start)
+                {
+                    covered = true;
+                    break;
+                }
+            }
+
+            if (!covered)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private int FindSync(int from)
     {
         for (int i = from; i + 1 < _length; i++)
@@ -413,5 +467,7 @@ internal sealed class DtsReceiver
         _headerDoneAt = -1;
         _streamBase = 0;
         _blocks.Clear();
+        _blockZero.Clear();
+        _covered.Clear();
     }
 }

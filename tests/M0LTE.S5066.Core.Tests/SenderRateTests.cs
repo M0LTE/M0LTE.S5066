@@ -162,4 +162,26 @@ public class SenderRateTests
             s.StepDown.Should().Be(i / 2);   // every tx_step_down_waits silent waits, one more rung (interp C-1282)
         }
     }
+
+    [Fact]
+    public void After_a_failed_trial_nothing_goes_above_the_answered_rung_until_an_answer()
+    {
+        // Interp C-1281 as revised in corpus 0.36.0 (P7-9 round 3): no climb limit, but a failed trial is
+        // followed by transmissions at or below the answered rung until the peer answers, so failed trials
+        // never come two in a row.
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(3, true);                    // straight to position 3: a trial
+        s.TrialRung.Should().Be(3);
+        s.OnAckWaitExpired(Table);
+        (s.Ceiling, s.FailedSinceAnswer).Should().Be((2, true));
+        s.OnSent(0, true);                    // the planner keeps it at the answered rung: not a trial
+        s.TrialRung.Should().BeNull();
+        s.OnAckWaitExpired(Table);            // silent again, but not a failed trial: the ceiling stays
+        (s.Ceiling, s.FailedSinceAnswer).Should().Be((2, true));
+        s.OnAnswered();
+        s.FailedSinceAnswer.Should().BeFalse();
+        s.OnConnectionMade(0);
+        s.FailedSinceAnswer.Should().BeFalse();
+    }
 }

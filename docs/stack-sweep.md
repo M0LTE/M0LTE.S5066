@@ -20,7 +20,7 @@ dotnet run -c Release --project tools/s5066-sweep -- <command> [options]
 - `run --channel poor --snr 18 --config fixed:wn4-long [--duration-s 600] [--timeline 1] [--json r.json]`: one run, with a summary; `--timeline 1` prints every transmission and link change, each transmission with the last MAX-SPEED and LOW-SPEED its headers carried (the sender's recommendations to the other node).
 - `plan --profile baseline`: the runs of a sweep and its size.
 - `sweep --profile baseline --out DIR [--workers N] [--shard i/n]`: runs a sweep. One JSON file per run in `DIR/runs/`, written when the run finishes; `DIR/plan.json` fixes the grid; `DIR/progress.log` has one line per run with the speed and the time to go.
-- `merge --profile baseline --out DIR`: writes `DIR/aggregate/`: `curve-<channel>.tsv` (per set SNR and configuration over the seeds: goodput mean, minimum and maximum, retransmission %, links lost as each node saw them and summed over both nodes, chat delivered and latency, transmissions per rung), `baseline.tsv` (per channel the fixed rung with the highest goodput summed over the sweep, open question 14, and each point's best fixed rung), `turnaround.tsv`, `overshoot.tsv`, `merge.json` (missing and failed runs) and a copy of `plan.json`.
+- `merge --profile baseline --out DIR`: writes `DIR/aggregate/`: `curve-<channel>.tsv` (per set SNR and configuration over the seeds: goodput mean, minimum and maximum, retransmission %, links lost as each node saw them and summed over both nodes, chat delivered and latency, transmissions per rung), `baseline.tsv` (per channel the fixed rung with the highest goodput summed over the sweep, open question 14, and each point's best fixed rung), `gate.tsv` (the P7-10 gate per channel, set SNR and adaptive configuration: pass where adaptive's mean is strictly above the baseline rung's, or, where that rung is at its measured stack ceiling (its mean within 2% of its highest on the channel), where adaptive is within 2% of that ceiling; plan 12; a point where nothing delivers is not gated), `turnaround.tsv`, `overshoot.tsv`, `merge.json` (missing and failed runs) and a copy of `plan.json`.
 - `realtime --channel awgn --snr 30 --config fixed:wn6-short --duration-s 300`: the real-time cross-check. Two `s5066d` processes over UDP audio with the same channel in the audio path, the same traffic over TCP SIS, then the same settings on the virtual clock; prints both and compares goodput and the gaps. Needs a quiet machine; it runs in real time.
 
 Grid options replace a profile's parts: `--channels awgn,poor-ssb --snrs 0:30:3 --configs fixed:wn2-long,fixed:wn6-long --seeds 1,2,3 --duration-s 1800 --warmup-s 60 --table <name or path>` (the table for every adaptive config). A sweep's `merge` takes the same options as its `sweep`.
@@ -143,3 +143,24 @@ Round 1 (spot box, main 719123f, 8 slots of 3 s, VDCD 3 s, seeds 1 to 3) had the
 | Poor-SSB 18 dB | 860 | 1008 | 1133 | 1133 |
 
 No links were lost in any of these runs. What is left at AWGN 15 dB and above and Poor 18 dB and above is mostly the climb (cause 1) and the latency-only rungs (cause 2), which are rulings, not defects.
+
+## P7-9 round 3 (2026-11-09)
+
+The six coordinator rulings of 2026-11-09 (corpus 0.36.0): the receiver's estimate walk goes straight to its target and the sender straight to the recommendation (no one-rung climb limit; after a failed trial it stays at or below the answered rung until the peer answers); MAX-SPEED walks only the bulk set's rungs and LOW-SPEED only the latency set's (`bulk_rungs`, `latency_rungs`); a burst with a lost block is not clean; the bulk objective is rate x (1 - e)^2; the latency choice is the least time on air for a 128-byte message, so the block duration counts and LOW-SPEED moves to Medium, Short and Ultra Short rungs; and `merge` writes `gate.tsv`. Studybox, 1800 s, seeds 1 to 3, the rebuilt calibrated table, `sweep-node.json` as round 2. Round 2 is main 8d89b5f with its table (the same runs as the round 2 table above).
+
+| Point | Round 2 | Round 3 | Per seed | Gate baseline | Gate | Best fixed rung |
+|---|---|---|---|---|---|---|
+| AWGN 9 dB | 807 | 1089 | 1224, 960, 1083 | 0 | pass | 1055 (WN 6 Long) |
+| AWGN 12 dB | 1208 | 1921 | 2024, 1883, 1855 | 0 | pass | 1466 (WN 7 Long) |
+| AWGN 18 dB | 1758 | 2408 | 2505, 2486, 2232 | 2175 | pass | 2175 |
+| AWGN 30 dB | 1758 | 2408 | 2505, 2486, 2232 | 2175 | pass | 2175 |
+| Poor 12 dB | 769 | 976 | 951, 951, 1026 | 0 | pass | 1083 (WN 6 Long) |
+| Poor 18 dB | 1466 | 1660 | 1704, 1808, 1469 | 1924 | fail (-14%) | 1924 |
+| Poor 30 dB | 1783 | 2407 | 2505, 2382, 2335 | 2059 | pass | 2059 |
+| Poor-SSB 18 dB | 1008 | 983 | 1008, 810, 1130 | 1133 (WN 7 Long) | goodput fail (-13%); SSB gate pass | 1133 |
+
+No link was lost in any run. On Poor-SSB the gate of open question 14 is not goodput but no link lost and under 5% of transmissions on rungs that never decode there: it passes (no link lost, and no transmission on WN 8 or any other rung that never decoded; review of 2026-11-09), while `gate.tsv` applies the goodput rule to every channel and so reads fail there (983 against 1133). The gate column applies the plan 12 rule to these points alone (the WN 8 Long ceilings from round 1 are 2175 on AWGN and 2184 on Poor, so Poor 30 dB at 2059 is not at its ceiling and needs strictly above); the full re-sweep decides it.
+
+- **Why it is faster.** The climb from WN 2 Long now takes four exchanges (WN 2 Long, WN 13 Long, WN 6 Medium, WN 7 Medium, WN 8 Long; each rung's estimate backs only the next few on the table), so AWGN 30 dB reaches WN 8 Long at about 250 s, against 980 s in round 1. And the acknowledging node's turns are short: its transmissions averaged 2.1 to 6.1 s on air (round 2: 7.5 to 8.8 s, a Long block each), its ACK-only bursts 1.1 to 2.7 s. That shortens every cycle, which is why adaptive now beats fixed WN 8 Long, whose acknowledgements still ride a 7.68 s block.
+- **Poor 18 dB, what is left.** The bulk sender spends 29 to 44% of its air time on WN 13 Long and WN 6 Medium after a partial or collided WN 8 Long burst: the cap and the errored burst's estimate (saturated near 4 to 5 dB on fading) drop MAX-SPEED to the estimate's target, and the probe climbs back one bulk rung per clean burst. That is cause 5 of round 2, not addressed by the round 3 rulings.
+- **Issue #67** (one-block ACK-only bursts all or nothing). Over the 24 runs the acknowledging node sent 135 ACK-only transmissions, 2 were lost (collided or missed, 1.5%), and no link was lost; on Poor 12 dB 0 of 10. With short-block acknowledgements a lost one costs about one answer wait at worst, and the silence rule never came near 16. Evidence for closing: the risk is acceptable at these loss rates.

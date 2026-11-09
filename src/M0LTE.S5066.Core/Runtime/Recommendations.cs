@@ -76,9 +76,11 @@ internal static class Recommender
     /// One burst from the peer (corpus-format.md 6.2 steps 1 to 7): <paramref name="headers"/> valid
     /// D_PDU headers from it, <paramref name="errors"/> of its D_PDUs discarded for a bad data CRC
     /// (C-0833, C-0836), on <paramref name="rung"/> with estimate <paramref name="snr"/> (null when the
-    /// modem gives none).
+    /// modem gives none). <paramref name="lostBlock"/>: a block of the burst held no byte of a D_PDU with a
+    /// valid header and was not all zero, so D_PDUs in it lost their headers; such a burst is not clean
+    /// even with no data CRC failure (P7-9 round 3, interp C-1270).
     /// </summary>
-    public static void OnBurst(DrcTable table, RecommendationState st, Speed rung, int? snr, long headers, long errors, bool fixedSender)
+    public static void OnBurst(DrcTable table, RecommendationState st, Speed rung, int? snr, long headers, long errors, bool fixedSender, bool lostBlock = false)
     {
         if (table.IsEmpty)
         {
@@ -86,6 +88,7 @@ internal static class Recommender
         }
 
         st.Heard = true;
+        bool clean = errors == 0 && !lostBlock;   // round 3: lost headers are not a clean burst
 
         // 1. Every active cap counts down by one burst from the peer.
         foreach (int p in st.Caps.Keys.ToList())
@@ -113,7 +116,7 @@ internal static class Recommender
 
                 st.Caps[pos] = (int)Math.Min(length, cap);
             }
-            else if (errors == 0)
+            else if (clean)
             {
                 st.Failures.Remove(pos);
             }
@@ -121,7 +124,7 @@ internal static class Recommender
 
         // 3. Clean run of the rung.
         int key = RecommendationState.Key(rung);
-        st.CleanRun[key] = errors == 0 ? st.CleanRun.GetValueOrDefault(key) + 1 : 0;
+        st.CleanRun[key] = clean ? st.CleanRun.GetValueOrDefault(key) + 1 : 0;
 
         // 4. Smoothing, on a rung the table has thresholds for.
         DrcThresholds? thresholds = table.ThresholdsOn(rung);
@@ -144,8 +147,8 @@ internal static class Recommender
         // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency). The probe of interp C-1291 is for
         // MAX-SPEED only, and only with probe_run set.
         int? probeRun = table.ProbeRun;
-        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling, probeRun, errors == 0);
-        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling, null, errors == 0);
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, clean);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, clean);
 
         // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
         if (fixedSender)
@@ -155,7 +158,7 @@ internal static class Recommender
                 st.Segment = Math.Max(RecommendationState.SegmentMin, st.Segment / 2);
                 st.SegmentClean = 0;
             }
-            else if (errors == 0 && ++st.SegmentClean >= DrcTable.Need(table.CleanRun, "clean_run"))
+            else if (clean && ++st.SegmentClean >= DrcTable.Need(table.CleanRun, "clean_run"))
             {
                 st.Segment = Math.Min(RecommendationState.SegmentMax, st.Segment * 2);
                 st.SegmentClean = 0;
@@ -164,30 +167,33 @@ internal static class Recommender
     }
 
     /// <summary>
-    /// Step 6 of corpus-format.md 6.2 for one recommendation. With <paramref name="probeRun"/> set
-    /// (MAX-SPEED with <c>probe_run</c>; interp C-1291): after a clean burst the estimate alone never moves
-    /// the recommendation down, only errors (an errored burst, whose estimate may) and caps do; and when the
-    /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts
-    /// on the recommended rung moves it up one rung, the probe, which the sender bounds by its failed-trial
-    /// ceiling and one-rung climb limit (interp C-1281) and the receiver by its caps.
+    /// Step 6 of corpus-format.md 6.2 for one recommendation, over the ladder positions <paramref name="walk"/>
+    /// of its criterion (bulk_rungs or latency_rungs; open question 15). The target is the highest of them the
+    /// estimate reaches; a move down to it is immediate, and a move up goes straight to it after the clean run
+    /// (P7-9 round 3: an estimate-backed recommendation, interp C-1270). With <paramref name="probeRun"/> set
+    /// (MAX-SPEED with <c>probe_run</c>; interp C-1291): after a clean burst the estimate alone never moves the
+    /// recommendation down, only errors (an errored burst, whose estimate may) and caps do; and when the
+    /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts on
+    /// the recommended rung moves it up to the next position of the walk, the probe, which the sender bounds by
+    /// its failed-trial ceiling (interp C-1281) and the receiver by its caps.
     /// </summary>
-    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean)
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean)
     {
         if (row is not null && smoothed is int s)
         {
-            int target = 0;
-            for (int j = row.Count - 1; j >= 0; j--)
+            int target = walk[0];
+            for (int i = walk.Count - 1; i >= 0; i--)
             {
-                if (row[j] is int t && t <= s)
+                if (row[walk[i]] is int t && t <= s)
                 {
-                    target = j;
+                    target = walk[i];
                     break;
                 }
             }
 
             if (r is not int current)
             {
-                r = pos >= 0 ? Math.Min(target, pos) : target;
+                r = AtOrBelow(walk, pos >= 0 ? Math.Min(target, pos) : target) ?? walk[0];
             }
             else
             {
@@ -196,22 +202,51 @@ internal static class Recommender
                 {
                     if (probeRun is null || !clean)
                     {
-                        r = target;   // a move down is immediate; with the probe, only after an errored burst (interp C-1291)
+                        r = target;   // a move down is immediate; with the probe, only after a burst that is not clean (interp C-1291)
                     }
                 }
                 else if (target > current && run >= DrcTable.Need(table.CleanRun, "clean_run"))
                 {
-                    r = current + 1;   // one rung, after the clean run (the trial)
+                    r = target;   // straight to the target, after the clean run (round 3; was one rung)
                 }
 
-                if (probeRun is int n && target <= current && r == current && current + 1 < table.Ladder.Count && run >= n)
+                int? next = Above(walk, current);
+                if (probeRun is int n && target <= current && r == current && next is int up && run >= n)
                 {
-                    r = current + 1;   // the probe: one rung, after probe_run clean bursts on the rung (interp C-1291)
+                    r = up;   // the probe: the next position of the walk, after probe_run clean bursts on the rung (interp C-1291)
                 }
             }
         }
 
-        return r is int v && ceiling is int c && v > c ? c : r;
+        return r is int v && ceiling is int c && v > c ? AtOrBelow(walk, c) ?? c : r;
+    }
+
+    /// <summary>The highest position of the walk not above <paramref name="p"/>, or null.</summary>
+    private static int? AtOrBelow(IReadOnlyList<int> walk, int p)
+    {
+        for (int i = walk.Count - 1; i >= 0; i--)
+        {
+            if (walk[i] <= p)
+            {
+                return walk[i];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The lowest position of the walk above <paramref name="p"/>, or null.</summary>
+    private static int? Above(IReadOnlyList<int> walk, int p)
+    {
+        foreach (int w in walk)
+        {
+            if (w > p)
+            {
+                return w;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>The MAX-SPEED or LOW-SPEED contents for a ladder rung: Speed = WN, the interleaver code of its name (C-0462, C-0463, C-0469).</summary>

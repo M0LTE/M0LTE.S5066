@@ -281,4 +281,56 @@ public class RecommendationTests
         table["probe_run"] = 0;
         FluentActions.Invoking(() => ConfigReader.ReadDrcTable(table)).Should().Throw<ConfigException>();
     }
+
+    [Fact]
+    public void The_estimate_moves_straight_to_its_target_after_the_clean_run()
+    {
+        // Interp C-1270 as revised in corpus 0.36.0 (P7-9 round 3): not one rung.
+        var st = new RecommendationState();
+        Recommender.OnBurst(Table, st, R(2), 200, 1, 0, false);   // bulk target 2 (150), first not above WN 2: 0
+        st.MaxSpeed.Should().Be(0);
+        Recommender.OnBurst(Table, st, R(2), 200, 1, 0, false);   // clean run 2 on WN 2: straight to 2
+        st.MaxSpeed.Should().Be(2);
+    }
+
+    [Fact]
+    public void Each_walk_uses_only_its_positions_and_a_ceiling_rounds_down_into_the_walk()
+    {
+        // Open question 15 (P7-9 round 3): bulk_rungs [0, 2] and latency_rungs [0, 1].
+        DrcTable t = Table with { BulkRungs = [0, 2], LatencyRungs = [0, 1], ProbeRun = 1 };
+        var st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);       // bulk target 0 on the walk (100 at 2 is above), first not above 1
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 0));
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);       // the probe needs a clean run on WN 2 Long, the rung at 0: none yet
+        st.MaxSpeed.Should().Be(0);
+        Recommender.OnBurst(t, st, R(2), 50, 1, 0, false);       // clean run on WN 2: the probe goes to the next bulk position, 2
+        st.MaxSpeed.Should().Be(2);
+        Recommender.OnBurst(t, st, R(6), 400, 1, 1, false);      // WN 6 fails: cap, ceiling 1, rounded down to bulk position 0
+        st.MaxSpeed.Should().Be(0);
+        st.LowSpeed.Should().Be(0);
+
+        var walk = JsonNode.Parse("""{"ladder": [{"wn": 2, "interleaver": "long"}, {"wn": 4, "interleaver": "long"}], "thresholds": [], "bulk_rungs": [0, 1], "latency_rungs": null}""")!.AsObject();
+        ConfigReader.ReadDrcTable(walk).BulkRungs.Should().Equal(0, 1);
+        ConfigReader.ReadDrcTable(walk).LatencyRungs.Should().BeNull();
+        foreach (string bad in (string[])["[1, 0]", "[0, 2]", "[]", "[-1]", "[0.5]"])
+        {
+            walk["bulk_rungs"] = JsonNode.Parse(bad);
+            FluentActions.Invoking(() => ConfigReader.ReadDrcTable(walk)).Should().Throw<ConfigException>(bad);
+        }
+    }
+
+    [Fact]
+    public void A_burst_with_a_lost_block_is_not_clean()
+    {
+        // P7-9 round 3 ruling 6 (interp C-1270): no clean-run credit and no failure reset.
+        var st = new RecommendationState();
+        Recommender.OnBurst(Table, st, R(4), 50, 1, 1, false);   // a failure on WN 4
+        st.Failures[1].Should().Be(1);
+        Recommender.OnBurst(Table, st, R(4), 50, 0, 0, false, lostBlock: true);
+        st.Failures[1].Should().Be(1);
+        st.CleanRun[RecommendationState.Key(R(4))].Should().Be(0);
+        Recommender.OnBurst(Table, st, R(4), 50, 0, 0, false);
+        st.Failures.Should().NotContainKey(1);
+        st.CleanRun[RecommendationState.Key(R(4))].Should().Be(1);
+    }
 }

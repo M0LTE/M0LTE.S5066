@@ -275,6 +275,7 @@ public static class ConfigReader
     [
         "ladder", "thresholds", "smoothing_weight", "clean_run", "rx_error_limit_ppt", "rx_ceiling_initial",
         "rx_ceiling_cap", "tx_step_down_waits", "tx_ceiling_initial", "tx_ceiling_cap", "probe_run",
+        "bulk_rungs", "latency_rungs",
     ];
 
     /// <summary>
@@ -370,7 +371,38 @@ public static class ConfigReader
             Positive(table, "tx_step_down_waits"),
             Positive(table, "tx_ceiling_initial"),
             Positive(table, "tx_ceiling_cap"),
-            Positive(table, "probe_run"));
+            Positive(table, "probe_run"),
+            Positions(table, "bulk_rungs", ladder.Count),
+            Positions(table, "latency_rungs", ladder.Count));
+
+        // corpus-format.md 6.1: bulk_rungs and latency_rungs are null, or ladder positions in ascending order.
+        static IReadOnlyList<int>? Positions(JsonObject t, string key, int count)
+        {
+            if (t[key] is null)
+            {
+                return null;
+            }
+
+            if (t[key] is not JsonArray a || a.Count == 0)
+            {
+                throw new ConfigException("drc.table." + key, "must be null or a non-empty list of ladder positions");
+            }
+
+            var list = new List<int>();
+            foreach (JsonNode? n in a)
+            {
+                if (n is null || n.GetValueKind() != JsonValueKind.Number
+                    || !long.TryParse(n.ToJsonString(), NumberStyles.None, CultureInfo.InvariantCulture, out long p)
+                    || p >= count || (list.Count > 0 && p <= list[^1]))
+                {
+                    throw new ConfigException("drc.table." + key, "must hold ladder positions in ascending order");
+                }
+
+                list.Add((int)p);
+            }
+
+            return list;
+        }
 
         // corpus-format.md 6.1: a cap is at least its initial length.
         static void CapAtLeastInitial(JsonObject t, string initial, string cap)

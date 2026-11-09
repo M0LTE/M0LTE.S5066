@@ -43,6 +43,31 @@ public class DtsReceiverTests
     }
 
     [Fact]
+    public void A_block_with_no_valid_dpdu_that_is_not_zero_fill_is_a_lost_block()
+    {
+        // P7-9 round 3 ruling 6 (corpus-format.md 6.2, interp C-1270).
+        var rig = new ReceiverRig();
+        rig.Receiver.OnBurstStarted();
+        rig.Receiver.OnBytesReceived(T7(Peer, Us, 4));
+        rig.Receiver.OnBytesReceived(new byte[16]);                                  // zero fill
+        rig.Receiver.OnBurstEnded(EndEom);
+        rig.Receiver.LastBurstLostBlock.Should().BeFalse();
+
+        rig.Receiver.OnBurstStarted();
+        rig.Receiver.OnBytesReceived(Enumerable.Range(1, 16).Select(i => (byte)i).ToArray());   // lost headers
+        rig.Receiver.OnBytesReceived(T7(Peer, Us, 4));
+        rig.Receiver.OnBurstEnded(EndEom);
+        rig.Receiver.LastBurstLostBlock.Should().BeTrue();
+
+        byte[] whole = T7(Peer, Us, 4, segLength: 40);                               // one D_PDU across two blocks
+        rig.Receiver.OnBurstStarted();
+        rig.Receiver.OnBytesReceived(whole.AsSpan(0, 20));
+        rig.Receiver.OnBytesReceived(whole.AsSpan(20));
+        rig.Receiver.OnBurstEnded(EndEom);
+        rig.Receiver.LastBurstLostBlock.Should().BeFalse();
+    }
+
+    [Fact]
     public void A_bad_data_crc_is_discarded_after_its_header_is_used()
     {
         // C-0832, C-0836, C-0839: the header's EOT and addresses are used, the D_PDU is not passed on.

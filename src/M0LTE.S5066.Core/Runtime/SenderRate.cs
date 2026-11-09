@@ -37,6 +37,12 @@ internal sealed class SenderRate
     /// <summary>The position of a trial in flight: ARQ data sent above <see cref="AnsweredRung"/> and not yet answered (interp C-1281).</summary>
     public int? TrialRung { get; set; }
 
+    /// <summary>
+    /// A trial failed and the peer has not answered since (P7-9 round 3, interp C-1281): until it answers,
+    /// no transmission to it goes above <see cref="AnsweredRung"/>, so failed trials never come two in a row.
+    /// </summary>
+    public bool FailedSinceAnswer { get; set; }
+
     /// <summary>The peer has answered (C-1250) since our last transmission that carried ARQ data to it.</summary>
     public bool HeardSinceSent { get; set; } = true;
 
@@ -65,6 +71,7 @@ internal sealed class SenderRate
     {
         AnsweredRung = defaultRung;
         TrialRung = null;
+        FailedSinceAnswer = false;
         HeardSinceSent = true;
         SilentWaits = 0;
         StepDown = 0;
@@ -75,6 +82,7 @@ internal sealed class SenderRate
     {
         AnsweredRung = null;
         TrialRung = null;
+        FailedSinceAnswer = false;
         HeardSinceSent = true;
         SilentWaits = 0;
         StepDown = 0;
@@ -112,6 +120,7 @@ internal sealed class SenderRate
         HeardSinceSent = true;
         SilentWaits = 0;
         StepDown = 0;
+        FailedSinceAnswer = false;
         if (TrialRung is not null)
         {
             HoldOff = 0;
@@ -147,6 +156,7 @@ internal sealed class SenderRate
             CeilingLeft = length;
             HoldOff = (int)Math.Min(length * 2L, cap);
             TrialRung = null;
+            FailedSinceAnswer = true;
         }
         else if (AnsweredRung is int answered && DataRung is int data && data <= answered)
         {
