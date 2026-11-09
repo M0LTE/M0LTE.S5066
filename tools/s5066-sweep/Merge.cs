@@ -7,7 +7,8 @@ namespace M0LTE.S5066.Sweep;
 /// Merges the per-run JSON files into the small aggregates that come back from a spot instance:
 /// <c>curve-&lt;channel&gt;.tsv</c> per channel (one line per set SNR and configuration, over the seeds),
 /// <c>baseline.tsv</c> (per channel, the fixed rung with the highest goodput summed over the sweep,
-/// open question 14, and each point's best fixed rung), <c>turnaround.tsv</c> and <c>overshoot.tsv</c>
+/// open question 14, and each point's best fixed rung), <c>gate.tsv</c> (the P7-10 gate per point,
+/// <see cref="Gate"/>), <c>turnaround.tsv</c> and <c>overshoot.tsv</c>
 /// (the gap between bursts and the EOT overshoot per channel and rung, all runs pooled), and
 /// <c>merge.json</c> (counts, missing runs, failures).
 /// </summary>
@@ -43,6 +44,50 @@ internal static class Merge
         File.Copy(Path.Combine(outDir, "plan.json"), Path.Combine(aggDir, "plan.json"), overwrite: true);
         log($"[merge] {results.Count} of {jobs.Count} runs merged into {aggDir}{(missing.Count > 0 ? $", {missing.Count} missing" : "")}{(failed.Length > 0 ? $", {failed.Length} failed" : "")}");
         return missing.Count == 0 && failed.Length == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The P7-10 gate per channel, set SNR and adaptive configuration (plan 12 phase 7 done-when; open
+    /// question 14 as amended by the coordinator's rulings of 2026-11-08 and 2026-11-09): against the
+    /// channel's baseline rung (the fixed rung with the highest goodput summed over the sweep), adaptive
+    /// passes where its mean goodput is strictly above the baseline's mean, or, where the baseline rung is
+    /// at its measured stack ceiling (its mean at the point within 2% of its highest mean on the channel),
+    /// where adaptive is within 2% of that ceiling. A point where no configuration delivers data is not gated.
+    /// </summary>
+    internal static string Gate(IReadOnlyList<RunResult> results)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder("channel\tset_snr_tenth_db\tadaptive_config\tadaptive_mean_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_ceiling_bps\tat_ceiling\tverdict\n");
+        foreach (IGrouping<string, RunResult> ch in results.GroupBy(r => r.Channel).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var means = ch.GroupBy(r => (r.Config, r.SnrTenthDb)).ToDictionary(g => g.Key, g => g.Average(r => r.GoodputBps));
+            var fixedSums = means.Where(kv => kv.Key.Config.StartsWith("fixed-", StringComparison.Ordinal))
+                .GroupBy(kv => kv.Key.Config).Select(g => (Config: g.Key, Sum: g.Sum(kv => kv.Value)))
+                .OrderByDescending(x => x.Sum).ThenBy(x => x.Config, StringComparer.Ordinal).ToList();
+            if (fixedSums.Count == 0)
+            {
+                continue;
+            }
+
+            string baseline = fixedSums[0].Config;
+            double ceiling = means.Where(kv => kv.Key.Config == baseline).Max(kv => kv.Value);
+            foreach (((string config, int snr), double mean) in means.Where(kv => kv.Key.Config.StartsWith("adaptive-", StringComparison.Ordinal))
+                .OrderBy(kv => kv.Key.Config, StringComparer.Ordinal).ThenBy(kv => kv.Key.SnrTenthDb))
+            {
+                if (!means.TryGetValue((baseline, snr), out double b))
+                {
+                    continue;
+                }
+
+                bool atCeiling = ceiling > 0 && b >= 0.98 * ceiling;
+                bool anyData = means.Where(kv => kv.Key.SnrTenthDb == snr).Any(kv => kv.Value > 0);
+                string verdict = !anyData ? "not gated"
+                    : mean > b || (atCeiling && mean >= 0.98 * ceiling) ? "pass" : "fail";
+                sb.Append(inv, $"{ch.Key}\t{snr}\t{config}\t{mean:F1}\t{baseline}\t{b:F1}\t{ceiling:F1}\t{(atCeiling ? "yes" : "no")}\t{verdict}\n");
+            }
+        }
+
+        return sb.ToString();
     }
 
     internal static void Write(string aggDir, IReadOnlyList<RunResult> results)
@@ -96,6 +141,7 @@ internal static class Merge
         }
 
         File.WriteAllText(Path.Combine(aggDir, "baseline.tsv"), bl.ToString());
+        File.WriteAllText(Path.Combine(aggDir, "gate.tsv"), Gate(results));
 
         var ta = new StringBuilder("channel\tconfig_kind\trung\tkind\tn\tmin_ms\tp10_ms\tmedian_ms\tmean_ms\tp90_ms\tmax_ms\n");
         var os = new StringBuilder("channel\tconfig_kind\trung\tn\tmin_ms\tp10_ms\tmedian_ms\tmean_ms\tp90_ms\tmax_ms\n");

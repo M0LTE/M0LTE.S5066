@@ -196,6 +196,29 @@ public class StackSweepTests
     }
 
     [Fact]
+    public void The_gate_passes_strictly_above_the_baseline_or_within_2_percent_of_its_ceiling()
+    {
+        RunResult R(string config, int snr, double bps) => new() { Id = $"{config}-{snr}", Channel = "awgn", SnrTenthDb = snr, Config = config, Seed = 1, GoodputBps = bps };
+
+        // fixed-wn8-long is the baseline (highest sum); its ceiling is 2000, reached at 180 and 300 (1990 is within 2%).
+        RunResult[] results =
+        [
+            R("fixed-wn8-long", 0, 0), R("fixed-wn2-long", 0, 0), R("adaptive-t", 0, 0),
+            R("fixed-wn8-long", 90, 0), R("fixed-wn2-long", 90, 300), R("adaptive-t", 90, 800),
+            R("fixed-wn8-long", 120, 1500), R("fixed-wn2-long", 120, 300), R("adaptive-t", 120, 1500),
+            R("fixed-wn8-long", 180, 2000), R("fixed-wn2-long", 180, 300), R("adaptive-t", 180, 1961),
+            R("fixed-wn8-long", 300, 1990), R("fixed-wn2-long", 300, 300), R("adaptive-t", 300, 1959),
+        ];
+        string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
+        gate.Should().HaveCount(6);
+        gate[1].Should().Be("awgn\t0\tadaptive-t\t0.0\tfixed-wn8-long\t0.0\t2000.0\tno\tnot gated");
+        gate[2].Should().EndWith("\tno\tpass", "800 is above the baseline's 0 where another rung delivers");
+        gate[3].Should().EndWith("\tno\tfail", "equal is not strictly above, and 1500 is not at the ceiling");
+        gate[4].Should().EndWith("\tyes\tpass", "1961 is within 2% of the 2000 ceiling");
+        gate[5].Should().EndWith("\tyes\tfail", "1959 is more than 2% below the ceiling");
+    }
+
+    [Fact]
     public void Long_the_smoke_profile_runs_sharded_and_merges()
     {
         // A few minutes of demodulator time: four runs of 240 s. Run with S5066_LONG_TESTS=1, never in CI.
