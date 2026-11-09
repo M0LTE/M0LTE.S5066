@@ -494,13 +494,13 @@ Each is added to `defaults.json` and corpus-format.md section 6 by the PR that f
 | `drc.default_speed` | `{"wn": 2, "interleaver": "long"}` | plan 6.2 (conservative start; phase 7 adapts) | P3-4 |
 | `cas.max_links` | `null` | B-0193, B-0209, B-0313 | P4-1 |
 | `cas.link_request_timeout_ms`, `cas.link_request_retries` | `null` | B-0203, B-0204, B-0222; the timeout derived when null, one answer wait (B-0420, P5-1) | P4-1 |
-| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216; derived when null: three answer waits (B-0420, P5-1), or since P7-9c more when a `drc.table` ladder needs more transmissions for one largest DATA C_PDU on `ladder[0]` (interp B-0420 revised; corpus-format.md 6) | P4-1 |
+| `cas.first_data_timeout_ms` | `null` | B-0215, B-0216; derived when null: three answer waits (B-0420, P5-1), or with a `drc.table` ladder max(3, ceil(2054 / c) + 2), c the user bytes one transmission of the configured length carries on `ladder[0]` after D_PDU overheads (interp B-0420, revised P7-9c and P7-9d; corpus-format.md 6) | P4-1 |
 | `cas.break_timeout_ms`, `cas.break_retries` | `null` | B-0283, B-0288, B-0424; the timeout derived when null, one answer wait (B-0420) | P5-1 |
 | `cas.clean_close_timeout_ms` | `null` | B-0322; derived when null, three answer waits (B-0420) | P5-1 |
 | `sis.default_ttl` | 648000 | A-0087, A-0088, A-0091 (TTL 0 = default maximum = the field maximum, 2 s units) | P3-1 |
 | `sis.frag_size` | `null` | A-0102, A-0114 (one value for confirms and rejects) | P6-1 |
 | `sis.confirm_wait_ms` | `null` | A-0221, A-0226, A-0232 | P6-1 |
-| `sis.soft_link_idle_ms`, `sis.soft_link_min_hold_ms`, `sis.soft_link_max_ms` | `null` | A-0011, A-0013, A-0015, A-0197; derived when null, three, three and six answer waits (A-0321) | P5-2 |
+| `sis.soft_link_idle_ms`, `sis.soft_link_min_hold_ms`, `sis.soft_link_max_ms` | `null` | A-0011, A-0013, A-0015, A-0197; derived when null, three, three and six answer waits, the minimum hold following a derived first-data wait above three (A-0321, revised P7-9d) | P5-2 |
 | `drc.table` | an empty table: no calibration, no speed recommendations | plan 6.2; calibration data, not an operator setting: T2 scenarios supply synthetic tables, the host loads the calibrated one for its modem from s5066-conformance `calibration/<modem>-<version>/` (section 9 phase 7, design shape items 5 and 6); an empty table also means fixed speed at `drc.default_speed`, the baseline (no separate fixed-speed setting, open question 13); schema in corpus-format.md section 6 | P7-6 |
 
 Fixed values the standard fixes or the matrix fixes as constants are not settings: MTU 2048 (A-0047), K = 7 and 3 kHz (plan 5.3), the invalid-primitive threshold of 10 (S-0077), the client write bound (S-0029, host side), port 5066 (host side, S-0007).
