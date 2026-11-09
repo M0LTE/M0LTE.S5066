@@ -143,11 +143,9 @@ internal static class Recommender
 
         // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency). The probe of interp C-1291 is for
         // MAX-SPEED only, and only with probe_run set.
-        // With the probe, MAX-SPEED moves down on the estimate only after a burst over the error limit (P7-9d).
         int? probeRun = table.ProbeRun;
-        bool overLimit = probeRun is not null && errors * 1000 > (long)DrcTable.Need(table.RxErrorLimitPpt, "rx_error_limit_ppt") * headers;
-        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling, probeRun, overLimit);
-        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling, null, overLimit);
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, thresholds?.Bulk, smoothed, pos, ceiling, probeRun, errors == 0);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, thresholds?.Latency, smoothed, pos, ceiling, null, errors == 0);
 
         // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
         if (fixedSender)
@@ -167,14 +165,13 @@ internal static class Recommender
 
     /// <summary>
     /// Step 6 of corpus-format.md 6.2 for one recommendation. With <paramref name="probeRun"/> set
-    /// (MAX-SPEED with <c>probe_run</c>; interp C-1291): the estimate moves the recommendation down only
-    /// after a burst whose D_PDU error rate is over <c>rx_error_limit_ppt</c> (<paramref name="overLimit"/>,
-    /// revised P7-9d); otherwise only the caps do; and when the
+    /// (MAX-SPEED with <c>probe_run</c>; interp C-1291): after a clean burst the estimate alone never moves
+    /// the recommendation down, only errors (an errored burst, whose estimate may) and caps do; and when the
     /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts
     /// on the recommended rung moves it up one rung, the probe, which the sender bounds by its failed-trial
     /// ceiling and one-rung climb limit (interp C-1281) and the receiver by its caps.
     /// </summary>
-    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool overLimit)
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean)
     {
         if (row is not null && smoothed is int s)
         {
@@ -197,9 +194,9 @@ internal static class Recommender
                 int run = st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[current]));
                 if (target < current)
                 {
-                    if (probeRun is null || overLimit)
+                    if (probeRun is null || !clean)
                     {
-                        r = target;   // a move down is immediate; with the probe, only after a burst over the error limit (interp C-1291)
+                        r = target;   // a move down is immediate; with the probe, only after an errored burst (interp C-1291)
                     }
                 }
                 else if (target > current && run >= DrcTable.Need(table.CleanRun, "clean_run"))
