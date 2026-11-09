@@ -422,6 +422,28 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_retransmission_to_an_ed4_peer_still_stretches_the_transmission()
+    {
+        // Interp C-1042, C-0549, C-0551: a retransmission keeps its segment, so even towards an Ed4 peer it
+        // is never cut. Sent within a three-block budget, FSN 0 is a 219-byte DATA-ONLY (19 + 200); once it
+        // has failed and the limit is one block, it goes whole in the 3 blocks it needs.
+        var q = new Rig(maxTransmissionMs: 720 + 3 * 4800);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        ArqLink link = q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        q.Tx.AddArq(Arq(X, 4));
+        q.Tx.AddArq(Arq(X, 4));
+        q.Decode(q.Tx.Build()).OfType<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length)).Should().Equal((0, 200), (1, 4), (2, 4));
+        q.Tx.OnAck(X, 0, 1, 0, [0x81]);
+        link.Outstanding.Should().ContainSingle().Which.State.Should().Be(ArqFrameState.Failed);
+
+        q.Context.Config = q.Context.Config with { Dts = new DtsConfig(1023, 720 + 4800) };
+        Transmit t = q.Tx.Build();
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).Blocks.Should().Be(3);
+        q.Decode(t).OfType<DataOnly>().Select(d => (d.TxFsn, d.Segment.Length)).Should().Equal((0, 200));
+    }
+
+    [Fact]
     public void A_first_segment_to_an_ed3_peer_stretches_the_transmission()
     {
         // Interp C-1042, C-0551, C-0554: towards an Ed3 peer a segment may not be shortened, so a 118-byte
