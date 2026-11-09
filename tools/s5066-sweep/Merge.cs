@@ -48,42 +48,84 @@ internal static class Merge
 
     /// <summary>
     /// The P7-10 gate per channel, set SNR and adaptive configuration (plan 12 phase 7 done-when; open
-    /// question 14 as amended by the coordinator's rulings of 2026-11-08 and 2026-11-09): against the
-    /// channel's baseline rung (the fixed rung with the highest goodput summed over the sweep), adaptive
-    /// passes where its mean goodput is strictly above the baseline's mean, or, where the baseline rung is
-    /// at its measured stack ceiling (its mean at the point within 2% of its highest mean on the channel),
-    /// where adaptive is within 2% of that ceiling. A point where no configuration delivers data is not gated.
+    /// question 14 as amended by the coordinator's rulings of 2026-11-08 and 2026-11-09). On AWGN and Poor
+    /// (rule <c>goodput</c>): against the channel's baseline rung (the fixed rung with the highest goodput
+    /// summed over the sweep), adaptive passes where its mean goodput is strictly above the baseline's mean,
+    /// or, where the baseline rung is at its measured stack ceiling (its mean at the point within 2% of its
+    /// highest mean on the channel), where adaptive is within 2% of that ceiling; a point where no
+    /// configuration delivers data is not gated. On a channel with the SSB band-pass (rule <c>ssb</c>,
+    /// ruling (d) of 2026-11-09, open question 14 as it stands): not goodput, but no link lost and under 5%
+    /// of the transmissions on rungs that never decode there, at every point; the goodput columns are
+    /// reported for information. A rung never decodes on a channel when every transmission on it, over every
+    /// run of that channel in the merge (any configuration, SNR and seed, both nodes), delivered no D_PDU
+    /// whole. Open question 14 counts the transmissions after the first ceiling; the run JSON keeps no
+    /// order, so every transmission is counted, which is stricter.
     /// </summary>
     internal static string Gate(IReadOnlyList<RunResult> results)
     {
         var inv = CultureInfo.InvariantCulture;
-        var sb = new StringBuilder("channel\tset_snr_tenth_db\tadaptive_config\tadaptive_mean_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_ceiling_bps\tat_ceiling\tverdict\n");
+        var sb = new StringBuilder("channel\tset_snr_tenth_db\tadaptive_config\tadaptive_mean_bps\tbaseline_config\tbaseline_mean_bps\tbaseline_ceiling_bps\tat_ceiling\trule\tlinks_lost\tnever_decode_tx_pct\tverdict\n");
         foreach (IGrouping<string, RunResult> ch in results.GroupBy(r => r.Channel).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
+            bool ssb = ch.Key.EndsWith("-ssb", StringComparison.Ordinal);
             var means = ch.GroupBy(r => (r.Config, r.SnrTenthDb)).ToDictionary(g => g.Key, g => g.Average(r => r.GoodputBps));
             var fixedSums = means.Where(kv => kv.Key.Config.StartsWith("fixed-", StringComparison.Ordinal))
                 .GroupBy(kv => kv.Key.Config).Select(g => (Config: g.Key, Sum: g.Sum(kv => kv.Value)))
                 .OrderByDescending(x => x.Sum).ThenBy(x => x.Config, StringComparer.Ordinal).ToList();
-            if (fixedSums.Count == 0)
+            if (fixedSums.Count == 0 && !ssb)
             {
                 continue;
             }
 
-            string baseline = fixedSums[0].Config;
-            double ceiling = means.Where(kv => kv.Key.Config == baseline).Max(kv => kv.Value);
-            foreach (((string config, int snr), double mean) in means.Where(kv => kv.Key.Config.StartsWith("adaptive-", StringComparison.Ordinal))
-                .OrderBy(kv => kv.Key.Config, StringComparer.Ordinal).ThenBy(kv => kv.Key.SnrTenthDb))
+            // Rungs some run of this channel transmitted on and none ever decoded (open question 14).
+            var sent = new Dictionary<string, long>(StringComparer.Ordinal);
+            var ok = new Dictionary<string, long>(StringComparer.Ordinal);
+            foreach (RunResult r in ch)
             {
-                if (!means.TryGetValue((baseline, snr), out double b))
+                foreach ((string rung, RungStats s) in r.Nodes.Values.SelectMany(n => n.Rungs))
+                {
+                    sent[rung] = sent.GetValueOrDefault(rung) + s.Count;
+                    ok[rung] = ok.GetValueOrDefault(rung) + s.DpdusOk;
+                }
+            }
+
+            var never = sent.Where(kv => kv.Value > 0 && ok.GetValueOrDefault(kv.Key) == 0).Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal);
+            string? baseline = fixedSums.Count > 0 ? fixedSums[0].Config : null;
+            double ceiling = baseline is null ? 0 : means.Where(kv => kv.Key.Config == baseline).Max(kv => kv.Value);
+            foreach (IGrouping<(string Config, int Snr), RunResult> pt in ch.Where(r => r.Config.StartsWith("adaptive-", StringComparison.Ordinal))
+                .GroupBy(r => (r.Config, Snr: r.SnrTenthDb)).OrderBy(g => g.Key.Config, StringComparer.Ordinal).ThenBy(g => g.Key.Snr))
+            {
+                (string config, int snr) = pt.Key;
+                double mean = means[(config, snr)];
+                long links = pt.Sum(r => r.LinksLost);
+                long tx = 0;
+                long txNever = 0;
+                foreach ((string rung, RungStats s) in pt.SelectMany(r => r.Nodes.Values).SelectMany(n => n.Rungs))
+                {
+                    tx += s.Count;
+                    txNever += never.Contains(rung) ? s.Count : 0;
+                }
+
+                double pct = tx == 0 ? 0 : 100.0 * txNever / tx;
+                double? b = baseline is not null && means.TryGetValue((baseline, snr), out double bb) ? bb : null;
+                bool atCeiling = b is double bv && ceiling > 0 && bv >= 0.98 * ceiling;
+                string verdict;
+                if (ssb)
+                {
+                    verdict = links == 0 && pct < 5.0 ? "pass" : "fail";
+                }
+                else if (b is not double bm)
                 {
                     continue;
                 }
+                else
+                {
+                    bool anyData = means.Where(kv => kv.Key.SnrTenthDb == snr).Any(kv => kv.Value > 0);
+                    verdict = !anyData ? "not gated"
+                        : mean > bm || (atCeiling && mean >= 0.98 * ceiling) ? "pass" : "fail";
+                }
 
-                bool atCeiling = ceiling > 0 && b >= 0.98 * ceiling;
-                bool anyData = means.Where(kv => kv.Key.SnrTenthDb == snr).Any(kv => kv.Value > 0);
-                string verdict = !anyData ? "not gated"
-                    : mean > b || (atCeiling && mean >= 0.98 * ceiling) ? "pass" : "fail";
-                sb.Append(inv, $"{ch.Key}\t{snr}\t{config}\t{mean:F1}\t{baseline}\t{b:F1}\t{ceiling:F1}\t{(atCeiling ? "yes" : "no")}\t{verdict}\n");
+                sb.Append(inv, $"{ch.Key}\t{snr}\t{config}\t{mean:F1}\t{baseline ?? "-"}\t{(b is double x ? x.ToString("F1", inv) : "-")}\t{(baseline is null ? "-" : ceiling.ToString("F1", inv))}\t{(atCeiling ? "yes" : "no")}\t{(ssb ? "ssb" : "goodput")}\t{links}\t{pct:F1}\t{verdict}\n");
             }
         }
 

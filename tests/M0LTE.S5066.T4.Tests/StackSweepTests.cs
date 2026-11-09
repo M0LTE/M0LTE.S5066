@@ -211,11 +211,54 @@ public class StackSweepTests
         ];
         string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
         gate.Should().HaveCount(6);
-        gate[1].Should().Be("awgn\t0\tadaptive-t\t0.0\tfixed-wn8-long\t0.0\t2000.0\tno\tnot gated");
-        gate[2].Should().EndWith("\tno\tpass", "800 is above the baseline's 0 where another rung delivers");
-        gate[3].Should().EndWith("\tno\tfail", "equal is not strictly above, and 1500 is not at the ceiling");
-        gate[4].Should().EndWith("\tyes\tpass", "1961 is within 2% of the 2000 ceiling");
-        gate[5].Should().EndWith("\tyes\tfail", "1959 is more than 2% below the ceiling");
+        gate[1].Should().Be("awgn\t0\tadaptive-t\t0.0\tfixed-wn8-long\t0.0\t2000.0\tno\tgoodput\t0\t0.0\tnot gated");
+        gate[2].Should().EndWith("\tno\tgoodput\t0\t0.0\tpass", "800 is above the baseline's 0 where another rung delivers");
+        gate[3].Should().EndWith("\tno\tgoodput\t0\t0.0\tfail", "equal is not strictly above, and 1500 is not at the ceiling");
+        gate[4].Should().EndWith("\tyes\tgoodput\t0\t0.0\tpass", "1961 is within 2% of the 2000 ceiling");
+        gate[5].Should().EndWith("\tyes\tgoodput\t0\t0.0\tfail", "1959 is more than 2% below the ceiling");
+    }
+
+    [Fact]
+    public void On_an_ssb_channel_the_gate_is_no_link_lost_and_under_5_percent_on_rungs_that_never_decode()
+    {
+        // Ruling (d) of 2026-11-09 (open question 14): on poor-ssb, not goodput. wn8-long never decodes on the
+        // channel (its fixed run delivers no D_PDU, and neither do adaptive's transmissions on it); wn7-long does.
+        static NodeStats Node(params (string Rung, long Count, long Ok)[] rungs)
+        {
+            var n = new NodeStats();
+            foreach ((string rung, long count, long ok) in rungs)
+            {
+                n.Rungs[rung] = new RungStats { Count = count, DpdusOk = ok };
+            }
+
+            return n;
+        }
+
+        RunResult R(string config, int snr, double bps, long lost, params (string, long, long)[] rungs) => new()
+        {
+            Id = $"{config}-{snr}", Channel = "poor-ssb", SnrTenthDb = snr, Config = config, Seed = 1, GoodputBps = bps, LinksLost = lost,
+            Nodes = new(StringComparer.Ordinal) { ["a"] = Node(rungs) },
+        };
+
+        RunResult[] results =
+        [
+            R("fixed-wn8-long", 180, 0, 2, ("wn8-long", 40, 0)), R("fixed-wn7-long", 180, 1133, 0, ("wn7-long", 40, 900)),
+            R("adaptive-t", 180, 983, 0, ("wn7-long", 97, 2000), ("wn8-long", 3, 0)),
+            R("fixed-wn8-long", 300, 0, 2, ("wn8-long", 40, 0)), R("fixed-wn7-long", 300, 1133, 0, ("wn7-long", 40, 900)),
+            R("adaptive-t", 300, 1500, 0, ("wn7-long", 90, 2000), ("wn8-long", 10, 0)),
+            R("fixed-wn8-long", 120, 0, 2, ("wn8-long", 40, 0)), R("fixed-wn7-long", 120, 900, 0, ("wn7-long", 40, 900)),
+            R("adaptive-t", 120, 1000, 1, ("wn7-long", 100, 2000)),
+        ];
+        string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
+        gate.Should().HaveCount(4);
+        gate[1].Should().Be("poor-ssb\t120\tadaptive-t\t1000.0\tfixed-wn7-long\t900.0\t1133.0\tno\tssb\t1\t0.0\tfail", "a link was lost, whatever the goodput");
+        gate[2].Should().EndWith("\tssb\t0\t3.0\tpass", "below the baseline's goodput, but no link lost and 3 of 100 transmissions on wn8-long");
+        gate[3].Should().EndWith("\tssb\t0\t10.0\tfail", "10 of 100 transmissions on a rung that never decodes");
+
+        // Adaptive runs alone (a targeted re-run): no baseline, still gated on an SSB channel, and not on AWGN.
+        string[] alone = Merge.Gate([results[2], new RunResult { Id = "x", Channel = "awgn", SnrTenthDb = 180, Config = "adaptive-t", Seed = 1, GoodputBps = 2000 }]).TrimEnd('\n').Split('\n');
+        alone.Should().HaveCount(2);
+        alone[1].Should().Be("poor-ssb\t180\tadaptive-t\t983.0\t-\t-\t-\tno\tssb\t0\t3.0\tpass");
     }
 
     [Fact]

@@ -214,11 +214,13 @@ public class SimulationTests(ITestOutputHelper output)
     /// length is one block, so the four copies need four transmissions, and every copy after the
     /// first must fit inside the window stamped by the transmission before. The window allows each
     /// later transmission <c>dts.max_transmission_ms</c> plus the LBT wait after an own transmission
-    /// plus <c>num_cont_slots</c> whole slots (C-1051). The time it does not cover is the delay
-    /// between the <c>transmit</c> output and the core hearing <c>transmit_done</c>, beyond the
-    /// planned duration: turnaround plus end-of-burst reporting. The slack that absorbs it is the
-    /// part of the slot allowance the contention wait did not use, the transmission time not
-    /// usable as whole blocks, and the half-second rounding of the window.
+    /// plus <c>num_cont_slots</c> whole slots (C-1051), and since P7-9 round 4 one block of the
+    /// waveform in use plus a 1.5 s host allowance (interp C-1292, issue #38). The time the first three
+    /// terms do not cover is the delay between the <c>transmit</c> output and the core hearing
+    /// <c>transmit_done</c>, beyond the planned duration: turnaround plus end-of-burst reporting.
+    /// Before round 4 the only slack was the part of the slot allowance the contention wait did not
+    /// use, the transmission time not usable as whole blocks and the half-second rounding, so slotted
+    /// at the last position dropped the last copy of every U_PDU at any latency (P3-7 T3).
     /// </summary>
     [Fact]
     public void Reception_window_commitment_under_host_latency()
@@ -230,45 +232,43 @@ public class SimulationTests(ITestOutputHelper output)
                      ("slotted", "slotted, position 1 of 3", 1), ("slotted", "slotted, position 3 of 3", 3),
                  })
         {
-            foreach (int latency in new[] { 0, 50, 100, 200, 300 })
+            foreach (int latency in new[] { 0, 50, 100, 200, 300, 1300 })
             {
                 (int sent, int owed, _) = RepeatRun(mode, position, latency, blockErrorPpm: 0, seed: 21);
                 results.Add((label, latency, sent, owed));
-                output.WriteLine($"{label,-26} latency {latency,3} ms: {sent,2} of {owed} copies sent");
+                output.WriteLine($"{label,-26} latency {latency,4} ms: {sent,2} of {owed} copies sent");
             }
         }
 
-        // Jitter and ed3 never draw more than num_cont_slots - 1 slots (K-0080), so a whole slot
-        // (3 s here) of the allowance is always spare: no copy is dropped at any of these latencies.
-        // The same holds in slotted mode for position 1, which waits 1 slot of the 3 allowed after
-        // its own transmission (K-0082).
-        results.Where(r => !r.Mode.Contains("position 3", StringComparison.Ordinal)).Should().OnlyContain(r => r.Sent == r.Owed);
+        // With the allowance of one 4800 ms block and 1500 ms per later transmission, no copy is dropped
+        // in any mode at these latencies, the measured 1.3 s included (interp C-1292).
+        results.Should().OnlyContain(r => r.Sent == r.Owed);
+        (int sentEdge, int owedEdge, _) = RepeatRun("slotted", 3, 6000, blockErrorPpm: 0, seed: 21);
+        output.WriteLine($"slotted, position 3 of 3  latency 6000 ms: {sentEdge,2} of {owedEdge} copies sent");
+        sentEdge.Should().Be(owedEdge, "6000 ms is inside the 6300 ms allowance");
 
         // Slotted at the last position waits all num_cont_slots slots after its own transmission
-        // (K-0082), so none of the slot allowance is spare. Here the transmission length is exactly
-        // whole blocks and the window lands on a half second, so there is no slack at all: with no
-        // latency every copy goes, with any latency the last copy of every U_PDU is dropped. Only
-        // the last is lost: a window stamped while two or more transmissions are still owed covers
-        // a whole extra transmission allowance, so the earlier copies always fit.
-        var last = results.Where(r => r.Mode.Contains("position 3", StringComparison.Ordinal)).ToList();
-        last.Single(r => r.LatencyMs == 0).Sent.Should().Be(last[0].Owed);
-        last.Where(r => r.LatencyMs > 0).Should().OnlyContain(r => r.Sent == r.Owed - (r.Owed / 4));
+        // (K-0082), so the allowance is its only slack: past it the last copy of every U_PDU is dropped,
+        // as every latency did before round 4. Only the last is lost: a window stamped while two or more
+        // transmissions are still owed covers a whole extra transmission allowance.
+        (int sentLate, int owedLate, _) = RepeatRun("slotted", 3, 7000, blockErrorPpm: 0, seed: 21);
+        output.WriteLine($"slotted, position 3 of 3  latency 7000 ms: {sentLate,2} of {owedLate} copies sent");
+        sentLate.Should().Be(owedLate - (owedLate / 4));
     }
 
     [Fact]
-    public void Dropped_repeats_cost_deliveries_under_loss()
+    public void Host_latency_within_the_allowance_drops_no_repeats_under_loss()
     {
-        // The effect of the drops above when the channel loses blocks: slotted at the last position,
-        // 50% block loss, 40 U_PDUs, the same seed, with and without 100 ms of turnaround and
-        // reporting delay. Losing the fourth copy turns a 1 in 16 chance of losing a U_PDU at one
-        // receiver into 1 in 8.
+        // Slotted at the last position, 50% block loss, 40 U_PDUs, the same seed, with no latency and with
+        // the 1.3 s measured on 30 s bursts (docs/stack-sweep.md). Before the allowance (interp C-1292) 100 ms
+        // already lost the fourth copy of every U_PDU, which turned a 1 in 16 chance of losing a U_PDU at
+        // one receiver into 1 in 8.
         (int sentFast, int owed, int deliveredFast) = RepeatRun("slotted", 3, 0, blockErrorPpm: 500_000, seed: 5, messages: 40);
-        (int sentSlow, _, int deliveredSlow) = RepeatRun("slotted", 3, 100, blockErrorPpm: 500_000, seed: 5, messages: 40);
+        (int sentSlow, _, int deliveredSlow) = RepeatRun("slotted", 3, 1300, blockErrorPpm: 500_000, seed: 5, messages: 40);
         output.WriteLine($"no latency: {sentFast} of {owed} copies, {deliveredFast} of 80 deliveries");
-        output.WriteLine($"100 ms:     {sentSlow} of {owed} copies, {deliveredSlow} of 80 deliveries");
+        output.WriteLine($"1300 ms:    {sentSlow} of {owed} copies, {deliveredSlow} of 80 deliveries");
         sentFast.Should().Be(owed);
-        sentSlow.Should().Be(owed - (owed / 4));
-        deliveredSlow.Should().BeLessThan(deliveredFast);
+        sentSlow.Should().Be(owed);
     }
 
     /// <summary>
@@ -278,9 +278,11 @@ public class SimulationTests(ITestOutputHelper output)
     /// </summary>
     private static (int Sent, int Owed, int Delivered) RepeatRun(string mode, int? position, int latencyMs, int blockErrorPpm, ulong seed, int messages = 10)
     {
-        // Latency split as turnaround (2/3) and end-of-burst reporting (1/3); only their sum
-        // matters to the sender, which measures from its transmit output to transmit_done.
-        var channel = new ChannelModel(BlockErrorPpm: blockErrorPpm, TurnaroundMs: latencyMs - (latencyMs / 3), EndOfBurstDelayMs: latencyMs / 3);
+        // Latency split as turnaround (2/3) and end-of-burst reporting (1/3, at most 500 ms, which the
+        // simulation needs shorter than the 600 ms preamble); only their sum matters to the sender,
+        // which measures from its transmit output to transmit_done.
+        int endOfBurst = Math.Min(latencyMs / 3, 500);
+        var channel = new ChannelModel(BlockErrorPpm: blockErrorPpm, TurnaroundMs: latencyMs - endOfBurst, EndOfBurstDelayMs: endOfBurst);
         int?[] positions = position is int p ? [p, p == 1 ? 2 : 1, p == 3 ? 2 : 3] : [null, null, null];
         var nodes = new List<JsonObject>();
         for (int n = 0; n < 3; n++)

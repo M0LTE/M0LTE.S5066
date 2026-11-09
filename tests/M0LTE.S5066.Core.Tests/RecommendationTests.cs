@@ -333,4 +333,40 @@ public class RecommendationTests
         st.Failures.Should().NotContainKey(1);
         st.CleanRun[RecommendationState.Key(R(4))].Should().Be(1);
     }
+
+    [Fact]
+    public void An_errored_burst_moves_max_speed_down_one_walk_position_and_the_caps_still_apply()
+    {
+        // P7-9 round 4 ruling (a) (interp C-1291 revised, corpus 0.37.0): with the probe, not to the estimate's target.
+        DrcTable t = Table with { ProbeRun = 1 };
+        var st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);     // first: bulk target 2 (300): MAX-SPEED WN 6
+        st.MaxSpeed.Should().Be(2);
+        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // 100 ppt, under the limit, no cap; S = -50, target 0
+        st.MaxSpeed.Should().Be(1);                              // one position, not 0
+        st.LowSpeed.Should().Be(0);                              // LOW-SPEED, no probe, moves straight down
+        st.Caps.Should().BeEmpty();
+        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // another errored burst: one more position
+        st.MaxSpeed.Should().Be(0);
+
+        st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);
+        Recommender.OnBurst(t, st, R(4), 50, 1, 1, false);      // WN 4 fails: cap, ceiling 0; the step gives 1, the ceiling 0
+        st.MaxSpeed.Should().Be(0);
+    }
+
+    [Fact]
+    public void Low_speed_moves_up_on_a_clean_run_of_a_higher_received_rung()
+    {
+        // P7-9 round 4 ruling (b) (interp C-1270 revised, corpus 0.37.0): MAX-SPEED still needs its own rung's run.
+        var st = new RecommendationState();
+        Recommender.OnBurst(Table, st, R(2), 400, 1, 0, false);   // first: both targets 2, not above WN 2: 0
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 0));
+        Recommender.OnBurst(Table, st, R(4), 400, 1, 0, false);   // clean run 1 on WN 2 and on WN 4: both hold
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 0));
+        Recommender.OnBurst(Table, st, R(4), 400, 1, 0, false);   // WN 4 run 2: LOW-SPEED to its target 2; WN 2 run still 1
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 2));
+        Recommender.OnBurst(Table, st, R(2), 400, 1, 0, false);   // a lower rung's run never backs it: WN 2 run 2 backs MAX-SPEED
+        (st.MaxSpeed, st.LowSpeed).Should().Be((2, 2));
+    }
 }

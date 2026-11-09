@@ -147,8 +147,8 @@ internal static class Recommender
         // 6. The walk, for MAX-SPEED (bulk) and LOW-SPEED (latency). The probe of interp C-1291 is for
         // MAX-SPEED only, and only with probe_run set.
         int? probeRun = table.ProbeRun;
-        st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, clean);
-        st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, clean);
+        st.MaxSpeed = Walk(table, st, st.MaxSpeed, table.WalkOf(bulk: true), thresholds?.Bulk, smoothed, pos, ceiling, probeRun, clean, bulk: true);
+        st.LowSpeed = Walk(table, st, st.LowSpeed, table.WalkOf(bulk: false), thresholds?.Latency, smoothed, pos, ceiling, null, clean, bulk: false);
 
         // 7. MAX-SEGMENT to a fixed-speed sender (interp C-1272).
         if (fixedSender)
@@ -175,9 +175,13 @@ internal static class Recommender
     /// recommendation down, only errors (an errored burst, whose estimate may) and caps do; and when the
     /// estimate's target is not above the recommendation, a run of <paramref name="probeRun"/> clean bursts on
     /// the recommended rung moves it up to the next position of the walk, the probe, which the sender bounds by
-    /// its failed-trial ceiling (interp C-1281) and the receiver by its caps.
+    /// its failed-trial ceiling (interp C-1281) and the receiver by its caps. P7-9 round 4 (coordinator rulings
+    /// 2026-11-09): with the probe, a burst that is not clean moves MAX-SPEED down at most one position of the
+    /// walk, however low the estimate's target (interp C-1291); the caps still apply after. And for LOW-SPEED
+    /// (<paramref name="bulk"/> false) the clean run that backs a move up may be that of the burst's own rung
+    /// when it is above the recommendation, not only that of the recommended rung (interp C-1270).
     /// </summary>
-    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean)
+    private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool clean, bool bulk)
     {
         if (row is not null && smoothed is int s)
         {
@@ -198,14 +202,27 @@ internal static class Recommender
             else
             {
                 int run = st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[current]));
+                int backing = run;
+                if (!bulk && pos > current)
+                {
+                    // Round 4 (interp C-1270): a higher rung received clean backs LOW-SPEED's move up too.
+                    backing = Math.Max(run, st.CleanRun.GetValueOrDefault(RecommendationState.Key(table.Ladder[pos])));
+                }
+
                 if (target < current)
                 {
-                    if (probeRun is null || !clean)
+                    if (probeRun is null)
                     {
-                        r = target;   // a move down is immediate; with the probe, only after a burst that is not clean (interp C-1291)
+                        r = target;   // a move down is immediate
+                    }
+                    else if (!clean)
+                    {
+                        // With the probe, only after a burst that is not clean (interp C-1291), and since round 4
+                        // at most one position of the walk: the estimate alone pulls it no further.
+                        r = Math.Max(target, AtOrBelow(walk, current - 1) ?? target);
                     }
                 }
-                else if (target > current && run >= DrcTable.Need(table.CleanRun, "clean_run"))
+                else if (target > current && backing >= DrcTable.Need(table.CleanRun, "clean_run"))
                 {
                     r = target;   // straight to the target, after the clean run (round 3; was one rung)
                 }
