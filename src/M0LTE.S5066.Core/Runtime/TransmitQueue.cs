@@ -1477,7 +1477,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             if (!owners.Contains(p.Owner))
             {
                 owners.Add(p.Owner);
-                p.Owner.ExtraMs = LaterTransmissions(p.Owner, shape) * LaterTransmissionMs();
+                p.Owner.ExtraMs = LaterTransmissions(p.Owner, shape) * LaterTransmissionMs(shape);
                 p.Owner.NewCommitEnd = null;
             }
         }
@@ -1805,15 +1805,24 @@ internal sealed class TransmitQueue : ITransmissionSource
     public long AnswerWaitMs() => _context.Config.AnswerWaitMs();
 
     /// <summary>
+    /// The host allowance per later transmission in a reception window, 1.5 s (interp C-1292, issue #38;
+    /// coordinator ruling 2026-11-09): the time between a transmission's planned end and its
+    /// <c>transmit_done</c> that a real host adds (measured 1.3 s on 30 s bursts, docs/stack-sweep.md).
+    /// </summary>
+    public const long HostAllowanceMs = 1500;
+
+    /// <summary>
     /// The time allowed per later transmission in a reception window (C-1051; core-architecture.md
     /// 10 item 5): the configured transmission length, the LBT wait after an own transmission
-    /// (K-0074; the common value in ed3 mode, K-0107) and the longest contention wait.
+    /// (K-0074; the common value in ed3 mode, K-0107) and the longest contention wait; since P7-9
+    /// round 4 also one block of the waveform in use and <see cref="HostAllowanceMs"/> (interp C-1292,
+    /// issue #38), so host latency does not make the sender drop its own owed copies (C-1052).
     /// </summary>
-    private long LaterTransmissionMs()
+    private long LaterTransmissionMs(BurstPlan shape)
     {
         CsmaConfig csma = _context.Config.Csma;
         long lbt = csma.RequireMode() == CsmaMode.Ed3 ? csma.LbtWaitDcdMs : csma.LbtWaitVdcdMs;
-        return Budget + lbt + ((long)csma.NumContSlots * csma.ContSlotWidthMs);
+        return Budget + lbt + ((long)csma.NumContSlots * csma.ContSlotWidthMs) + shape.BlockMs + HostAllowanceMs;
     }
 
     /// <summary>

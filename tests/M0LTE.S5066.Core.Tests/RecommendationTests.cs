@@ -333,4 +333,55 @@ public class RecommendationTests
         st.Failures.Should().NotContainKey(1);
         st.CleanRun[RecommendationState.Key(R(4))].Should().Be(1);
     }
+
+    [Fact]
+    public void An_errored_burst_moves_max_speed_down_one_walk_position_and_the_caps_still_apply()
+    {
+        // P7-9 round 4 rulings (interp C-1291 revised, corpus 0.37.0): with the probe, MAX-SPEED moves down only
+        // after a burst over rx_error_limit_ppt or with a lost block, and then one walk position, not to the target.
+        DrcTable t = Table with { ProbeRun = 1, RxCeilingInitial = 1 };
+        var st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);     // first: bulk target 2 (300): MAX-SPEED WN 6
+        st.MaxSpeed.Should().Be(2);
+        Recommender.OnBurst(t, st, R(6), -500, 10, 1, false);   // 100 ppt, under the limit: S = -50, target 0, but it holds
+        st.MaxSpeed.Should().Be(2);
+        st.LowSpeed.Should().Be(0);                              // LOW-SPEED, no probe, moves straight down
+        st.Caps.Should().BeEmpty();
+        Recommender.OnBurst(t, st, R(6), -500, 0, 0, false, lostBlock: true);   // a lost block: one position
+        st.MaxSpeed.Should().Be(1);
+        Recommender.OnBurst(t, st, R(6), -500, 10, 6, false);   // 600 ppt, over the limit: one more position (cap on 2, ceiling 1)
+        st.MaxSpeed.Should().Be(0);
+
+        st = new RecommendationState();
+        Recommender.OnBurst(t, st, R(6), 400, 1, 0, false);
+        Recommender.OnBurst(t, st, R(4), 50, 1, 1, false);      // WN 4 fails: cap, ceiling 0; the step gives 1, the ceiling 0
+        st.MaxSpeed.Should().Be(0);
+    }
+
+    [Fact]
+    public void Low_speed_moves_up_on_a_clean_run_of_a_higher_received_rung()
+    {
+        // P7-9 round 4 ruling (b) (interp C-1270 revised, corpus 0.37.0): MAX-SPEED still needs its own rung's run.
+        var st = new RecommendationState();
+        Recommender.OnBurst(Table, st, R(2), 400, 1, 0, false);   // first: both targets 2, not above WN 2: 0
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 0));
+        Recommender.OnBurst(Table, st, R(4), 400, 1, 0, false);   // clean run 1 on WN 2 and on WN 4: both hold
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 0));
+        Recommender.OnBurst(Table, st, R(4), 400, 1, 0, false);   // WN 4 run 2: LOW-SPEED to its target 2; WN 2 run still 1
+        (st.MaxSpeed, st.LowSpeed).Should().Be((0, 2));
+        Recommender.OnBurst(Table, st, R(2), 400, 1, 0, false);   // a lower rung's run never backs it: WN 2 run 2 backs MAX-SPEED
+        (st.MaxSpeed, st.LowSpeed).Should().Be((2, 2));
+    }
+
+    [Fact]
+    public void Without_the_probe_a_burst_off_the_ladder_does_not_read_the_error_limit()
+    {
+        // corpus-format.md 6.2 reads rx_error_limit_ppt only in step 2 (a burst on the ladder) and, since corpus
+        // 0.37.0, in the probe's step 6; a table that leaves it null without the probe must not need it here.
+        var off = new DrcTable(Table.Ladder, [.. Table.Thresholds, new DrcThresholds(R(1), [-100, 0, 100], [-100, 100, 200])],
+            SmoothingWeight: 8, CleanRun: 2, RxErrorLimitPpt: null, RxCeilingInitial: 2, RxCeilingCap: 5);
+        var st = new RecommendationState();
+        FluentActions.Invoking(() => Recommender.OnBurst(off, st, R(1), 150, 4, 1, false)).Should().NotThrow();
+        (st.MaxSpeed, st.LowSpeed).Should().Be((2, 1));
+    }
 }
