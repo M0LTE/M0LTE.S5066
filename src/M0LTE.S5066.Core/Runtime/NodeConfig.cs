@@ -258,6 +258,11 @@ public sealed record DrcConfig(Speed DefaultSpeed)
 /// up one rung though the estimate does not call for it (the probe); while set, a clean burst never
 /// lets the estimate alone move MAX-SPEED down. Null: no probe, the walk of P7-6 unchanged.
 /// </param>
+/// <param name="BulkRungs">
+/// bulk_rungs (P7-9 round 3; open question 15, interp C-1270): the ladder positions the MAX-SPEED walk
+/// uses, ascending; null means every position.
+/// </param>
+/// <param name="LatencyRungs">latency_rungs: the same for the LOW-SPEED walk.</param>
 public sealed record DrcTable(
     IReadOnlyList<Speed> Ladder,
     IReadOnlyList<DrcThresholds> Thresholds,
@@ -269,7 +274,9 @@ public sealed record DrcTable(
     int? TxStepDownWaits = null,
     int? TxCeilingInitial = null,
     int? TxCeilingCap = null,
-    int? ProbeRun = null)
+    int? ProbeRun = null,
+    IReadOnlyList<int>? BulkRungs = null,
+    IReadOnlyList<int>? LatencyRungs = null)
 {
     /// <summary>The empty table of <c>defaults.json</c>.</summary>
     public static DrcTable Empty { get; } = new([], []);
@@ -304,6 +311,13 @@ public sealed record DrcTable(
 
         return null;
     }
+
+    /// <summary>
+    /// The ladder positions a walk uses (corpus-format.md 6.2 step 6): <see cref="BulkRungs"/> for
+    /// MAX-SPEED, <see cref="LatencyRungs"/> for LOW-SPEED, every position when the list is null.
+    /// </summary>
+    internal IReadOnlyList<int> WalkOf(bool bulk) =>
+        (bulk ? BulkRungs : LatencyRungs) ?? Enumerable.Range(0, Ladder.Count).ToArray();
 
     /// <summary>Reads a constant the core needs; null throws <see cref="MissingSettingException"/>.</summary>
     internal static int Need(int? value, string key) => value ?? throw new MissingSettingException("drc.table." + key);

@@ -721,8 +721,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// only one has come and never above MAX-SPEED (C-0894; interp C-1284), mapped onto the ladder
     /// (open question 5; interp C-1280); nothing received (or a peer of unknown edition, which can
     /// have no usable recommendation, interp C-1284), <c>drc.default_speed</c>. Then the sender's own
-    /// evidence (interp C-1281, C-1282): never above a failed-trial ceiling, never more than one rung
-    /// above the rung that last drew an answer, and down one rung for each step down after silence,
+    /// evidence (interp C-1281, C-1282): never above a failed-trial ceiling, never above the answered
+    /// rung after a failed trial until the peer answers (P7-9 round 3: otherwise straight to the
+    /// recommendation, no one-rung climb limit), and down one rung for each step down after silence,
     /// never below the lowest rung (going lower never exceeds a recommendation, plan 5.3).
     /// </summary>
     private (int Position, Speed? Wn0) PeerPosition(uint peer, int defaultPosition)
@@ -769,9 +770,9 @@ internal sealed class TransmitQueue : ITransmissionSource
                 position = Math.Min(position, c);
             }
 
-            if (s.AnsweredRung is int answered)
+            if (s.FailedSinceAnswer && s.AnsweredRung is int answered)
             {
-                position = Math.Min(position, answered + 1);
+                position = Math.Min(position, answered);   // after a failed trial, no trial until an answer (round 3)
             }
 
             position = Math.Max(0, position - s.StepDown);
