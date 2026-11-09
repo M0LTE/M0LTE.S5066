@@ -20,13 +20,19 @@ internal sealed class SenderRate
     public const int Wn0 = -1;
 
     /// <summary>
-    /// The position of the last transmission to this peer that drew an answer (interp C-1281), or
-    /// null when there is none to compare with (no connection made yet, or a peer we never link with).
+    /// The highest position that has drawn an answer from this peer since the connection was made or
+    /// since the last silent wait (interp C-1281), or null when there is none to compare with (no
+    /// connection made yet, or a peer we never link with). An answer to a transmission at a lower rung
+    /// does not lower it: a short transmission at the LOW-SPEED rung proves nothing against the rung
+    /// above (P7-9 round 2).
     /// </summary>
     public int? AnsweredRung { get; set; }
 
     /// <summary>The position of the last transmission that carried a D_PDU to this peer, or null.</summary>
     public int? LastSentRung { get; set; }
+
+    /// <summary>The position of the last transmission that carried ARQ data to this peer, or null: the one an answer is awaited for.</summary>
+    public int? DataRung { get; set; }
 
     /// <summary>The position of a trial in flight: ARQ data sent above <see cref="AnsweredRung"/> and not yet answered (interp C-1281).</summary>
     public int? TrialRung { get; set; }
@@ -90,6 +96,7 @@ internal sealed class SenderRate
 
         if (arqData)
         {
+            DataRung = rung;
             HeardSinceSent = false;
             TrialRung = AnsweredRung is int answered && rung > answered ? rung : null;
         }
@@ -97,7 +104,8 @@ internal sealed class SenderRate
 
     /// <summary>
     /// The peer answered (C-1250): the silence count and the step down end, a trial in flight has
-    /// succeeded (its hold-off goes back to the initial length), and the rung last sent counts as answered.
+    /// succeeded (its hold-off goes back to the initial length), and the rung last sent counts as
+    /// answered when it is above the highest answered so far (interp C-1281).
     /// </summary>
     public void OnAnswered()
     {
@@ -112,15 +120,17 @@ internal sealed class SenderRate
 
         if (LastSentRung is int sent)
         {
-            AnsweredRung = sent;
+            AnsweredRung = AnsweredRung is int answered ? Math.Max(answered, sent) : sent;
         }
     }
 
     /// <summary>
     /// <c>dts.ack_wait</c> expired for this peer and the connection was not lost. With nothing heard
     /// from the peer since the transmission (open question 16) it is a silent wait: a trial in flight
-    /// has failed and caps the peer below it (design shape item 7), and every
-    /// <c>tx_step_down_waits</c> silent waits in a row step one rung down (plan 6.2).
+    /// has failed and caps the peer below it (design shape item 7); otherwise the rung of the
+    /// unanswered data no longer counts as answered, so the answered rung goes below it and going back
+    /// to it is a trial again (interp C-1281); and every <c>tx_step_down_waits</c> silent waits in a
+    /// row step one rung down (plan 6.2).
     /// </summary>
     public void OnAckWaitExpired(DrcTable table)
     {
@@ -137,6 +147,10 @@ internal sealed class SenderRate
             CeilingLeft = length;
             HoldOff = (int)Math.Min(length * 2L, cap);
             TrialRung = null;
+        }
+        else if (AnsweredRung is int answered && DataRung is int data && data <= answered)
+        {
+            AnsweredRung = Math.Max(0, data - 1);   // never below the lowest rung, so a trial is always above a rung
         }
 
         SilentWaits++;
