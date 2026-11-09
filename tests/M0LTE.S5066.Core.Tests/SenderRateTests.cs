@@ -48,6 +48,35 @@ public class SenderRateTests
         RateChoice.Ed3Named(new Ed3BasicRateEow(code, interleaving, 2)).Should().Be(new Speed(wn, il));
 
     [Fact]
+    public void An_answer_to_a_lower_rung_keeps_the_answered_rung_and_a_silent_wait_lowers_it()
+    {
+        // Interp C-1281 as revised in corpus 0.35.0 (P7-9 round 2).
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(1, true);
+        s.OnAnswered();
+        s.OnSent(2, true);
+        s.OnAnswered();
+        s.AnsweredRung.Should().Be(2);
+        s.OnSent(0, true);                 // a short transmission at the LOW-SPEED rung
+        s.OnAnswered();
+        s.AnsweredRung.Should().Be(2);     // before: 0, and the next bulk transmission could go no higher than 1
+        s.OnSent(2, true);
+        s.TrialRung.Should().BeNull();
+        s.OnAckWaitExpired(Table);         // silent, not a trial: rung 2 is no longer answered
+        (s.AnsweredRung, s.Ceiling).Should().Be((1, null));
+        s.OnSent(2, true);
+        s.TrialRung.Should().Be(2);        // going back to it is a trial
+        s.OnAckWaitExpired(Table);
+        (s.Ceiling, s.AnsweredRung).Should().Be((1, 1));
+        var low = new SenderRate();
+        low.OnConnectionMade(0);
+        low.OnSent(0, true);
+        low.OnAckWaitExpired(Table);
+        low.AnsweredRung.Should().Be(0);   // never below the lowest rung
+    }
+
+    [Fact]
     public void A_failed_trial_caps_below_it_and_the_cap_doubles_up_to_the_limit()
     {
         var s = new SenderRate();
