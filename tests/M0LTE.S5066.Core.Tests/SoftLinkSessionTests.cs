@@ -209,6 +209,24 @@ public class SoftLinkSessionTests
     }
 
     [Fact]
+    public void A_maximum_session_shorter_than_the_minimum_hold_closes_for_a_waiting_peer_when_the_hold_ends()
+    {
+        // A-0014, A-0326, interp A-0321 (P7-9d): a derived minimum hold may outlast the six-wait maximum.
+        // The maximum running out inside the hold closes nothing; the share-channel close waits for the hold.
+        var rig = Rig(minHold: 60000, max: 30000, maxLinks: 1);
+        CalledLink(rig);
+        rig.Expire(Max(X));
+        rig.ArqRequest(Y);
+        rig.Sis.SoftLinkOf(Y).Should().Be("HeldOff");
+        rig.Sis.SoftLinkOf(X).Should().Be("Established");
+        rig.Expire(MinHold(X));
+        rig.Sis.SoftLinkOf(X).Should().Be("Closing");
+        rig.Sent(X);
+        rig.Deliver(Link(X, new PhysicalLinkBreakConfirm()));
+        rig.Cas.PhaseOf(Y).Should().Be("Calling");
+    }
+
+    [Fact]
     public void An_idle_link_is_left_to_its_idle_wait_and_a_caller_is_closed_at_once_for_higher_priority()
     {
         // A-0323: nothing outstanding, nothing to displace.
