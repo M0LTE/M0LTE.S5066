@@ -127,7 +127,7 @@ If your licence or your network asks you to identify, `s5066d` can send a short 
 | `at_start` | send it before the first transmission after a quiet spell of 10 minutes or more (on if not set) |
 | `every_minutes` | send it again with the next transmission once this many minutes have passed (off if not set) |
 
-The ID only ever goes out at the start of a transmission the node was already allowed to make, straight after `txdelay_ms` and just before the data, so it never starts over another station. An idle node sends nothing. It makes each transmission that carries it a few seconds longer, so keep it short: `s5066d` refuses one longer than 20 s. Each ID is one log line, `radio: cw id "DE M0XYZ" (5.5 s) before this transmission`.
+The ID only ever goes out at the start of a transmission the node was already allowed to make, straight after `txdelay_ms` and just before the data, so it never starts over another station. An idle node sends nothing. It makes each transmission that carries it a few seconds longer, so keep it short: `s5066d` refuses one longer than 20 s. Keep it well under `dts.max_transmission_ms` too (6 s in the bench files), or the far station may give up waiting for your answer and repeat itself; if you need a longer ID, raise `dts.ack_wait_ms` on the other stations to allow for it. Each ID is one log line, `radio: cw id "DE M0XYZ" (5.5 s) before this transmission`.
 
 Other stations' modems do not hear CW as data, so they may start talking during your ID unless they have `busy_detect` on. Keep `busy_detect` on where you can.
 

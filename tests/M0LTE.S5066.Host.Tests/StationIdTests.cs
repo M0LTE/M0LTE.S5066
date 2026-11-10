@@ -171,6 +171,28 @@ public class StationIdTests
     private static void Refused(string json, string message) =>
         FluentActions.Invoking(() => CwIdSettings.Parse(JsonNode.Parse(json)!.AsObject())).Should().Throw<ConfigException>().WithMessage(message);
 
+    /// <summary>
+    /// The ITU-R M.1677-1 codes, typed here independently of <see cref="Morse"/> so the decoder
+    /// checks the code table too, not only the timing.
+    /// </summary>
+    private static readonly Dictionary<string, char> Itu = new()
+    {
+        [".-"] = 'A', ["-..."] = 'B', ["-.-."] = 'C', ["-.."] = 'D', ["."] = 'E', ["..-."] = 'F', ["--."] = 'G',
+        ["...."] = 'H', [".."] = 'I', [".---"] = 'J', ["-.-"] = 'K', [".-.."] = 'L', ["--"] = 'M', ["-."] = 'N',
+        ["---"] = 'O', [".--."] = 'P', ["--.-"] = 'Q', [".-."] = 'R', ["..."] = 'S', ["-"] = 'T', ["..-"] = 'U',
+        ["...-"] = 'V', [".--"] = 'W', ["-..-"] = 'X', ["-.--"] = 'Y', ["--.."] = 'Z',
+        ["-----"] = '0', [".----"] = '1', ["..---"] = '2', ["...--"] = '3', ["....-"] = '4',
+        ["....."] = '5', ["-...."] = '6', ["--..."] = '7', ["---.."] = '8', ["----."] = '9',
+        ["-..-."] = '/', ["..--.."] = '?', [".-.-.-"] = '.', ["--..--"] = ',', ["-...-"] = '=', ["-....-"] = '-', [".-.-."] = '+',
+    };
+
+    [Fact]
+    public void Every_character_of_the_alphabet_decodes_by_the_itu_table()
+    {
+        string all = "ABCDEFGHIJ KLMNOPQRST UVWXYZ0123 456789/?., =-+";
+        Decode(Morse.Generate(all, 20, 1800, 0.5, 8000), 1800, 8000).Should().Be(all);
+    }
+
     /// <summary>Goertzel power at <paramref name="tone"/> over consecutive 2 ms frames.</summary>
     private static double[] Power(float[] audio, double tone, int rate)
     {
@@ -224,7 +246,7 @@ public class StationIdTests
         {
             if (code.Length > 0)
             {
-                text.Append(Morse.CharOf(code.ToString()) ?? '#');
+                text.Append(Itu.TryGetValue(code.ToString(), out char c) ? c : '#');
                 code.Clear();
             }
         }

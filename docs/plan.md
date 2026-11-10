@@ -207,7 +207,7 @@ Each resolution goes in the conformance matrix as a documented interpretation. P
 | Ed4 EOWs (including CAPABILITY) "shall not be used" towards peers whose support is unknown [Ed4 C, Table C-4 notes, p.C-67], yet the main body uses the CAPABILITY EOW to discover Ed4 support [Ed4 main 6, p.10]. PADDING is Ed4-peer only too [p.C-53]. | Discover editions by CAS-1 negotiation only. Send CAPABILITY and PADDING only to peers known to be Ed4. Non-ARQ broadcasts to unknown receivers carry no Ed4 EOWs and no PADDING. |
 | Extended D_PDU types given to WTRP: 1 to 4 [Ed4 C.8, p.C-124] versus 1 to 6 [Ed4 C.7.5.1, p.C-110] | We run no WTRP. Any EXTENSION D_PDU draws a WARNING with reason 4 [Ed4 Table C-3, p.C-55]. |
 | Annex D "shall" versus the main body and Annex C allowing other modem interfaces (section 4.3) | Use our modem port. Keep the Annex D rules that apply in spirit as matrix rows. |
-| Identification hook output (section 9.1) | Sent as its own transmission under Annex K, never inside a 5066 transmission, so no EOT interpretation is needed. Annex K's carrier-sense rules apply to it as they do to data [Ed4 K.1, p.K-1]. |
+| Identification hook output (section 9.1) | Keyed at the start of a transmission already granted under Annex K, before the 5066 burst and never inside the 5066 waveform, so every EOT stays true (D4 amendment, 2026-11-10; it was first planned as its own transmission). Annex K's carrier-sense rules apply to it as they do to data [Ed4 K.1, p.K-1]. |
 
 ---
 
@@ -374,7 +374,7 @@ Decision D4: two hooks, nothing at the end of transmissions.
 
 - **Pre-session hook:** runs before the node's first transmission after it has been idle, for example a CW identifier.
 - **Periodic hook:** runs on a configured interval (for example 15 minutes), but only if the node has transmitted since the last time it ran, so an idle node stays silent.
-- **Each hook output is a transmission of its own.** It is queued like any other and obeys Annex K channel access. It is never sent while another node's EOT says that node is still transmitting [Ed4 C.7.5.4.3, p.C-114].
+- **Each hook output is a transmission of its own.** It is queued like any other and obeys Annex K channel access. It is never sent while another node's EOT says that node is still transmitting [Ed4 C.7.5.4.3, p.C-114]. Amended 2026-11-10 (D4 amendment in section 13): the output is keyed at the start of a transmission the node has already been granted, not as a transmission of its own.
 - **Tone:** a keyed tone at the modem's audio centre (1800 Hz at 3 kHz [110D Table D-I, p.143]), inside the same passband, with shaped keying.
 
 ### 9.2 External busy input
@@ -536,6 +536,7 @@ Each phase ends with its tests green, its conformance matrix rows filled, and a 
 | D3 | Host inside pdn-soundmodem first, as the ARDOP work did: the engine is its own package, and pdn-soundmodem adds a 5066 host server beside the KISS server, an audio bridge and busy detection. No AX.25 or amateur baggage in the 5066 path. |
 | D3 amendment (2026-11-08) | Tom's decision: a standalone `s5066d` per machine drives a CM108 audio interface and the radio directly, with no pdn-soundmodem daemon, configuration page or KISS server. It uses the published pdn-soundmodem library package for the sound card, CM108 PTT and busy detection, as pdn-mailcast does, in its own small project (`M0LTE.S5066.Radio`) so that `M0LTE.S5066.Host` stays free of it (core-architecture.md 12.11). The pdn-soundmodem integration (pdn-soundmodem PR #784) stays as a second way to run a node. |
 | D4 | Identification hooks: a pre-session hook and a periodic hook (section 9.1), intended for a CW ID. Nothing at the end of transmissions. |
+| D4 amendment (2026-11-10) | Coordinator's ruling on P8-2: the identification is not a transmission of its own. It is keyed only at the start of a keyup the core has already been granted through Annex K, after TXDELAY and before the 5066 burst with 300 ms of silence between, never on its own and never after the burst, at most 20 s, and only on a radio. So it needs no new core input or output, starts no earlier than the burst would have, and never runs past the EOT we announced; each EOT stays true because it counts from its own D_PDU. The keyups that carry it grow by its length, which a peer's answer wait must absorb (core-architecture.md section 10 item 13, interp K-0007). |
 | D5 | Withdrawn: callsign mapping is external. |
 | D6 | Implement the minimum Ed3 interop. It is mandatory in Edition 4: Ed4 requires peer edition detection and Ed3 behaviour towards Ed3 peers [Ed4 main 6, p.10], and Isode's Edition 5 paper says Ed3 support is "no longer mandatory" only from Edition 5 (p.2). |
 | D7 | CSMA mode is operator-selectable (jitter, slotted, or ed3-compatible), documented as a network-wide setting. No GPS needed. The default is chosen after T3/T4 measurement. |
