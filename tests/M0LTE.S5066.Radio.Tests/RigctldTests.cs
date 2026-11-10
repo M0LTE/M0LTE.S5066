@@ -155,11 +155,24 @@ public class RigctldTests
     }
 
     [Fact]
-    public void An_unkey_with_rigctld_gone_says_so()
+    public void An_unkey_after_a_key_with_rigctld_gone_says_so()
+    {
+        var fake = new FakeRigctld();
+        int port = fake.Port;
+        using var rig = new Rigctld(Cat(fake), pttByCat: true, null, Timeout, TimeSpan.FromMinutes(5));
+        rig.Start();
+        rig.Key();
+        fake.Dispose();
+
+        FluentActions.Invoking(rig.Unkey).Should().Throw<IOException>().WithMessage($"CAT PTT: cannot reach rigctld at 127.0.0.1:{port} to unkey (*); check the radio is not left transmitting");
+    }
+
+    [Fact]
+    public void An_unkey_with_rigctld_gone_and_no_key_sent_since_the_last_unkey_sends_nothing()
     {
         int port = FreePort();
         using var rig = new Rigctld(new CatSettings("127.0.0.1", port, 7052300), pttByCat: true, null, Timeout, Retry);
-        FluentActions.Invoking(rig.Unkey).Should().Throw<IOException>().WithMessage($"CAT PTT: cannot reach rigctld at 127.0.0.1:{port} to unkey (*); check the radio is not left transmitting");
+        FluentActions.Invoking(rig.Unkey).Should().NotThrow("nothing was keyed, so there is nothing to undo");
     }
 
     [Fact]
@@ -197,7 +210,10 @@ public class RigctldTests
         await played.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         log.Snapshot().Should().BeEmpty("nothing is played unkeyed");
-        lines.All.Should().Contain($"radio: burst not sent, PTT failed: CAT PTT: no answer from rigctld at 127.0.0.1:{port}, so not transmitting");
+        // One line for the lost rigctld and one for the burst: no unkey was sent, as no key was.
+        lines.All.Should().HaveCount(2);
+        lines.All[0].Should().StartWith($"radio: cat: no rigctld at 127.0.0.1:{port} (");
+        lines.All[1].Should().Be($"radio: burst not sent, PTT failed: CAT PTT: no answer from rigctld at 127.0.0.1:{port}, so not transmitting");
     }
 
     [Fact]

@@ -31,6 +31,11 @@ public sealed class Rigctld : IDisposable
     private readonly CancellationTokenSource _stop = new();
     private Link? _link;
     private bool _downLogged;
+
+    // Whether a T 1 may have reached the radio since the last T 0 rigctld confirmed: set before
+    // each key is sent, cleared by a confirmed unkey. With no connection and this clear, an
+    // unkey has nothing to undo, so it does not open a connection just to say so.
+    private volatile bool _mayBeKeyed;
     private Thread? _loop;
     private int _disposed;
 
@@ -81,6 +86,7 @@ public sealed class Rigctld : IDisposable
             int code;
             try
             {
+                _mayBeKeyed = true;
                 code = link.Set("T 1");
             }
             catch (IOException e)
@@ -99,6 +105,8 @@ public sealed class Rigctld : IDisposable
     /// <summary>
     /// Unkeys the radio through rigctld; with no connection, through one made just for this, so
     /// a connection that dropped while keyed is not the end of it. Works after <see cref="Dispose"/>.
+    /// With no connection and no key sent since rigctld last confirmed an unkey, there is nothing
+    /// to undo and nothing is sent.
     /// </summary>
     /// <exception cref="IOException">The unkey could not be sent or was refused.</exception>
     public void Unkey()
@@ -110,6 +118,7 @@ public sealed class Rigctld : IDisposable
                 try
                 {
                     Refused(link.Set("T 0"));
+                    _mayBeKeyed = false;
                     return;
                 }
                 catch (RefusedException)
@@ -122,10 +131,16 @@ public sealed class Rigctld : IDisposable
                 }
             }
 
+            if (!_mayBeKeyed)
+            {
+                return;
+            }
+
             try
             {
                 using Link once = Link.Open(_settings, _timeout);
                 Refused(once.Set("T 0"));
+                _mayBeKeyed = false;
             }
             catch (Exception e) when (e is IOException or SocketException && e is not RefusedException)
             {
@@ -245,9 +260,16 @@ public sealed class Rigctld : IDisposable
     private string SetUp(Link link)
     {
         var notes = new List<string>();
-        if (_ptt && link.Set("T 0") is int unkey and not 0)
+        if (_ptt)
         {
-            notes.Add($"unkey refused (RPRT {unkey})");
+            if (link.Set("T 0") is int unkey and not 0)
+            {
+                notes.Add($"unkey refused (RPRT {unkey})");
+            }
+            else
+            {
+                _mayBeKeyed = false;
+            }
         }
 
         if (link.Set(FormattableString.Invariant($"F {_settings.FrequencyHz}")) is int f and not 0)
