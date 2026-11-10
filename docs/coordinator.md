@@ -39,3 +39,13 @@ How the coordinating session runs this project. It is written so that a fresh se
 - Carry-overs for P4-1: the CAS must handle the DTS reject primitives (D_UNIDATA_REQUEST_REJECTED and the expedited one). Also record the unbind ruling (A-0260). C-1043 overestimates end time by up to one block; that is safe, and can be revisited for turnaround in phase 7.
 
 - Phase 3 items run in the order of core-architecture.md section 9, each with a conformance PR first, an Opus implementer for state machines, and a fresh Opus reviewer.
+
+
+## Resume here (2026-11-10, written at 95% of Tom's weekly usage)
+
+Exact next steps, in order:
+1. PR pair P7-9e (code #107, conformance #53, corpus 0.38.0) is under an Opus review. When approved: `scripts/merge-pair.sh 53 107`.
+2. Rebase draft PR #106 (branch p7-10-final-sweep: ruling (f) counter, `final` sweep profile, points.tsv, plot_curves.py, docs/rate-selection.md skeleton) onto main after step 1, apply ruling (h) (a node that never set a ceiling has all its transmissions counted in the SSB gate), get one Opus review, merge.
+3. Request a spot box (c7i.metal-48xl, eu-west-2, TTL 4 h, root 40 GB) via spot-broker and give Tom the approval link http://10.45.0.66:8210/. Run the `final` profile per #106's body and docs/stack-sweep.md (needs `dnf install -y libicu`; DOTNET_ROOT). Copy back only the compressed aggregate and runs, terminate.
+4. Fill docs/rate-selection.md from the merged results with plot_curves.py, check the done-when point by point, update plan 12 and docs/status.md, mark phase 7 complete.
+Tracking issue: see the open "Phase 7 close-out" issue.
