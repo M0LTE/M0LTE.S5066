@@ -5,18 +5,25 @@ After=sound.target network.target
 # Not enabled by the package. Copy one of the files in /etc/s5066d to s5066d.json, edit it, then
 # "systemctl enable --now s5066d". Without the file the condition fails instead of crash-looping.
 ConditionPathExists=/etc/s5066d/s5066d.json
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/s5066d /etc/s5066d/s5066d.json
 Restart=on-failure
-RestartSec=5
-# s5066d exits 1 for a bad configuration and 2 for bad usage, after saying what is wrong.
-# Retrying either would only bury the message, so stay stopped and let the operator read it.
-RestartPreventExitStatus=1 2
+RestartSec=10
+# s5066d exits 2 for bad usage and 1 for everything else, a bad configuration included, but
+# also a sound card or interface that went away or a node that stopped, which a restart can
+# cure. So 1 restarts, and the start limit in [Unit] stops a configuration error from retrying for
+# ever: five failed starts within two minutes leave the unit failed, with the message in the
+# journal ("systemctl reset-failed s5066d" and start it again once fixed).
+RestartPreventExitStatus=2
 User=s5066d
 # /dev/snd/* and the CM108 hidraw node (see the package's udev rule), both the audio group's.
 SupplementaryGroups=audio
+# /var/lib/s5066d, owned by the service user: the place for rx_record, since the hardening
+# below makes /usr, /etc and /home read-only or hidden to the service.
 StateDirectory=s5066d
 StateDirectoryMode=0750
 # Headroom for the audio threads.

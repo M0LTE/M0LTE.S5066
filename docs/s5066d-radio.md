@@ -34,6 +34,8 @@ sudo systemctl enable --now s5066d
 journalctl -u s5066d -f
 ```
 
+The service restarts after a sound card or interface failure, but gives up after five failed starts in two minutes, so a configuration error leaves it stopped with the reason in the journal; fix the file, then `sudo systemctl reset-failed s5066d` and start it again. The service can write only under `/var/lib/s5066d`, so point `rx_record` there.
+
 Skip the build and permissions sections below; the package has done them. The packages are attached to the release only; they are not in an apt repository, so upgrade by installing the newer files.
 
 ## Build and copy it

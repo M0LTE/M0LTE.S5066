@@ -83,7 +83,7 @@ stage_pkg() { # <pkg> <publish dir> <executable name>
     install -m 0644 "$so" "$root$lib/$(basename "$so")"
   done
   ln -s "../lib/$pkg/$exe" "$root/usr/bin/$exe"
-  install -m 0644 "$HERE/copyright" "$root$doc/copyright"
+  install -m 0644 "$HERE/copyright.$pkg" "$root$doc/copyright"
   cat > "$STAGE/$pkg/changelog.Debian" <<CL
 $pkg ($VERSION) unstable; urgency=medium
 
@@ -119,7 +119,8 @@ build() { # <pkg>
   local pkg="$1" root="$STAGE/$1/root"
   for s in postinst prerm postrm; do [ -f "$root/DEBIAN/$s" ] && { chmod 0755 "$root/DEBIAN/$s"; sh -n "$root/DEBIAN/$s"; }; done
   local deb="$OUTDIR/${pkg}_${VERSION}_${ARCH}.deb"
-  dpkg-deb --root-owner-group --build "$root" "$deb" >/dev/null
+  # -Zxz: Ubuntu's dpkg-deb defaults to zstd, which older dpkg (Debian 11) cannot unpack.
+  dpkg-deb --root-owner-group -Zxz --build "$root" "$deb" >/dev/null
   echo "built $deb"
 }
 
@@ -187,8 +188,8 @@ Description: STANAG 5066 node with a sound card radio medium
  s5066d". The service runs as the s5066d user, in the audio group, and the
  package's udev rule gives that group the CM108 hidraw node.
  .
- AGPL-3.0-or-later combined with GPL-3.0 terms (it links pdn-soundmodem);
- see /usr/share/doc/s5066d/copyright.
+ AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only (it links
+ pdn-soundmodem); see /usr/share/doc/s5066d/copyright.
 CTL
 
 cat > "$R/DEBIAN/postinst" <<'EOF'
@@ -208,8 +209,10 @@ case "$1" in
         udevadm control --reload-rules >/dev/null 2>&1 || true
         udevadm trigger --subsystem-match=hidraw --action=change >/dev/null 2>&1 || true
     fi
-    echo "s5066d: not enabled. Copy a file from /etc/s5066d to /etc/s5066d/s5066d.json, edit it,"
-    echo "        then: systemctl enable --now s5066d"
+    if [ -z "${2:-}" ]; then
+        echo "s5066d: not enabled. Copy a file from /etc/s5066d to /etc/s5066d/s5066d.json, edit it,"
+        echo "        then: systemctl enable --now s5066d"
+    fi
     ;;
 esac
 # The unit is deliberately not enabled or started. An upgrade restarts a running service
@@ -237,8 +240,10 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
     systemctl --system daemon-reload >/dev/null || true
 fi
 if [ "$1" = "purge" ]; then
-    # s5066d.json is the operator's own file, not shipped by dpkg.
-    rm -f /etc/s5066d/s5066d.json
+    # The operator enabled the unit, not the package, so nothing else removes the wants link to
+    # a unit file that is gone. s5066d.json is the operator's own file (the package never creates
+    # it) and stays, like /var/lib/s5066d; /etc/s5066d goes only if it is empty.
+    rm -f /etc/systemd/system/multi-user.target.wants/s5066d.service
     rmdir --ignore-fail-on-non-empty /etc/s5066d 2>/dev/null || true
     if getent passwd s5066d >/dev/null; then
         deluser --system --quiet s5066d >/dev/null 2>&1 || true

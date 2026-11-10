@@ -5,8 +5,9 @@
 #   packaging/test-deb.sh [version] [debdir] [arch]
 #
 # arch defaults to amd64 and must be the host's own (the container runs natively). systemd is
-# not running in the container; this checks files, the user, the unit file and that the
-# binaries start. Needs Docker. Nothing is installed on the host.
+# not running in the container; this checks files, the user, the unit file, that the
+# binaries start and load ALSA, an upgrade that keeps edited conffiles, and remove and purge.
+# Needs Docker. Nothing is installed on the host.
 set -uo pipefail
 
 VERSION="${1:-0.0.0-test}"
@@ -64,13 +65,41 @@ check "s5066-test starts"           "echo \"\$OUT\" | grep -qi 'usage\|s5066-tes
 OUT="$(s5066d /etc/s5066d/example.json 2>&1 </dev/null & PID=$!; sleep 3; kill $PID 2>/dev/null; wait $PID 2>/dev/null)"
 echo "$OUT" | head -5 | sed 's/^/    /'
 check "s5066d example.json starts"  "echo \"\$OUT\" | grep -q 's5066d: node'"
+# No sound card here, so a radio config must fail cleanly at the capture device: that proves
+# libasound loads and the error is the friendly one, not an unhandled exception.
+OUT="$(timeout 20 s5066d /etc/s5066d/radio-ft818.json 2>&1 </dev/null)"; RC=$?
+echo "$OUT" | head -3 | sed 's/^/    /'
+check "radio config reaches ALSA"   "[ $RC -eq 1 ] && echo \"\$OUT\" | grep -q capture_device && ! echo \"\$OUT\" | grep -qi 'libasound\|unhandled'"
+
+echo "== upgrade =="
+# The same package as a newer version: edited conffiles and the operator's s5066d.json survive.
+echo '// edited' >> /etc/s5066d/example.json
+cp /etc/s5066d/radio-ft818.json /etc/s5066d/s5066d.json
+mkdir -p /tmp/up
+dpkg-deb -R "/debs/s5066d_${VERSION}_${ARCH}.deb" /tmp/up/pkg
+sed -i "s/^Version: .*/Version: ${VERSION}+up1/" /tmp/up/pkg/DEBIAN/control
+dpkg-deb --root-owner-group -b /tmp/up/pkg /tmp/up/s5066d-up.deb >/dev/null
+if ! dpkg -i /tmp/up/s5066d-up.deb </dev/null >/tmp/up.log 2>&1; then cat /tmp/up.log; bad "upgrade"; fi
+check "upgraded to the new version" "[ \"\$(dpkg-query -W -f='\${Version}' s5066d)\" = '${VERSION}+up1' ]"
+check "edited conffile kept"        "tail -1 /etc/s5066d/example.json | grep -q edited"
+check "s5066d.json kept"            "[ -f /etc/s5066d/s5066d.json ]"
+check "user still there"            "getent passwd s5066d >/dev/null"
 
 echo "== remove and purge =="
+# As if the operator had enabled the unit (systemd is not running here).
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /usr/lib/systemd/system/s5066d.service /etc/systemd/system/multi-user.target.wants/s5066d.service
 apt-get remove -y -qq s5066d >/dev/null 2>&1
 check "removed, conffile kept"      "[ -f /etc/s5066d/example.json ] && [ ! -e /usr/bin/s5066d ]"
 apt-get purge -y -qq s5066d >/dev/null 2>&1
 check "purged, user gone"           "! getent passwd s5066d >/dev/null"
-check "purged, /etc/s5066d gone"    "[ ! -e /etc/s5066d ]"
+check "purged, conffiles gone"      "[ ! -e /etc/s5066d/example.json ] && [ ! -e /etc/s5066d/radio-ft450.json ]"
+check "purged, s5066d.json kept"    "[ -f /etc/s5066d/s5066d.json ]"
+check "purged, enable link gone"    "[ ! -L /etc/systemd/system/multi-user.target.wants/s5066d.service ]"
+rm -f /etc/s5066d/s5066d.json
+apt-get install -y -qq "/debs/s5066d_${VERSION}_${ARCH}.deb" >/dev/null 2>&1
+apt-get purge -y -qq s5066d >/dev/null 2>&1
+check "purged clean, /etc/s5066d gone" "[ ! -e /etc/s5066d ]"
 exit $FAIL
 INNER
 chmod +x "$WORK/inner.sh"
