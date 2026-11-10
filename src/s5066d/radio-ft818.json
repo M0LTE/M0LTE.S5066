@@ -41,6 +41,13 @@
         // The FT-818 data input in DIG mode takes up to 1.0 Vpp (10 kohm); set menu 25 DIG MIC so ALC shows
         // only a few dots.
         "tx_level": 0.2,
+        // CAT control, off until you take the // from the next two lines (docs/s5066d-radio.md):
+        // s5066d sets the frequency, the data mode and the widest filter through Hamlib's rigctld,
+        // and with "ptt": "cat" keys the radio through it instead of the CM108 pin (then delete
+        // ptt_device and ptt_gpio). Run rigctld for the FT-818 first, for example
+        // "rigctld -m 1041 -r /dev/ttyUSB0 -s 4800" (1041 is Hamlib's FT-818).
+        // "cat": { "rigctld": "127.0.0.1:4532", "frequency_hz": 7052300 },
+        // "ptt": "cat",
         "busy_detect": true
       }
     }

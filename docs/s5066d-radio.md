@@ -165,7 +165,45 @@ Add `"status_listen": "127.0.0.1:8066"` to `host`, then open `http://127.0.0.1:8
 
 It has no password, so keep it on `127.0.0.1`. From another machine, use an SSH tunnel: `ssh -L 8066:127.0.0.1:8066 pi@yourpi`, then open `http://127.0.0.1:8066/` there.
 
-CAT control and an apt package are not here yet; they come later.
+## CAT control (optional)
+
+`s5066d` can set the radio up for you when it starts: the frequency, the radio's data mode on upper sideband (Hamlib's `PKTUSB`: DATA on the FT-450, DIG with USER-U on the FT-818) and the widest receive filter, 3 kHz where the radio has one. It can also key the radio over CAT instead of the CM108's GPIO pin. It does this through Hamlib's `rigctld`, which you run yourself for your radio, so any radio Hamlib knows will do.
+
+Install rigctld from your distribution's Hamlib package (`sudo apt install libhamlib-utils` on Debian, Raspberry Pi OS and Ubuntu), find your radio's model number with `rigctl -l`, and start it, for example for an FT-450 on a USB serial cable:
+
+```
+rigctld -m 1027 -r /dev/ttyUSB0 -s 4800
+```
+
+Hamlib's numbers for the bench radios are 1027 for the FT-450, 1046 for the FT-450D and 1041 for the FT-818 (from `rigctl -l`, Hamlib 4.6.5). The speed must match the radio's CAT rate menu, 4800 by default on all three. On the FT-450, set menu D TYPE to USER-U once by hand, so its DATA mode takes audio.
+
+Then add a `cat` part to `radio`:
+
+```
+"radio": {
+  ...
+  "cat": { "rigctld": "127.0.0.1:4532", "frequency_hz": 7052300 },
+  "ptt": "cat"
+}
+```
+
+| Setting | What it does |
+|---|---|
+| `cat.frequency_hz` | the dial frequency to set, in Hz |
+| `cat.rigctld` | where rigctld listens (`127.0.0.1:4532`, its own default, if not set) |
+| `ptt` | `"cat"` to key the radio through rigctld; `"cm108"`, the GPIO pin, if not set. With `"cat"`, leave out `ptt_device` and `ptt_gpio` |
+
+At start you get one line saying what the radio really set, for example:
+
+```
+radio: cat: rigctld 127.0.0.1:4532: 7052300 Hz, PKTUSB, passband 2400 Hz (asked for 3000; the radio set this)
+```
+
+Not every radio has a 3 kHz filter in its data mode: Hamlib lists 2400 Hz as the FT-450's widest there, and the FT-818's filter is fixed, so it reports none. That is fine; the line just tells you.
+
+If rigctld is not running, or stops, `s5066d` says so once and keeps trying every 5 s, and sets the radio up again when it comes back. It never stops the node for it. With `"ptt": "cat"` it will not transmit while rigctld is gone: each burst it would have sent is one `burst not sent` line instead. The safety rules of the GPIO pin hold for CAT too: the radio is unkeyed at start, after every burst, if a transmission overruns and when `s5066d` stops. If rigctld is unreachable at that moment the unkey cannot get through, and the log says so, so on air set the radio's own transmit time-out timer as well. rigctld does not unkey the radio when it stops, so if you run it as a service, stop `s5066d` first (or give the `s5066d` unit `After=` your rigctld unit, so systemd stops it first). CAT keying takes a moment longer than the pin, which `txdelay_ms` already covers, as it starts counting only once rigctld has answered.
+
+The package lists Hamlib as a suggestion, so `apt` does not install it unless you ask.
 
 ## Running it as a service
 
@@ -194,4 +232,5 @@ Then `sudo systemctl enable --now s5066d` and `journalctl -u s5066d -f` to watch
 - `Device or resource busy`: another program (often PulseAudio or PipeWire) holds the card. Stop it or give it a different card.
 - `no permission to open /dev/hidraw0`: the udev rule is missing or the user is not in `audio`.
 - It transmits but the far end hears nothing: check the playback level, `tx_level` and the radio's data mode (USER-U on the FT-450, DIG with USER-U on the FT-818).
+- `radio: cat: no rigctld at ...`: rigctld is not running or listens elsewhere; check `rigctl -m 2 -r 127.0.0.1:4532 f` answers with the frequency.
 - It never answers: check the receive level, and that Auto Gain Control is off.

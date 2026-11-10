@@ -179,13 +179,16 @@ Maintainer: Tom Fanning M0LTE <tom@m0lte.uk>
 Installed-Size: $(du -k -s --exclude=DEBIAN "$R" | cut -f1)
 Depends: $DEPS
 Recommends: s5066-test
+Suggests: libhamlib-utils
 Section: hamradio
 Priority: optional
 Homepage: https://github.com/M0LTE/M0LTE.S5066
 Description: STANAG 5066 node with a sound card radio medium
  One STANAG 5066 Edition 4 node over the MIL-STD-188-110D modem. Plays and
  records the modem's audio through a USB sound card and keys the transmitter
- through a CM108 interface's GPIO pin; serves the SIS on a TCP port.
+ through a CM108 interface's GPIO pin, or over CAT through Hamlib's rigctld,
+ which can also set the radio's frequency and mode; serves the SIS on a TCP
+ port.
  .
  Installs a systemd unit that is NOT enabled: copy one of the files in
  /etc/s5066d to /etc/s5066d/s5066d.json, edit it, then "systemctl enable --now

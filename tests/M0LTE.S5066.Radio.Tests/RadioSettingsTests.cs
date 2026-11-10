@@ -46,6 +46,47 @@ public class RadioSettingsTests
     }
 
     [Fact]
+    public void A_cat_section_is_read_with_rigctlds_own_port_by_default()
+    {
+        RadioSettings s = RadioSettings.Parse(Obj("""
+            { "capture_device": "a", "playback_device": "b", "ptt_device": "/dev/hidraw0", "cat": { "frequency_hz": 7052300 } }
+            """));
+        s.Cat.Should().Be(new CatSettings("127.0.0.1", 4532, 7052300));
+        s.PttByCat.Should().BeFalse();
+        s.Cat!.Address.Should().Be("127.0.0.1:4532");
+    }
+
+    [Fact]
+    public void Ptt_by_cat_needs_no_cm108()
+    {
+        RadioSettings s = RadioSettings.Parse(Obj("""
+            { "capture_device": "a", "playback_device": "b", "ptt": "cat", "cat": { "rigctld": "radio-pi:4533", "frequency_hz": 3617000 } }
+            """));
+        s.Should().Be(new RadioSettings("a", "b", 48000, null, 3, 250, 20, 0.5, false, null, new CatSettings("radio-pi", 4533, 3617000), true));
+        RadioSettings.Parse(Obj("""{ "capture_device": "a", "playback_device": "b", "ptt": "cat", "cat": { "rigctld": "[::1]:4532", "frequency_hz": 1 } }"""))
+            .Cat!.Address.Should().Be("[::1]:4532");
+    }
+
+    [Theory]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt": "cat" }""", "host.modem.radio.ptt: \"cat\" needs a cat section")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt": "vox", "ptt_device": "p" }""", "host.modem.radio.ptt: must be \"cm108\" or \"cat\"")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt": "cat", "ptt_device": "p", "cat": { "frequency_hz": 1 } }""", "host.modem.radio.ptt_device: is not used with ptt \"cat\"; remove it")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt": "cat", "ptt_gpio": 3, "cat": { "frequency_hz": 1 } }""", "host.modem.radio.ptt_gpio: is not used with ptt \"cat\"; remove it")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt": "cm108", "cat": { "frequency_hz": 1 } }""", "host.modem.radio.ptt_device: is required")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": true }""", "host.modem.radio.cat: must be an object")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { } }""", "host.modem.radio.cat.frequency_hz: is required")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 0 } }""", "host.modem.radio.cat.frequency_hz: must be above 0")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 7.1 } }""", "host.modem.radio.cat.frequency_hz: must be a whole number of Hz")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 1, "mode": "USB" } }""", "host.modem.radio.cat.mode: unknown key")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 1, "rigctld": "localhost" } }""", "host.modem.radio.cat.rigctld: must be host:port*")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 1, "rigctld": ":4532" } }""", "host.modem.radio.cat.rigctld: must be host:port*")]
+    [InlineData("""{ "capture_device": "a", "playback_device": "b", "ptt_device": "p", "cat": { "frequency_hz": 1, "rigctld": "h:70000" } }""", "host.modem.radio.cat.rigctld: must be host:port*")]
+    public void A_wrong_cat_setting_is_refused_naming_the_key(string json, string message)
+    {
+        FluentActions.Invoking(() => RadioSettings.Parse(Obj(json))).Should().Throw<ConfigException>().WithMessage(message);
+    }
+
+    [Fact]
     public void The_host_passes_the_radio_object_through_as_written()
     {
         HostConfig c = HostConfig.Parse(Node("""{ "kind": "ms110d", "radio": """ + Minimal + " }"));
