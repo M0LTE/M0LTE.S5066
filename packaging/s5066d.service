@@ -1,0 +1,30 @@
+[Unit]
+Description=s5066d STANAG 5066 node
+Documentation=https://github.com/M0LTE/M0LTE.S5066/blob/main/docs/s5066d-radio.md
+After=sound.target network.target
+# Not enabled by the package. Copy one of the files in /etc/s5066d to s5066d.json, edit it, then
+# "systemctl enable --now s5066d". Without the file the condition fails instead of crash-looping.
+ConditionPathExists=/etc/s5066d/s5066d.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/s5066d /etc/s5066d/s5066d.json
+Restart=on-failure
+RestartSec=5
+# s5066d exits 1 for a bad configuration and 2 for bad usage, after saying what is wrong.
+# Retrying either would only bury the message, so stay stopped and let the operator read it.
+RestartPreventExitStatus=1 2
+User=s5066d
+# /dev/snd/* and the CM108 hidraw node (see the package's udev rule), both the audio group's.
+SupplementaryGroups=audio
+StateDirectory=s5066d
+StateDirectoryMode=0750
+# Headroom for the audio threads.
+LimitRTPRIO=10
+
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
