@@ -46,6 +46,6 @@ How the coordinating session runs this project. It is written so that a fresh se
 Exact next steps, in order:
 1. DONE: P7-9e merged (code #107, conformance #53, corpus 0.38.0; an ACK failing every D_PDU counts as a failed trial).
 2. DONE: #106 merged (final profile, ruling (f) and (h) gate, plots, rate-selection.md skeleton); main 2ee88f4a71b6dc97d38ec953f14284f820bd411e.
-3. Request a spot box (c7i.metal-48xl, eu-west-2, TTL 4 h, root 40 GB) via spot-broker and give Tom the approval link http://10.45.0.66:8210/. Run the `final` profile per #106's body and docs/stack-sweep.md (needs `dnf install -y libicu`; DOTNET_ROOT). Copy back only the compressed aggregate and runs, terminate.
+3. IN FLIGHT: final sweep on spot request 184d73b63853 (approved 2026-11-10), main 2ee88f4; results to /home/tf/src/s5066-research/final-sweep/final.tar.xz; check the box is terminated (spot-broker list_instances) if the runner agent is lost.
 4. Fill docs/rate-selection.md from the merged results with plot_curves.py, check the done-when point by point, update plan 12 and docs/status.md, mark phase 7 complete.
 Tracking issue: see the open "Phase 7 close-out" issue.
