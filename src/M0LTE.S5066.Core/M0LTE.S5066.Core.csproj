@@ -16,6 +16,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="M0LTE.S5066.Core.Tests" />
     <InternalsVisibleTo Include="s5066-sweep" />
+    <!-- The station status page (P8-2) reads Node.QueueDepths, a diagnostic. -->
+    <InternalsVisibleTo Include="M0LTE.S5066.Host" />
   </ItemGroup>
 
 </Project>

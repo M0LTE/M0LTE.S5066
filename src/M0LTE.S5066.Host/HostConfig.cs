@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using M0LTE.S5066.Core.Runtime;
+using M0LTE.S5066.Host.Station;
 
 namespace M0LTE.S5066.Host;
 
@@ -32,6 +33,18 @@ public sealed record HostModemSettings(string Kind, IPEndPoint? AudioListen, IPE
 /// <param name="Modem">host.modem, or null when the file has none.</param>
 public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisEndpoint, HostModemSettings? Modem)
 {
+    /// <summary>
+    /// host.station.cw_id, or null for no identification (plan 9.1, decision D4). Only a radio
+    /// sends it.
+    /// </summary>
+    public CwIdSettings? CwId { get; init; }
+
+    /// <summary>
+    /// host.status_listen: where the station status page listens (plain HTTP, core-architecture.md
+    /// 12.12), or null for no page. Off unless set; the documented value is 127.0.0.1:8066.
+    /// </summary>
+    public IPEndPoint? StatusEndpoint { get; init; }
+
     /// <summary>The default SIS endpoint: localhost, port 5066 (S-0007; plan 10.1).</summary>
     public static IPEndPoint DefaultSisEndpoint => new(IPAddress.Loopback, 5066);
 
@@ -58,12 +71,14 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
         ulong seed = seeded ? ConfigReader.ReadSeed(merged) : BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8));
 
         IPEndPoint sis = DefaultSisEndpoint;
+        IPEndPoint? status = null;
+        CwIdSettings? cwId = null;
         HostModemSettings? modem = null;
         if (host is not null)
         {
             foreach (string key in host.Select(kv => kv.Key))
             {
-                if (key is not ("sis_listen" or "modem"))
+                if (key is not ("sis_listen" or "modem" or "station" or "status_listen"))
                 {
                     throw new ConfigException("host." + key, "unknown key");
                 }
@@ -72,6 +87,28 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
             if (host["sis_listen"] is JsonNode s)
             {
                 sis = Endpoint(s, "host.sis_listen");
+            }
+
+            if (host["status_listen"] is JsonNode sl)
+            {
+                status = Endpoint(sl, "host.status_listen");
+            }
+
+            if (host["station"] is JsonNode st)
+            {
+                JsonObject station = st as JsonObject ?? throw new ConfigException("host.station", "must be an object");
+                foreach (string key in station.Select(kv => kv.Key))
+                {
+                    if (key is not "cw_id")
+                    {
+                        throw new ConfigException("host.station." + key, "unknown key");
+                    }
+                }
+
+                if (station["cw_id"] is JsonNode c)
+                {
+                    cwId = CwIdSettings.Parse(c as JsonObject ?? throw new ConfigException("host.station.cw_id", "must be an object"));
+                }
             }
 
             if (host["modem"] is JsonObject m)
@@ -110,7 +147,7 @@ public sealed record HostConfig(NodeConfig Node, ulong PrngSeed, IPEndPoint SisE
             }
         }
 
-        return new HostConfig(node, seed, sis, modem);
+        return new HostConfig(node, seed, sis, modem) { CwId = cwId, StatusEndpoint = status };
     }
 
     /// <summary>The corpus <c>defaults.json</c> this host was built with.</summary>

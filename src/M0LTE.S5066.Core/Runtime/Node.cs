@@ -49,6 +49,29 @@ public sealed class Node
     /// </summary>
     internal long FailedTrials => _dts.Peers.FailedTrials;
 
+    /// <summary>
+    /// The C_PDUs the DTS still holds, per destination: ARQ ones held for a link or not yet
+    /// acknowledged, and non-ARQ ones with D_PDUs still owed (normal delivery). A diagnostic for
+    /// the station status page (P8-2), never part of the T2 outputs; it changes nothing.
+    /// </summary>
+    internal IReadOnlyList<(uint Peer, int Arq, int NonArq)> QueueDepths()
+    {
+        var depths = new SortedDictionary<uint, (int Arq, int NonArq)>();
+        foreach (DUnidataRequest r in _dts.HeldArq)
+        {
+            (int arq, int nonArq) = depths.GetValueOrDefault(r.Dst);
+            depths[r.Dst] = (arq + 1, nonArq);
+        }
+
+        foreach (DUnidataRequest r in _dts.PendingNonArq)
+        {
+            (int arq, int nonArq) = depths.GetValueOrDefault(r.Dst);
+            depths[r.Dst] = (arq, nonArq + 1);
+        }
+
+        return [.. depths.Select(kv => (kv.Key, kv.Value.Arq, kv.Value.NonArq))];
+    }
+
     /// <summary>The time of the last input handled, in ms since creation.</summary>
     public long Now => _context.Now;
 
