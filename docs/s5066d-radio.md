@@ -10,6 +10,34 @@ This page covers Linux on a Raspberry Pi (Debian 13, arm64) with a CM108 or CM11
 - A CM108-family USB interface wired to the radio's data jack: audio out to the radio's data input, the radio's data output to audio in, and a GPIO pin (usually GPIO3) driving PTT.
 - The ALSA library: `sudo apt install libasound2t64` (on older releases, `libasound2`). It is almost always there already.
 
+## Install from the release .deb
+
+Each GitHub release carries `s5066d` and `s5066-test` as `.deb` files for amd64 and arm64 (Debian 13, Raspberry Pi OS, Ubuntu 24.04). Download the two for your machine from the release page, then:
+
+```
+sudo apt install ./s5066d_VERSION_arm64.deb ./s5066-test_VERSION_arm64.deb
+```
+
+This gives you:
+
+- `s5066d` and `s5066-test` on your PATH, with the .NET runtime built in;
+- a `s5066d` system user in the `audio` group, and a udev rule that gives the `audio` group your CM108's hidraw node, so the sound card and PTT work without more setup;
+- `/etc/s5066d/` with `example.json`, `radio-ft450.json` and `radio-ft818.json`, which an upgrade never overwrites if you edit them;
+- a systemd unit that is **not** enabled, because it needs your configuration first.
+
+To run a node, copy a config and start the service:
+
+```
+sudo cp /etc/s5066d/radio-ft450.json /etc/s5066d/s5066d.json
+sudoedit /etc/s5066d/s5066d.json      # your station address, sound card and PTT device
+sudo systemctl enable --now s5066d
+journalctl -u s5066d -f
+```
+
+The service restarts after a sound card or interface failure, but gives up after five failed starts in two minutes, so a configuration error leaves it stopped with the reason in the journal; fix the file, then `sudo systemctl reset-failed s5066d` and start it again. The service can write only under `/var/lib/s5066d`, so point `rx_record` there.
+
+Skip the build and permissions sections below; the package has done them. The packages are attached to the release only; they are not in an apt repository, so upgrade by installing the newer files.
+
 ## Build and copy it
 
 On any machine with the .NET 10 SDK, from the repository:
