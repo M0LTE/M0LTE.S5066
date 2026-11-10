@@ -41,6 +41,13 @@
         // The FT-450 data input wants only 60 mVp-p (600 ohm) and has no level control of its own, so start
         // very low and raise it only while watching ALC; a resistive divider on the interface is likely needed.
         "tx_level": 0.05,
+        // CAT control, off until you take the // from the next two lines (docs/s5066d-radio.md):
+        // s5066d sets the frequency, the data mode and the widest filter through Hamlib's rigctld,
+        // and with "ptt": "cat" keys the radio through it instead of the CM108 pin (then delete
+        // ptt_device and ptt_gpio). Run rigctld for the FT-450 first, for example
+        // "rigctld -m 1027 -r /dev/ttyUSB0 -s 4800" (1027 is Hamlib's FT-450; the FT-450D is 1046).
+        // "cat": { "rigctld": "127.0.0.1:4532", "frequency_hz": 7052300 },
+        // "ptt": "cat",
         "busy_detect": true
       }
     }

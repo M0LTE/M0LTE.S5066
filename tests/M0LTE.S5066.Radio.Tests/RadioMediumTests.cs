@@ -115,6 +115,30 @@ public class RadioMediumTests
         NodeHost.CheckConfig(a.Node, new Ms110dHostModem(new AudioMedium().CreateChannel()));
     }
 
+    [Theory]
+    [InlineData("radio-ft450.json")]
+    [InlineData("radio-ft818.json")]
+    public void The_bench_files_cat_section_is_off_and_works_once_uncommented(string file)
+    {
+        RadioSettings.Parse(HostConfig.Load(Path(file)).Modem!.Radio!).Cat.Should().BeNull("CAT is off until asked for");
+
+        string text = File.ReadAllText(Path(file));
+        string on = System.Text.RegularExpressions.Regex.Replace(text, @"(?m)^(\s*)// (""cat""|""ptt"")", "$1$2");
+        on = System.Text.RegularExpressions.Regex.Replace(on, @"(?m)^\s*""ptt_(device|gpio)"".*\n", "");
+        string temp = System.IO.Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(temp, on);
+            RadioSettings s = RadioSettings.Parse(HostConfig.Load(temp).Modem!.Radio!);
+            s.Cat.Should().Be(new CatSettings("127.0.0.1", CatSettings.DefaultPort, 7052300));
+            s.PttByCat.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(temp);
+        }
+    }
+
     private static RadioSettings Settings() => new("cap", "play", CardRate, "/dev/null", 3, 0, 0, 0.5, false, null);
 
     private static float[] Mix(float[] a, float[] b)
