@@ -18,8 +18,9 @@ public sealed class RadioMedium : IDisposable
 {
     private readonly WavRecorder? _recorder;
 
-    private RadioMedium(RadioSettings settings, RadioAudioChannel audio, IHostModem modem, RadioBusy? busy, WavRecorder? recorder, CwIdSettings? cwId, CwIdSchedule? schedule)
+    private RadioMedium(RadioSettings settings, RadioAudioChannel audio, IHostModem modem, RadioBusy? busy, WavRecorder? recorder, CwIdSettings? cwId, CwIdSchedule? schedule, Rigctld? cat)
     {
+        Cat = cat;
         Settings = settings;
         Audio = audio;
         Modem = modem;
@@ -28,6 +29,9 @@ public sealed class RadioMedium : IDisposable
         CwId = cwId;
         CwIdSchedule = schedule;
     }
+
+    /// <summary>The CAT control through rigctld, or null when there is none.</summary>
+    public Rigctld? Cat { get; }
 
     /// <summary>The identification settings, or null when the node sends no ID.</summary>
     public CwIdSettings? CwId { get; }
@@ -49,7 +53,8 @@ public sealed class RadioMedium : IDisposable
 
     /// <summary>
     /// Opens the devices the settings name: the capture and playback devices through ALSA and the
-    /// CM108's hidraw node, which is unkeyed at once.
+    /// CM108's hidraw node, which is unkeyed at once; and, with a cat section, rigctld, which sets
+    /// the radio up (and unkeys it, for PTT by CAT) or keeps trying in the background.
     /// </summary>
     /// <exception cref="RadioException">A device could not be opened; the message says which and why.</exception>
     /// <param name="settings">The radio settings.</param>
@@ -59,14 +64,33 @@ public sealed class RadioMedium : IDisposable
     {
         ArgumentNullException.ThrowIfNull(settings);
         var opened = new List<IDisposable>();
+        Rigctld? cat = null;
         try
         {
+            if (settings.Cat is { } catSettings)
+            {
+                // First, so the radio is on its frequency and mode (and unkeyed) before any audio.
+                cat = new Rigctld(catSettings, settings.PttByCat, log);
+                opened.Add(cat);
+                cat.Start();
+            }
+
             var input = Opening("capture_device", settings.CaptureDevice, () => new AlsaAudioInput(settings.CaptureDevice, settings.SampleRate));
             opened.Add(input);
             var output = Opening("playback_device", settings.PlaybackDevice, () => new AlsaAudioOutput(settings.PlaybackDevice, settings.SampleRate));
             opened.Add(output);
-            var ptt = Opening("ptt_device", settings.PttDevice, () => new Cm108Ptt(settings.PttDevice, settings.PttGpio));
-            opened.Add(ptt);
+            IPttControl ptt;
+            if (settings.PttByCat)
+            {
+                ptt = new CatPtt(cat!);
+            }
+            else
+            {
+                var cm108 = Opening("ptt_device", settings.PttDevice!, () => new Cm108Ptt(settings.PttDevice!, settings.PttGpio));
+                opened.Add(cm108);
+                ptt = cm108;
+            }
+
             foreach (string? warning in new[] { input.ConfigurationWarning, output.ConfigurationWarning })
             {
                 if (warning is not null)
@@ -75,7 +99,7 @@ public sealed class RadioMedium : IDisposable
                 }
             }
 
-            return Create(settings, input, output, ptt, log, () => input.Xruns, () => output.Xruns, cwId);
+            return Create(settings, input, output, ptt, log, () => input.Xruns, () => output.Xruns, cwId, cat: cat);
         }
         catch
         {
@@ -90,7 +114,7 @@ public sealed class RadioMedium : IDisposable
 
     /// <summary>Puts the medium together on devices already open; for tests, with fakes.</summary>
     internal static RadioMedium Create(RadioSettings settings, IAudioInput input, IAudioOutput output, IPttControl ptt, Action<string>? log, Func<int>? captureXruns = null, Func<int>? playbackXruns = null,
-        CwIdSettings? cwId = null, TimeProvider? clock = null)
+        CwIdSettings? cwId = null, TimeProvider? clock = null, Rigctld? cat = null)
     {
         var audio = new RadioAudioChannel(input, output, ptt, settings.TxDelayMs, settings.TxTailMs, log)
         {
@@ -107,6 +131,7 @@ public sealed class RadioMedium : IDisposable
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 audio.Dispose();
+                cat?.Dispose();
                 throw new RadioException($"host.modem.radio.rx_record: cannot write {path}: {e.Message}");
             }
 
@@ -141,7 +166,7 @@ public sealed class RadioMedium : IDisposable
         }
 
         var modem = new RadioHostModem(new Ms110dHostModem(audio, (float)settings.TxLevel, log), busy, log);
-        return new RadioMedium(settings, audio, modem, busy, recorder, cwId, schedule);
+        return new RadioMedium(settings, audio, modem, busy, recorder, cwId, schedule, cat);
     }
 
     /// <summary>
@@ -166,11 +191,13 @@ public sealed class RadioMedium : IDisposable
         return warnings;
     }
 
-    /// <summary>Stops the audio, unkeys and closes the devices and the recording.</summary>
+    /// <summary>Stops the audio, unkeys and closes the devices, the recording and rigctld.</summary>
     public void Dispose()
     {
+        // The audio first: it unkeys, through rigctld when PTT is by CAT.
         Audio.Dispose();
         _recorder?.Dispose();
+        Cat?.Dispose();
     }
 
     private static T Opening<T>(string key, string device, Func<T> open)

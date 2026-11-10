@@ -55,7 +55,9 @@ switch (config.Modem)
 
         (medium, modem) = (radio, radio.Modem);
         describe = $"MS110D on the radio: capture {settings.CaptureDevice}, playback {settings.PlaybackDevice} at {settings.SampleRate} Hz, "
-            + $"PTT {settings.PttDevice} GPIO {settings.PttGpio}, txdelay {settings.TxDelayMs} ms, tail {settings.TxTailMs} ms, tx_level {settings.TxLevel:0.###}, "
+            + (settings.PttByCat ? "PTT by CAT, " : $"PTT {settings.PttDevice} GPIO {settings.PttGpio}, ")
+            + (settings.Cat is { } cat ? $"CAT rigctld {cat.Address} at {cat.FrequencyHz} Hz, " : "")
+            + $"txdelay {settings.TxDelayMs} ms, tail {settings.TxTailMs} ms, tx_level {settings.TxLevel:0.###}, "
             + $"busy detect {(settings.BusyDetect ? "on" : "off")}" + (settings.RxRecord is { } rec ? $", recording to {rec}" : "")
             + (config.CwId is { } id ? $", CW ID \"{id.Text}\" ({id.DurationMs / 1000.0:0.0} s{(id.AtStart ? ", at start" : "")}{(id.EveryMinutes is int m ? $", every {m} min" : "")})" : "");
         break;
