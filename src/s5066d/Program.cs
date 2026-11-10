@@ -3,6 +3,7 @@ using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host;
 using M0LTE.S5066.Host.Audio;
 using M0LTE.S5066.Host.Modem;
+using M0LTE.S5066.Host.Station;
 using M0LTE.S5066.Radio;
 
 // s5066d: one STANAG 5066 node (core-architecture.md 12.9). Usage: s5066d [--trace] <config.json>
@@ -44,7 +45,7 @@ switch (config.Modem)
         try
         {
             settings = RadioSettings.Parse(radioObject);
-            radio = RadioMedium.Open(settings, Log);
+            radio = RadioMedium.Open(settings, Log, config.CwId);
         }
         catch (Exception e) when (e is ConfigException or RadioException)
         {
@@ -55,7 +56,8 @@ switch (config.Modem)
         (medium, modem) = (radio, radio.Modem);
         describe = $"MS110D on the radio: capture {settings.CaptureDevice}, playback {settings.PlaybackDevice} at {settings.SampleRate} Hz, "
             + $"PTT {settings.PttDevice} GPIO {settings.PttGpio}, txdelay {settings.TxDelayMs} ms, tail {settings.TxTailMs} ms, tx_level {settings.TxLevel:0.###}, "
-            + $"busy detect {(settings.BusyDetect ? "on" : "off")}" + (settings.RxRecord is { } rec ? $", recording to {rec}" : "");
+            + $"busy detect {(settings.BusyDetect ? "on" : "off")}" + (settings.RxRecord is { } rec ? $", recording to {rec}" : "")
+            + (config.CwId is { } id ? $", CW ID \"{id.Text}\" ({id.DurationMs / 1000.0:0.0} s{(id.AtStart ? ", at start" : "")}{(id.EveryMinutes is int m ? $", every {m} min" : "")})" : "");
         break;
 
     case { AudioListen: { } listen, AudioPeer: { } peer }:
@@ -63,6 +65,11 @@ switch (config.Modem)
         udp.Trace = traceSink is null ? null : line => traceSink($"trace {line}");
         (medium, modem) = (udp, new Ms110dHostModem(udp, log: Log));
         describe = $"MS110D over UDP audio {listen} -> {peer}";
+        if (config.CwId is not null)
+        {
+            Log("warning: host.station.cw_id is only sent on a radio (host.modem.radio); ignored over UDP audio");
+        }
+
         break;
 
     default:
@@ -99,11 +106,22 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     stop.TrySetResult();
     radio?.Audio.EmergencyUnkey();
 };
+StationStatus? status = null;
+if (config.StatusEndpoint is not null)
+{
+    status = new StationStatus();
+    if (radio is not null)
+    {
+        status.SetCwId(radio.CwId, radio.CwIdSchedule);
+        radio.Audio.Keyed += status.SetPtt;
+    }
+}
+
 NodeHost made;
 try
 {
     made = new NodeHost(config.Node, config.PrngSeed, modem,
-        new NodeHostOptions { SisEndpoint = config.SisEndpoint, Log = Log, Trace = traceSink });
+        new NodeHostOptions { SisEndpoint = config.SisEndpoint, Log = Log, Trace = traceSink, Status = status });
 }
 catch (ConfigException e)
 {
@@ -131,9 +149,25 @@ if (radio is not null)
     };
 }
 
+StatusServer? statusServer = null;
+if (status is not null)
+{
+    try
+    {
+        statusServer = new StatusServer(config.StatusEndpoint!, status);
+    }
+    catch (System.Net.Sockets.SocketException e)
+    {
+        Console.Error.WriteLine($"s5066d: {args[0]}: host.status_listen: cannot listen on {config.StatusEndpoint}: {e.Message}");
+        return 1;
+    }
+}
+
+await using StatusServer? ownedStatusServer = statusServer;
 host.Start();
 string rates = host.Calibration is { } cal ? $"rate selection calibrated ({cal.Calibration})" : "no rate selection calibration";
-Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, {describe}, {rates}");
+Console.WriteLine($"s5066d: node {DpduAddress.ToDotted(config.Node.LocalAddress)}, {describe}, {rates}"
+    + (statusServer is not null ? $", status page http://{statusServer.LocalEndpoint}/" : ""));
 
 await Task.WhenAny(stop.Task, host.Completion);
 GC.KeepAlive(signals);

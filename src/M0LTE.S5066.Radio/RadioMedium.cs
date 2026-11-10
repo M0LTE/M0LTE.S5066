@@ -2,6 +2,7 @@ using M0LTE.Radio.Audio;
 using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host.Audio;
 using M0LTE.S5066.Host.Modem;
+using M0LTE.S5066.Host.Station;
 using Packet.SoundModem.Channel;
 
 namespace M0LTE.S5066.Radio;
@@ -10,20 +11,29 @@ namespace M0LTE.S5066.Radio;
 /// A node's radio, put together from <see cref="RadioSettings"/> (core-architecture.md 12.11): the
 /// sound card and CM108 PTT from pdn-soundmodem, the audio path (<see cref="RadioAudioChannel"/>),
 /// the M0LTE.Ms110d adapter on it at the configured level, the optional busy detector and the
-/// optional receive recording, all behind one <see cref="IHostModem"/> for <c>NodeHost</c>.
+/// optional receive recording and the optional CW identification, all behind one
+/// <see cref="IHostModem"/> for <c>NodeHost</c>.
 /// </summary>
 public sealed class RadioMedium : IDisposable
 {
     private readonly WavRecorder? _recorder;
 
-    private RadioMedium(RadioSettings settings, RadioAudioChannel audio, IHostModem modem, RadioBusy? busy, WavRecorder? recorder)
+    private RadioMedium(RadioSettings settings, RadioAudioChannel audio, IHostModem modem, RadioBusy? busy, WavRecorder? recorder, CwIdSettings? cwId, CwIdSchedule? schedule)
     {
         Settings = settings;
         Audio = audio;
         Modem = modem;
         Busy = busy;
         _recorder = recorder;
+        CwId = cwId;
+        CwIdSchedule = schedule;
     }
+
+    /// <summary>The identification settings, or null when the node sends no ID.</summary>
+    public CwIdSettings? CwId { get; }
+
+    /// <summary>The identification schedule, on the clock of <see cref="Open"/>'s time provider in UTC Unix ms, or null.</summary>
+    public CwIdSchedule? CwIdSchedule { get; }
 
     /// <summary>The settings it was made from.</summary>
     public RadioSettings Settings { get; }
@@ -42,7 +52,10 @@ public sealed class RadioMedium : IDisposable
     /// CM108's hidraw node, which is unkeyed at once.
     /// </summary>
     /// <exception cref="RadioException">A device could not be opened; the message says which and why.</exception>
-    public static RadioMedium Open(RadioSettings settings, Action<string>? log = null)
+    /// <param name="settings">The radio settings.</param>
+    /// <param name="log">A sink for one-line log messages, or null.</param>
+    /// <param name="cwId">The identification to key ahead of the node's transmissions, or null for none.</param>
+    public static RadioMedium Open(RadioSettings settings, Action<string>? log = null, CwIdSettings? cwId = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         var opened = new List<IDisposable>();
@@ -62,7 +75,7 @@ public sealed class RadioMedium : IDisposable
                 }
             }
 
-            return Create(settings, input, output, ptt, log, () => input.Xruns, () => output.Xruns);
+            return Create(settings, input, output, ptt, log, () => input.Xruns, () => output.Xruns, cwId);
         }
         catch
         {
@@ -76,7 +89,8 @@ public sealed class RadioMedium : IDisposable
     }
 
     /// <summary>Puts the medium together on devices already open; for tests, with fakes.</summary>
-    internal static RadioMedium Create(RadioSettings settings, IAudioInput input, IAudioOutput output, IPttControl ptt, Action<string>? log, Func<int>? captureXruns = null, Func<int>? playbackXruns = null)
+    internal static RadioMedium Create(RadioSettings settings, IAudioInput input, IAudioOutput output, IPttControl ptt, Action<string>? log, Func<int>? captureXruns = null, Func<int>? playbackXruns = null,
+        CwIdSettings? cwId = null, TimeProvider? clock = null)
     {
         var audio = new RadioAudioChannel(input, output, ptt, settings.TxDelayMs, settings.TxTailMs, log)
         {
@@ -107,8 +121,27 @@ public sealed class RadioMedium : IDisposable
             audio.Keyed += busy.SetKeyed;
         }
 
+        CwIdSchedule? schedule = null;
+        if (cwId is not null)
+        {
+            // Made once: the text never changes while the node runs.
+            float[] id = Morse.Generate(cwId.Text, cwId.Wpm, cwId.ToneHz, cwId.Level ?? settings.TxLevel, settings.SampleRate);
+            schedule = new CwIdSchedule(cwId.AtStart, cwId.EveryMinutes);
+            TimeProvider time = clock ?? TimeProvider.System;
+            audio.Identification = () =>
+            {
+                if (!schedule.Keyup(time.GetUtcNow().ToUnixTimeMilliseconds()))
+                {
+                    return null;
+                }
+
+                log?.Invoke($"radio: cw id \"{cwId.Text}\" ({cwId.DurationMs / 1000.0:0.0} s) before this transmission");
+                return id;
+            };
+        }
+
         var modem = new RadioHostModem(new Ms110dHostModem(audio, (float)settings.TxLevel, log), busy, log);
-        return new RadioMedium(settings, audio, modem, busy, recorder);
+        return new RadioMedium(settings, audio, modem, busy, recorder, cwId, schedule);
     }
 
     /// <summary>

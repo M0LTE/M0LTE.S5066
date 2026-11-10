@@ -3,13 +3,15 @@ using M0LTE.Dsp;
 using M0LTE.Radio.Audio;
 using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host.Audio;
+using M0LTE.S5066.Host.Station;
 
 namespace M0LTE.S5066.Radio;
 
 /// <summary>
 /// The modem's 9600 Hz audio path over a sound card and a PTT line (core-architecture.md 12.11):
 /// received audio is read from the capture device and decimated; each burst is upsampled, then
-/// sent keyed, with TXDELAY of silence before it and the TX tail after it.
+/// sent keyed, with TXDELAY of silence before it and the TX tail after it, and the optional
+/// identification between TXDELAY and the burst.
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
@@ -120,6 +122,17 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
     /// <summary>The capture device's count of overruns so far, or null when it keeps none; each is logged.</summary>
     internal Func<int>? CaptureXruns { get; init; }
 
+    /// <summary>
+    /// The identification hook (plan 9.1, decision D4; core-architecture.md 10 item 13), or null for
+    /// none: asked once per keyup, as the burst is queued, for audio at the card's rate to send
+    /// after TXDELAY and before the burst, or null to send none this time. At most
+    /// <see cref="CwIdSettings.MaxDurationMs"/> long.
+    /// </summary>
+    public Func<float[]?>? Identification { get; set; }
+
+    /// <summary>Silence between the identification and the burst, in ms, so the two are heard apart.</summary>
+    public const int IdentificationGapMs = 300;
+
     /// <summary>Raised with true just before the radio is keyed and with false just after it is unkeyed, on the transmit thread.</summary>
     public event Action<bool>? Keyed;
 
@@ -158,16 +171,23 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
     }
 
     /// <summary>
-    /// The whole keyup at the card's rate: TXDELAY of silence, the burst upsampled, then the
-    /// tail of silence.
+    /// The whole keyup at the card's rate: TXDELAY of silence, the identification and a short gap
+    /// when <see cref="Identification"/> gives one, the burst upsampled, then the tail of silence.
     /// </summary>
     internal float[] Keyup(float[] samples)
     {
         var upsampler = new Upsampler(_rate, _factor);
         int lead = (int)((long)_rate * _txDelayMs / 1000);
+        float[]? id = Identification?.Invoke();
+        if (id is { Length: > 0 })
+        {
+            lead += id.Length + (int)((long)_rate * IdentificationGapMs / 1000);
+        }
+
         int tail = (int)((long)_rate * _txTailMs / 1000);
         int body = upsampler.OutputLength(samples.Length);
         var keyup = new float[lead + body + tail];
+        id?.CopyTo(keyup, (int)((long)_rate * _txDelayMs / 1000));
         upsampler.Process(samples, keyup.AsSpan(lead, body));
         return keyup;
     }
@@ -305,7 +325,7 @@ public sealed class RadioAudioChannel : IAudioChannel, IDisposable
             return true;
         }
 
-        long longest = (long)_rate * (MaxBurstMs + _txDelayMs + _txTailMs) / 1000;
+        long longest = (long)_rate * (MaxBurstMs + _txDelayMs + _txTailMs + (Identification is null ? 0 : CwIdSettings.MaxDurationMs + IdentificationGapMs + 1)) / 1000;
         if (keyup.Length > longest)
         {
             _log?.Invoke($"radio: burst not sent, {keyup.Length / (_rate / 1000)} ms is longer than any burst the node can plan ({MaxBurstMs} ms plus txdelay and tail)");

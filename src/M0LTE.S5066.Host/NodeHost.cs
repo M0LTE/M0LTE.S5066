@@ -2,6 +2,7 @@ using System.Net;
 using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host.Modem;
 using M0LTE.S5066.Host.Sis;
+using M0LTE.S5066.Host.Station;
 
 namespace M0LTE.S5066.Host;
 
@@ -24,6 +25,12 @@ public sealed record NodeHostOptions
     /// planned and actual timing. Diagnostics only; it changes nothing the node does.
     /// </summary>
     public Action<string>? Trace { get; init; }
+
+    /// <summary>
+    /// The station status the host keeps up to date (core-architecture.md 12.12), or null for none.
+    /// It observes inputs and outputs only; it changes nothing the node does.
+    /// </summary>
+    public StationStatus? Status { get; init; }
 
     /// <summary>
     /// The interp S-0029 write bound. Fixed in production at <see cref="SisServer.DefaultWriteBound"/>;
@@ -91,6 +98,7 @@ public sealed class NodeHost : IAsyncDisposable
         Calibration = CalibrationFor(modem, _options.Log);
         Config = WithCalibration(config, Calibration) with { Time = new TimeConfig(second.Year, second.DayOfYear, (int)second.TimeOfDay.TotalSeconds) };
         _node = new Node(Config, prngSeed, modem);
+        _options.Status?.Started(Epoch, Config.LocalAddress);
         if (_options.Trace is { } sink)
         {
             _trace = new HostTrace(sink, modem);
@@ -406,8 +414,10 @@ public sealed class NodeHost : IAsyncDisposable
             if (input is not null)
             {
                 _trace?.Input(input, now);
+                _options.Status?.Input(input);
                 _node.Handle(input);
                 Dispatch(_node.DrainOutputs());
+                _options.Status?.Queues(_node.QueueDepths());
                 continue;
             }
 
@@ -441,6 +451,7 @@ public sealed class NodeHost : IAsyncDisposable
         foreach (CoreOutput o in outputs)
         {
             _trace?.Output(o, _node.Now);
+            _options.Status?.Output(o, _node.Now);
             OutputProduced?.Invoke(o);
             switch (o)
             {
