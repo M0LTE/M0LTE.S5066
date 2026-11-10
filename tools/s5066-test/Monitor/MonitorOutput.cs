@@ -59,7 +59,12 @@ internal sealed class MonitorOutput(TextWriter? text, TextWriter? json, MonitorC
         });
     }
 
-    public void Dpdu(MonitorDpdu d) => text?.WriteLine(DpduLine(d, clock.Text(d.Sample)));
+    public void Dpdu(MonitorDpdu d)
+    {
+        // Built even with no text writer: DpduLine also writes the JSON line (--quiet --jsonl).
+        string line = DpduLine(d, clock.Text(d.Sample));
+        text?.WriteLine(line);
+    }
 
     public void BurstEnded(MonitorBurstEnd e)
     {

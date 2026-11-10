@@ -79,6 +79,54 @@ public class MonitorTests
     }
 
     [Fact]
+    public void Ed3_and_expedited_types_a_bad_header_and_a_cut_d_pdu_are_reported()
+    {
+        var reset = new Ed3ResetWinResync(Header(A, B, eow: EowCodec.Encode(new CapabilityEow(false, true)), eot: 4), new ResetFlags(true, false, false, false), 9, 3);
+        byte[] broken = DpduCodec.Encode(new Management(Header(B, A, eot: 3), false, true, false, 1, Octets.Empty));
+        broken[4] ^= 0xFF;   // the EOT byte: the header CRC fails, the header length does not change
+        var exp = new ExpeditedDataOnly(Header(B, A, eow: EowCodec.Encode(new MaxSegmentEow(50)), eot: 2), true, true, 7, 4, new Octets(new byte[10]), true);
+        var warning = new Warning(Header(A, B), 9, 1);
+        byte[] cut = DpduCodec.Encode(new DataOnly(Header(A, B, eot: 1), new DataFlags(true, false, false, false, false, false), 2, new Octets(new byte[800]), true))[..40];
+
+        byte[] burst = [.. DpduCodec.Encode(reset), .. broken, .. DpduCodec.Encode(exp), .. DpduCodec.Encode(warning), .. cut];
+        float[] audio = [.. Silence(0.5), .. Modulate(burst), .. Silence(0.5)];
+        string wav = Path.Combine(Path.GetTempPath(), $"s5066-monitor-{Guid.NewGuid():N}.wav");
+        try
+        {
+            WriteWav48k(wav, audio);
+            var text = new StringWriter();
+            MonitorCommand.RunWav(wav, text, null);
+
+            string[] lines = text.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] dpdus = lines.Where(l => l.Contains(" > ", StringComparison.Ordinal) && !l.StartsWith("LINK", StringComparison.Ordinal)).ToArray();
+            dpdus.Should().HaveCount(4, string.Join("\n", lines));
+            dpdus[0].Should().EndWith("0.0.1.1 > 0.0.1.2 ED3-RESET new-lwe=9 id=3 flags=F eow=cap:ed4 eot=4(2.0s) len=0 crc=hdr-ok");
+            dpdus[1].Should().EndWith("0.0.1.2 > 0.0.1.1 EXP-DATA-ONLY fsn=4 cpdu-id=7 flags=SE eow=max-seg:50 eot=2(1.0s) len=10 crc=ok");
+            dpdus[2].Should().EndWith("0.0.1.1 > 0.0.1.2 WARNING rx-type=9 reason=1 eow=- eot=0(0.0s) len=0 crc=hdr-ok");
+            dpdus[3].Should().MatchRegex(@"0\.0\.1\.1 > 0\.0\.1\.2 DATA-ONLY eow=- eot=1\(0\.5s\) \d+B crc=CUT$");
+            lines.Should().Contain(l => l.Contains("BURST 1 end eom", StringComparison.Ordinal) && l.EndsWith("4 D_PDUs, 1 with data (0 CRC bad), 1 cut, 1 bad headers", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(wav);
+        }
+    }
+
+    [Fact]
+    public void Quiet_still_writes_every_json_record()
+    {
+        var json = new StringWriter();
+        var output = new MonitorOutput(null, json, new MonitorClock(false, () => 9600));
+        var burst = new MonitorBurst(1, 0, 6, "S", 7, 0, 20);
+        var pdu = new Warning(Header(A, B), 9, 1);
+        byte[] raw = DpduCodec.Encode(pdu);
+        DecodeResult<DpduHeaderInfo> info = DpduCodec.DecodeHeader(raw, PeerEdition.Any);
+        output.Dpdu(new MonitorDpdu(burst, 4800, 20, info.Value!, pdu, raw.Length, "ok", raw));
+
+        JsonDocument.Parse(json.ToString()).RootElement.GetProperty("kind").GetString().Should().Be("dpdu");
+    }
+
+    [Fact]
     public async Task A_third_station_hears_every_d_pdu_two_nodes_send()
     {
         using var medium = new AudioMedium();

@@ -136,15 +136,19 @@ Architecture: $ARCH
 Maintainer: Tom Fanning M0LTE <tom@m0lte.uk>
 Installed-Size: $(du -k -s --exclude=DEBIAN "$R" | cut -f1)
 Depends: $DEPS
+Recommends: libasound2 | libasound2t64
 Section: hamradio
 Priority: optional
 Homepage: https://github.com/M0LTE/M0LTE.S5066
 Description: STANAG 5066 test client
  A command-line client for any STANAG 5066 node that serves the SIS (s5066d,
  or another implementation): send and receive, run scripts, and exercise the
- node's services. Needs no sound card.
+ node's services. Also a receive-only monitor that decodes every D_PDU heard
+ in a recording, UDP audio or a sound card (the card needs the ALSA library);
+ it never transmits.
  .
- AGPL-3.0-or-later; see /usr/share/doc/s5066-test/copyright.
+ AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only (it links
+ pdn-soundmodem); see /usr/share/doc/s5066-test/copyright.
 CTL
 build s5066-test
 

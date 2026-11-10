@@ -125,7 +125,12 @@ A D_PDU line gives the time, the burst's waveform and interleaver, the receiver'
 - `crc=ok`: the data CRC passed; `crc=hdr-ok` for a type with no data CRC.
 - `crc=BAD`: the header was good but the data was damaged.
 - `crc=CUT`: the burst ended inside it.
+- `crc=INVALID`: the header was good but the rest could not be a D_PDU; the length is then the bytes read.
 
-Flags are letters: `S` C_PDU start, `E` end, `I` deliver in order, `D` drop, `U` and `L` the transmit window edges. A burst end line counts what the burst held; "bad headers" are syncs whose header failed its check, usually noise or a D_PDU lost to errors.
+Flags are letters: `S` C_PDU start, `E` end, `I` deliver in order, `D` drop, `U` and `L` the transmit window edges. On a reset, `F` full reset, `T` reset transmit window request, `R` reset receive window, `A` reset acknowledgement; on MANAGEMENT, `A` acknowledgement, `V` valid message, `X` extended message. A burst end line counts what the burst held; "bad headers" are syncs whose header failed its check, usually noise or a D_PDU lost to errors.
 
 The monitor knows nothing about the nodes, so it reads every D_PDU as Edition 4 (types 0 to 8 and 15 read the same in Edition 3). It does not reassemble C_PDUs.
+
+### JSON lines
+
+Each line of the `--jsonl` file is one object with `kind` (`burst_start`, `dpdu`, `burst_end` or `link`) and `t`, seconds from the start of the audio; live runs add `utc`. A `dpdu` record has `burst`, `wn`, `interleaver`, `snr_db`, `type`, `name`, `src`, `dst`, `group`, `eow`, `eow_text`, `eot`, `bytes`, `data_len`, `header_crc`, `data_crc` (`ok`, `bad` or null) and `status` (`ok`, `bad`, `cut` or `invalid`), plus the type's own fields under the names the text line uses, with underscores (`fsn`, `lwe`, `cpdu_id`, `new_lwe`, `ack_encoding` and so on). Burst and link records carry the counts of their text lines. Fields are only ever added, never renamed.

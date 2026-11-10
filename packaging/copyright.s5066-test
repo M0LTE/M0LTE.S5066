@@ -4,13 +4,27 @@ Source: https://github.com/M0LTE/M0LTE.S5066
 Comment:
  s5066-test ships as a self-contained single-file executable that bundles the
  .NET runtime and libraries (Copyright .NET Foundation and Contributors, MIT
- licence). It links only the M0LTE.S5066.Client library, not pdn-soundmodem.
- The Client library is also offered under a commercial licence; this program,
- as packaged here, is distributed under the AGPL.
+ licence).
+ .
+ s5066-test links the M0LTE.S5066.Client library for its SIS client and, for
+ its receive-only monitor's sound card capture, pdn-soundmodem through the
+ M0LTE.S5066.Radio project. pdn-soundmodem is AGPL-3.0-or-later AND
+ GPL-3.0-or-later AND GPL-3.0-only (its LICENSING.md lists the GPL-only files),
+ so this binary is distributed under those terms combined, which AGPL section
+ 13 and GPL section 13 allow, and only under them. It is not available under
+ the commercial licence that the libraries M0LTE.S5066.Core, M0LTE.S5066.Host
+ and M0LTE.S5066.Client are also offered under.
+ .
+ Other bundled components: pdn-soundmodem's own dependencies (M0LTE.Dsp,
+ M0LTE.Fec, M0LTE.Ms110d and others, AGPL-3.0-or-later; M0LTE.Il2p,
+ GPL-3.0-or-later). Their licence texts are distributed with their upstream
+ sources.
 
 Files: *
 Copyright: 2026 Tom Fanning M0LTE
-License: AGPL-3.0-or-later
+License: AGPL-3.0-or-later and GPL-3.0-or-later and GPL-3.0-only
  The full text of the GNU Affero General Public License version 3 is in
  /usr/share/common-licenses/AGPL-3 on systems that ship it, and at
- https://www.gnu.org/licenses/agpl-3.0.html.
+ https://www.gnu.org/licenses/agpl-3.0.html. The GNU General Public License
+ version 3 is in /usr/share/common-licenses/GPL-3, and at
+ https://www.gnu.org/licenses/gpl-3.0.html.
