@@ -31,11 +31,28 @@ internal sealed class SenderRate
     /// <summary>The position of the last transmission that carried a D_PDU to this peer, or null.</summary>
     public int? LastSentRung { get; set; }
 
-    /// <summary>The position of the last transmission that carried ARQ data to this peer, or null: the one an answer is awaited for.</summary>
-    public int? DataRung { get; set; }
+    /// <summary>
+    /// One transmission that carried ARQ data to this peer and awaits its answer (interp C-1281): its build
+    /// number, its ladder position, whether it was a trial (above the answered rung when it was sent), and
+    /// the time its own answer wait runs out (its end plus one answer wait), null until it has ended.
+    /// </summary>
+    internal sealed record Awaited(long Transmission, int Rung, bool Trial)
+    {
+        public long? DeadlineMs { get; set; }
+    }
 
-    /// <summary>The position of a trial in flight: ARQ data sent above <see cref="AnsweredRung"/> and not yet answered (interp C-1281).</summary>
-    public int? TrialRung { get; set; }
+    /// <summary>
+    /// The transmissions that carried ARQ data to this peer and await their answer, oldest first (issue
+    /// #109, interp C-1281): each is judged on its own answer wait, so a sender that sends again before an
+    /// earlier wait has run out (which restarts <c>dts.ack_wait</c>, C-1120) still learns of the silence.
+    /// </summary>
+    public List<Awaited> Pending { get; } = [];
+
+    /// <summary>The position of the last transmission awaiting its answer that carried ARQ data to this peer, or null.</summary>
+    public int? DataRung => Pending.Count > 0 ? Pending[^1].Rung : null;
+
+    /// <summary>The position of the latest trial in flight: ARQ data sent above <see cref="AnsweredRung"/> and not yet answered (interp C-1281).</summary>
+    public int? TrialRung => Pending.LastOrDefault(p => p.Trial)?.Rung;
 
     /// <summary>
     /// A trial failed and the peer has not answered since (P7-9 round 3, interp C-1281): until it answers,
@@ -44,18 +61,16 @@ internal sealed class SenderRate
     public bool FailedSinceAnswer { get; set; }
 
     /// <summary>
-    /// The last transmission that carried ARQ data to this peer awaits its acknowledgement (coordinator
-    /// ruling 2026-11-10, interp C-1281): set when it is sent, cleared when the peer acknowledges at least
-    /// one D_PDU it carried or when <c>dts.ack_wait</c> expires first. Until then other answers from the
-    /// peer (C-1250) say nothing about the rung.
+    /// Some transmission that carried ARQ data to this peer awaits its acknowledgement (coordinator ruling
+    /// 2026-11-10, interp C-1281). Until none does, other answers from the peer (C-1250) say nothing about the rung.
     /// </summary>
-    public bool DataAwaited { get; set; }
+    public bool DataAwaited => Pending.Count > 0;
 
     /// <summary>The last transmission that carried a D_PDU to this peer carried ARQ data.</summary>
     public bool LastSentData { get; set; }
 
-    /// <summary>The build number of the last transmission that carried ARQ data to this peer, or null.</summary>
-    public long? DataTransmission { get; set; }
+    /// <summary>The build number of the last transmission awaiting its answer that carried ARQ data to this peer, or null.</summary>
+    public long? DataTransmission => Pending.Count > 0 ? Pending[^1].Transmission : null;
 
     /// <summary><c>dts.ack_wait</c> expiries in a row with no answer from the peer (open question 16).</summary>
     public int SilentWaits { get; set; }
@@ -81,9 +96,8 @@ internal sealed class SenderRate
     public void OnConnectionMade(int defaultRung)
     {
         AnsweredRung = defaultRung;
-        TrialRung = null;
+        Pending.Clear();
         FailedSinceAnswer = false;
-        DataAwaited = false;
         SilentWaits = 0;
         StepDown = 0;
     }
@@ -92,9 +106,8 @@ internal sealed class SenderRate
     public void OnConnectionEnded()
     {
         AnsweredRung = null;
-        TrialRung = null;
+        Pending.Clear();
         FailedSinceAnswer = false;
-        DataAwaited = false;
         SilentWaits = 0;
         StepDown = 0;
     }
@@ -117,11 +130,38 @@ internal sealed class SenderRate
 
         if (arqData)
         {
-            DataRung = rung;
-            DataTransmission = transmission;
-            DataAwaited = true;
-            TrialRung = AnsweredRung is int answered && rung > answered ? rung : null;
+            Pending.Add(new Awaited(transmission, rung, AnsweredRung is int answered && rung > answered));
         }
+    }
+
+    /// <summary>
+    /// Our transmission has ended: the transmissions awaiting an answer that have not yet ended (the one
+    /// just sent) have their own answer wait run out at <paramref name="deadlineMs"/> (issue #109).
+    /// </summary>
+    public void OnDataTransmissionEnded(long deadlineMs)
+    {
+        foreach (Awaited p in Pending)
+        {
+            p.DeadlineMs ??= deadlineMs;
+        }
+    }
+
+    /// <summary>
+    /// Before a transmission is shaped (issue #109, interp C-1281): each transmission awaiting an answer
+    /// whose own answer wait has run out by <paramref name="nowMs"/> with none of its ARQ data acknowledged
+    /// is unanswered, oldest first, as at a <c>dts.ack_wait</c> expiry. Returns the failed trials.
+    /// </summary>
+    public int ExpireAnswerWaits(long nowMs, DrcTable table)
+    {
+        int failed = 0;
+        while (Pending.Count > 0 && Pending[0].DeadlineMs is long d && d <= nowMs)
+        {
+            Awaited p = Pending[0];
+            Pending.RemoveAt(0);
+            failed += Unanswered(p, table) ? 1 : 0;
+        }
+
+        return failed;
     }
 
     /// <summary>
@@ -151,24 +191,25 @@ internal sealed class SenderRate
     /// </summary>
     public void OnDataAcknowledged(long transmission)
     {
-        if (!DataAwaited || transmission != DataTransmission)
+        int i = Pending.FindIndex(p => p.Transmission == transmission);
+        if (i < 0)
         {
             return;
         }
 
-        DataAwaited = false;
-        Proven(DataRung);
+        Awaited answered = Pending[i];
+        Pending.RemoveRange(0, i + 1);   // the earlier ones are superseded by the later answer
+        Proven(answered.Rung, answered.Trial);
     }
 
-    private void Proven(int? rung)
+    private void Proven(int? rung, bool trial = false)
     {
         SilentWaits = 0;
         StepDown = 0;
         FailedSinceAnswer = false;
-        if (TrialRung is not null)
+        if (trial)
         {
             HoldOff = 0;
-            TrialRung = null;
         }
 
         if (rung is int sent)
@@ -185,7 +226,18 @@ internal sealed class SenderRate
     /// to it is a trial again (interp C-1281); and every <c>tx_step_down_waits</c> silent waits in a
     /// row step one rung down (plan 6.2). Returns true when a failed trial set a ceiling.
     /// </summary>
-    public bool OnAckWaitExpired(DrcTable table) => Unanswered(table);
+    public bool OnAckWaitExpired(DrcTable table)
+    {
+        bool failed = false;
+        while (Pending.Count > 0)
+        {
+            Awaited p = Pending[0];
+            Pending.RemoveAt(0);
+            failed |= Unanswered(p, table);
+        }
+
+        return failed;
+    }
 
     /// <summary>
     /// An ACK-ONLY or DATA-ACK from the peer acknowledged none of the D_PDUs last placed in build number
@@ -196,33 +248,34 @@ internal sealed class SenderRate
     /// </summary>
     public bool OnDataAllFailed(long transmission, DrcTable table)
     {
-        return transmission == DataTransmission && Unanswered(table);
-    }
-
-    private bool Unanswered(DrcTable table)
-    {
-        if (!DataAwaited)
+        int i = Pending.FindIndex(p => p.Transmission == transmission);
+        if (i < 0)
         {
             return false;
         }
 
-        DataAwaited = false;
+        Awaited p = Pending[i];
+        Pending.RemoveRange(0, i + 1);
+        return Unanswered(p, table);
+    }
+
+    private bool Unanswered(Awaited p, DrcTable table)
+    {
         bool failedTrial = false;
 
-        if (TrialRung is int failed)
+        if (p.Trial && p.Rung is int failed)
         {
             int cap = DrcTable.Need(table.TxCeilingCap, "tx_ceiling_cap");
             int length = Math.Min(HoldOff > 0 ? HoldOff : DrcTable.Need(table.TxCeilingInitial, "tx_ceiling_initial"), cap);
             Ceiling = failed - 1;
             CeilingLeft = length;
             HoldOff = (int)Math.Min(length * 2L, cap);
-            TrialRung = null;
             FailedSinceAnswer = true;
             failedTrial = true;
         }
-        else if (AnsweredRung is int answered && DataRung is int data && data <= answered)
+        else if (AnsweredRung is int answered && p.Rung <= answered)
         {
-            AnsweredRung = Math.Max(0, data - 1);   // never below the lowest rung, so a trial is always above a rung
+            AnsweredRung = Math.Max(0, p.Rung - 1);   // never below the lowest rung, so a trial is always above a rung
         }
 
         SilentWaits++;
