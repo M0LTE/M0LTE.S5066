@@ -267,13 +267,15 @@ public class StackSweepTests
     }
 
     [Fact]
-    public void On_an_ssb_channel_the_gate_counts_only_the_transmissions_after_the_first_ceiling()
+    public void On_an_ssb_channel_the_gate_counts_after_the_first_ceiling_or_all_where_a_node_set_none()
     {
-        // Ruling (f) of 2026-11-09 (open question 14 as written): the learning before a node's first failed-trial
-        // ceiling is not counted. wn8-long never decodes on poor-ssb. Each node: (rung, all, after the first ceiling, ok).
+        // Rulings (f) of 2026-11-09 and (h) of 2026-11-10 (open question 14 as written): a node that set a failed-trial
+        // ceiling counts only its transmissions after the first one (the learning before it is not counted); a node that
+        // never set one has all its transmissions counted. wn8-long never decodes on poor-ssb. Each node: (rung, all, after the first ceiling, ok).
         static NodeStats Node(long after, params (string Rung, long Count, long After, long Ok)[] rungs)
         {
-            var n = new NodeStats { TransmissionsAfterFirstCeiling = after };
+            // after < 0 stands for a node that never set a ceiling (ruling (h): all its transmissions count).
+            var n = new NodeStats { TransmissionsAfterFirstCeiling = Math.Max(0, after), FirstCeilingMs = after < 0 ? null : 1000 };
             foreach ((string rung, long count, long a, long ok) in rungs)
             {
                 n.Rungs[rung] = new RungStats { Count = count, CountAfterFirstCeiling = a, DpdusOk = ok };
@@ -290,18 +292,21 @@ public class StackSweepTests
 
         RunResult[] results =
         [
-            R("fixed-wn8-long", 180, 1, Node(0, ("wn8-long", 40, 0, 0)), Node(0, ("wn8-long", 40, 0, 0))),
+            R("fixed-wn8-long", 180, 1, Node(-1, ("wn8-long", 40, 0, 0)), Node(-1, ("wn8-long", 40, 0, 0))),
             // 8 of 100 on wn8-long, but 6 of them before node a's first ceiling: 2 of the 90 after it.
             R("adaptive-t", 180, 1, Node(80, ("wn7-long", 82, 78, 900), ("wn8-long", 8, 2, 0)), Node(10, ("wn7-long", 10, 10, 100))),
-            // Seed 2: no ceiling at all on either node, so nothing is counted after one.
-            R("adaptive-t", 180, 2, Node(0, ("wn7-long", 100, 0, 900)), Node(0, ("wn7-long", 10, 0, 100))),
-            // At 300: 3 of 20 after the ceiling are on wn8-long (15%), a fail though only 3 of 130 overall (2.3%).
-            R("adaptive-t", 300, 1, Node(20, ("wn7-long", 117, 17, 900), ("wn8-long", 3, 3, 0)), Node(0, ("wn7-long", 10, 0, 100))),
+            // Seed 2: no ceiling on either node, so all 110 of their transmissions count, 4 on wn8-long.
+            R("adaptive-t", 180, 2, Node(-1, ("wn7-long", 96, 0, 900), ("wn8-long", 4, 0, 0)), Node(-1, ("wn7-long", 10, 0, 100))),
+            // At 240: no node set a ceiling, so 12 of the 110 transmissions count against it (the old rule counted 0).
+            R("adaptive-t", 240, 1, Node(-1, ("wn7-long", 88, 0, 900), ("wn8-long", 12, 0, 0)), Node(-1, ("wn7-long", 10, 0, 100))),
+            // At 300: node a set a ceiling (3 of its 20 after it on wn8-long), node b none (its 10 all count): 3 of 30.
+            R("adaptive-t", 300, 1, Node(20, ("wn7-long", 117, 17, 900), ("wn8-long", 3, 3, 0)), Node(-1, ("wn7-long", 10, 0, 100))),
         ];
         string[] gate = Merge.Gate(results).TrimEnd('\n').Split('\n');
-        gate.Should().HaveCount(3);
-        gate[1].Should().EndWith("\tssb\t0\t2\t90\t2.2\t3.8\tpass", "2 of the 90 transmissions after the first ceiling over both seeds, though 8 of 210 overall");
-        gate[2].Should().EndWith("\tssb\t0\t3\t20\t15.0\t2.3\tfail", "3 of 20 after the ceiling, though 3 of 130 overall");
+        gate.Should().HaveCount(4);
+        gate[1].Should().EndWith("\tssb\t0\t6\t200\t3.0\t5.7\tpass", "6 of the 200 counted over both seeds (2 of node a's 80 after its ceiling and node b's 10 in seed 1, 4 of 110 in seed 2)");
+        gate[2].Should().EndWith("\tssb\t0\t12\t110\t10.9\t10.9\tfail", "no node set a ceiling, so all count: 12 of 110");
+        gate[3].Should().EndWith("\tssb\t0\t3\t30\t10.0\t2.3\tfail", "3 of the 20 after node a's ceiling plus all 10 of node b's, though 3 of 130 overall");
     }
 
     [Fact]

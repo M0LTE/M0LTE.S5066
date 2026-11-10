@@ -61,11 +61,12 @@ internal static class Merge
     /// of the transmissions on rungs that never decode there, at every point; the goodput columns are
     /// reported for information. A rung never decodes on a channel when every transmission on it, over every
     /// run of that channel in the merge (any configuration, SNR and seed, both nodes), delivered no D_PDU
-    /// whole. Open question 14 counts the transmissions after the first ceiling (ruling (f) of 2026-11-09):
-    /// per node, those that started after the node's first failed trial set a failed-trial ceiling (interp
-    /// C-1281), so the learning before it is not counted. The share is the transmissions on rungs that never
-    /// decode after the first ceiling over all transmissions after it, both nodes, every seed of the point
-    /// (0 when no node set a ceiling). Results written before the runs recorded the order (no
+    /// whole. Open question 14 counts the transmissions after the first ceiling (ruling (f) of 2026-11-09,
+    /// ruling (h) of 2026-11-10): per node, a node that set a failed-trial ceiling (interp C-1281) counts only
+    /// the transmissions that started after its first one, so the learning before it is not counted; a node
+    /// that never set one has all its transmissions counted (it learned nothing it could have been
+    /// cautious about). The share is the counted transmissions on rungs that never decode over all counted
+    /// transmissions, both nodes, every seed of the point. Results written before the runs recorded the order (no
     /// <c>transmissions_after_first_ceiling</c>) fall back to every transmission, rule <c>ssb-all-tx</c>.
     /// Column <c>never_decode_tx_pct_all_tx</c> gives that share over every transmission, for information.
     /// </summary>
@@ -114,13 +115,17 @@ internal static class Merge
                 foreach (NodeStats n in pt.SelectMany(r => r.Nodes.Values))
                 {
                     exact &= n.TransmissionsAfterFirstCeiling is not null;
-                    txAfter += n.TransmissionsAfterFirstCeiling ?? 0;
+                    // Ruling (h) of 2026-11-10: a node that never set a ceiling has all its transmissions counted;
+                    // one that did counts only those after its first ceiling.
+                    bool allTx = n.FirstCeilingMs is null;
                     foreach ((string rung, RungStats s) in n.Rungs)
                     {
                         tx += s.Count;
                         txNever += never.Contains(rung) ? s.Count : 0;
                         exact &= s.CountAfterFirstCeiling is not null;
-                        txNeverAfter += never.Contains(rung) ? s.CountAfterFirstCeiling ?? 0 : 0;
+                        long counted = allTx ? s.Count : s.CountAfterFirstCeiling ?? 0;
+                        txAfter += counted;
+                        txNeverAfter += never.Contains(rung) ? counted : 0;
                     }
                 }
 
