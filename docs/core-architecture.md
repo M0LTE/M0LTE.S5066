@@ -924,3 +924,23 @@ Added 2026-11-08 by the amendment to plan D3: a standalone `s5066d` on each mach
 
 Each element rises and falls on a 5 ms raised-cosine edge inside its own time, so the timing is exact and the keying makes no clicks. The audio is made once at start-up at the sound card's rate, and `RadioAudioChannel` asks the schedule at each keyup, as the burst is queued, whether to put it after TXDELAY; the transmit guard allows for it. Only the radio medium sends it: over UDP audio `s5066d` logs a one-line warning and ignores it. Each ID sent is one log line, `radio: cw id "DE M0XYZ" (5.5 s) before this transmission`.
 
+
+### 12.13 CAT control through rigctld (P8-4)
+
+An optional `host.modem.radio.cat` object gives `s5066d` CAT control of the radio through Hamlib's `rigctld`, over its plain text TCP protocol (one command a line; set commands answered `RPRT n`, 0 for done; `f` answered with the frequency, `m` with the mode and passband). Hamlib is not linked: `rigctld` is the operator's to run, with the model number of their radio, and the `s5066d` package only suggests the distribution's `libhamlib-utils`. `Rigctld` lives in `M0LTE.S5066.Radio`; nothing of it reaches the core or the host library.
+
+**Set-up.** At start, and again on each reconnection: unkey (`T 0`) when PTT is by CAT, set the frequency (`F`), set the mode with a 3 kHz passband (`M PKTUSB 3000`; if refused, `M PKTUSB 0`, the mode's normal passband), read both back (`f`, `m`) and log one line of what the radio really set, noting each refusal and any value other than the one asked for. The mode is fixed at Hamlib's `PKTUSB`, which each backend maps to its radio's data mode on upper sideband (in Hamlib's source, mode C on the FT-450, and DIG with DIG MODE USER-U on the FT-818), and the passband at 3000 Hz, the widest the waveforms use; neither is a setting. Hamlib's own capability tables are the limit: its FT-450 lists 2400 Hz as the widest data-mode filter, and its FT-817/818 backend ignores the passband. The first try is made before the audio opens, so the radio is set up (and unkeyed) before any burst.
+
+**Settings.**
+
+| Key | Meaning | Default |
+|---|---|---|
+| `cat.frequency_hz` | dial frequency in Hz, a whole number above 0 | required |
+| `cat.rigctld` | host:port of rigctld (a hostname, an IPv4 address or a bracketed IPv6 address) | `127.0.0.1:4532`, rigctld's own default |
+| `ptt` | `"cm108"` (the GPIO pin) or `"cat"` (`T 1` and `T 0` through rigctld); with `"cat"` a `cat` object is required and `ptt_device` and `ptt_gpio` are refused | `"cm108"` |
+
+**Loss and reconnection.** A connection that cannot be made, a reply that does not come within 3 s, or rigctld closing its end (checked every 5 s while idle, without sending anything to the radio) drops the connection with one log line, then a quiet retry every 5 s; a successful reconnection sets the radio up again and logs its line. It never stops the node.
+
+**PTT by CAT.** `CatPtt` is the `IPttControl` that `RadioAudioChannel` keys, so every rule of 12.11 applies unchanged: unkey on every way out of a keyup, the transmit guard, unkey first on stop and on process exit, no keyup over `MaxBurstMs`. `Key` refuses (an `IOException`, so the burst is not sent and is still reported played, with one `burst not sent, PTT failed` line) when rigctld is not connected or the key is refused or times out; a key that timed out drops the connection. `Unkey` uses the connection if there is one, otherwise a connection made just for it, so a dropped connection while keyed can still unkey; if that fails too, the line says to check the radio, and only the radio's own time-out timer is left. TXDELAY counts from rigctld's answer to `T 1`, so the CAT round trip does not eat into it.
+
+**Model numbers** for the bench radios, from `rigctl -l` (Hamlib 4.6.5) and `include/hamlib/riglist.h` (Hamlib master, `RIG_MAKE_MODEL(RIG_YAESU, n)` with `RIG_YAESU` 1 and 1000 models a backend): FT-450 1027, FT-450D 1046, FT-818 1041 (FT-817 1020). The bench files `radio-ft450.json` and `radio-ft818.json` carry a commented-out `cat` section and `"ptt": "cat"` with these numbers in the comment; a test uncomments them and parses the result.
