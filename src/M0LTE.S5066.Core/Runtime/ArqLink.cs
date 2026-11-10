@@ -637,6 +637,9 @@ internal sealed class ArqFrame(ArqCPdu owner, int segment, int fsn)
     public int Fsn { get; } = fsn;
 
     public ArqFrameState State { get; set; } = ArqFrameState.Awaiting;
+
+    /// <summary>The number of the transmission this D_PDU was last placed in (ruling 2026-11-10, interp C-1281).</summary>
+    public long SentIn { get; set; }
 }
 
 /// <summary>
