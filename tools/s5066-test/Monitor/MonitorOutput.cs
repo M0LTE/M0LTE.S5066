@@ -46,7 +46,7 @@ internal sealed class MonitorOutput(TextWriter? text, TextWriter? json, MonitorC
 
     public void BurstStarted(MonitorBurst b)
     {
-        text?.WriteLine(Inv($"{clock.Text(b.StartSample)} BURST {b.Number} start {b.Waveform} K{b.K} snr {Db(b.PreambleSnrDb)} cfo {b.CfoHz:+0.0;-0.0}Hz"));
+        text?.WriteLine(Inv($"{clock.Text(b.StartSample)} BURST {b.Number} start {b.Waveform} K{b.K} snr {Db(b.PreambleSnrDb)} cfo {Cfo(b.CfoHz)}Hz"));
         Json(b.StartSample, new()
         {
             ["kind"] = "burst_start",
@@ -55,7 +55,7 @@ internal sealed class MonitorOutput(TextWriter? text, TextWriter? json, MonitorC
             ["interleaver"] = b.Interleaver,
             ["k"] = b.K,
             ["preamble_snr_db"] = Round(b.PreambleSnrDb),
-            ["cfo_hz"] = Round(b.CfoHz),
+            ["cfo_hz"] = Math.Round(b.CfoHz, 1) + 0.0,
         });
     }
 
@@ -351,6 +351,12 @@ internal sealed class MonitorOutput(TextWriter? text, TextWriter? json, MonitorC
         }
 
         json.WriteLine(JsonSerializer.Serialize(record, JsonOptions));
+    }
+
+    private static string Cfo(double hz)
+    {
+        double r = Math.Round(hz, 1);
+        return r < 0 ? Inv($"{r:0.0}") : Inv($"+{Math.Abs(r):0.0}");
     }
 
     private static double? Round(double? v) => v is double d ? Math.Round(d, 1) : null;
