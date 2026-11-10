@@ -1,0 +1,88 @@
+name: deb
+
+# Builds the s5066d and s5066-test .debs, one architecture per native runner (self-contained
+# .NET, no cross-compiling, no trimming), and install-tests each on Debian 13. Nothing is
+# published here: a pull request or a manual run only proves the build, and the tag-triggered
+# publish.yml calls this workflow and attaches the artifacts to the GitHub release.
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'src/s5066d/**'
+      - 'src/M0LTE.S5066.Radio/**'
+      - 'tools/s5066-test/**'
+      - '.github/workflows/deb.yml'
+      - '.github/workflows/publish.yml'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Package version; empty uses <Version> from Directory.Build.props
+        type: string
+        default: ''
+
+jobs:
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up .NET (from global.json)
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Work out the package version
+        id: version
+        run: |
+          set -euo pipefail
+          v='${{ inputs.version }}'
+          if [ -z "$v" ]; then
+            v="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props)"
+            # A dry run is older than the release it precedes (tilde sorts before the empty string).
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then v="$v~ci.$GITHUB_RUN_NUMBER"; fi
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "package version $v"
+
+      - name: Build the .debs
+        run: packaging/build-deb.sh "${{ steps.version.outputs.version }}" "${{ matrix.arch }}" ./artifacts
+
+      - name: Check the package contents
+        run: |
+          set -euo pipefail
+          for deb in ./artifacts/*.deb; do
+            echo "::group::$(basename "$deb")"
+            dpkg-deb --info "$deb"
+            dpkg-deb --contents "$deb"
+            dpkg-deb -f "$deb" Depends | grep -qE 'libc6 \(>= [0-9]+\.[0-9]+\)'
+            # The build is invariant-globalization, so no libicu: it works on any ICU version.
+            if dpkg-deb -f "$deb" Depends | grep -qi icu; then echo "unexpected libicu dependency"; exit 1; fi
+            echo "::endgroup::"
+          done
+          # The binaries really are for this architecture.
+          want="$([ '${{ matrix.arch }}' = amd64 ] && echo 'x86-64' || echo 'ARM aarch64')"
+          for exe in /usr/lib/s5066d/s5066d /usr/lib/s5066-test/s5066-test; do
+            d="$(mktemp -d)"; pkg="$(basename "$(dirname "$exe")")"
+            dpkg-deb -x "./artifacts/${pkg}_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "$d"
+            file "$d$exe" | tee /dev/stderr | grep -q "$want"
+          done
+
+      - name: Install test on debian:trixie
+        run: packaging/test-deb.sh "${{ steps.version.outputs.version }}" ./artifacts "${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.arch }}
+          path: artifacts/*.deb
+          if-no-files-found: error

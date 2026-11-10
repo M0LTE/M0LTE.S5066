@@ -1,0 +1,4 @@
+# s5066d: let the service (which runs in the audio group) key a radio through a USB radio
+# interface's HID GPIO, the C-Media CM108 family. /dev/hidraw* is root's alone otherwise.
+# An interface from another vendor needs a rule like this with its own IDs.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"

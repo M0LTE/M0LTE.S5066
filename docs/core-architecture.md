@@ -702,11 +702,12 @@ Phase 7 coverage: the EOW rows C-0416 to C-0491, the rate selection rows C-0918 
 
 ### Phase 8: station and packaging
 
-Plan 12 phase 8. Host and `s5066d` work; the core is not changed except where a row says so.
+Plan 12 phase 8. Items run in parallel; each adds its own row.
 
-| Item | Contents | Rows | Tests |
-|---|---|---|---|
-| P8-2 | Station identification and status. The optional CW ID (`host.station.cw_id`, section 10 item 13): Morse audio with PARIS timing and raised-cosine keying, keyed after TXDELAY and before the burst of a keyup the core was granted, at start (first keyup after start-up or after 10 quiet minutes) and every N minutes while transmitting; nothing at the end of a transmission (D4). The station status page (`host.status_listen`, section 12.12). One core change: the read-only diagnostic `Node.QueueDepths` (internal, visible to the host). CAT control and the apt package are a later phase 8 item | K-0007 (reading revised) | Host `StationIdTests` (a Goertzel CW decoder reads the audio back as the configured text; PARIS timing; no keying steps; the schedule on a virtual clock), Radio `CwIdTests` (the keyup layout), T3 `IdentificationTests` (the C-0844 and C-0889 check made at the key; the ARQ transfer completes), Host `StationStatusTests` |
+| Item | Contents | Tests |
+|---|---|---|
+| **P8-1** monitor | The receive-only monitor of plan 11.6 part 2, as `s5066-test monitor`: audio from a WAV file, the UDP audio channel or a sound card (the radio project's capture path, with no playback device and a PTT that refuses to key), its own M0LTE.Ms110d demodulator, and the core's D_PDU codecs read with `PeerEdition.Any`, so it shares no state with any node. One ASCII line per D_PDU (time, burst waveform and SNR, type, addresses, sequence numbers and windows, EOW, EOT, data length, CRC result), a line per burst start and end, a summary per source and destination, and the same records as JSON lines (`--jsonl`). It never transmits. No pcap output yet (plan 11.5). User docs in `docs/s5066-test.md` | T4: a synthesised two-station WAV (48 kHz, one data CRC broken on purpose) decodes to the expected lines and JSON records; a third station on the in-process audio medium hears, byte for byte, every D_PDU two s5066d hosts sent during a confirmed ARQ exchange |
+| **P8-2** station ID and status | The optional CW ID (`host.station.cw_id`, section 10 item 13): Morse audio with PARIS timing and raised-cosine keying, keyed after TXDELAY and before the burst of a keyup the core was granted, at start (first keyup after start-up or after 10 quiet minutes) and every N minutes while transmitting; nothing at the end of a transmission (D4). The station status page (`host.status_listen`, section 12.12). One core change: the read-only diagnostic `Node.QueueDepths` (internal, visible to the host). CAT control and the apt package are a later phase 8 item. Rows: K-0007 (reading revised) | Host `StationIdTests` (a Goertzel CW decoder reads the audio back as the configured text; PARIS timing; no keying steps; the schedule on a virtual clock), Radio `CwIdTests` (the keyup layout), T3 `IdentificationTests` (the C-0844 and C-0889 check made at the key; the ARQ transfer completes), Host `StationStatusTests` |
 
 ---
 
