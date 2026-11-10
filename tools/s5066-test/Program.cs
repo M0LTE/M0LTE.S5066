@@ -12,7 +12,9 @@ const string Usage = """
       s5066-test file --to addr (--path file | --bytes n) [--confirm none|node|client] [--window n] [--no-verdict]
       s5066-test perf --to addr [--count n] [--size bytes] [--mode arq|nonarq] [--confirm none|node|client] [--echo] [--window n]
       s5066-test info [--node host:port]
-    Every command but the interactive one and serve prints a JSON result and exits 0 on pass, 1 on fail.
+      s5066-test monitor (--wav file | --udp host:port | --card alsa-device [--rate 48000]) [--jsonl file] [--quiet]
+    monitor is receive only: it decodes every D_PDU heard and never transmits.
+    Every command but the interactive one, serve and monitor prints a JSON result and exits 0 on pass, 1 on fail.
     Common: --node (default 127.0.0.1:5066), --sap (data SAP, default 13), --priority, --ttl, --timeout seconds.
     """;
 
@@ -92,12 +94,31 @@ try
             return await RunAndReportAsync(scenario, Directory.GetCurrentDirectory(), opts.GetValueOrDefault("--json"), flags.Contains("--quiet"));
         }
 
+        case "monitor":
+        {
+            using var stop = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                stop.Cancel();
+            };
+            return await M0LTE.S5066.TestClient.Monitor.MonitorCommand.RunAsync(
+                opts.GetValueOrDefault("--wav"),
+                opts.GetValueOrDefault("--udp"),
+                opts.GetValueOrDefault("--card"),
+                Int(opts, "--rate") ?? 48000,
+                opts.GetValueOrDefault("--jsonl"),
+                flags.Contains("--quiet"),
+                stop.Token);
+        }
+
         default:
             Console.Error.WriteLine(Usage);
             return 2;
     }
 }
-catch (Exception e) when (e is FormatException or OverflowException or JsonException or IOException or System.Net.Sockets.SocketException)
+catch (Exception e) when (e is FormatException or OverflowException or JsonException or IOException or System.Net.Sockets.SocketException
+    || M0LTE.S5066.TestClient.Monitor.MonitorCommand.IsUserError(e))
 {
     Console.Error.WriteLine($"s5066-test: {e.Message}");
     return 2;

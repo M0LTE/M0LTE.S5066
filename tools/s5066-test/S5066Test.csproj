@@ -1,9 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- s5066-test: the 5066 test client (plan 11.6, decision D8). Talks to any node over the SIS, on M0LTE.S5066.Client only. -->
+  <!--
+    s5066-test: the 5066 test client (plan 11.6, decision D8). The SIS part talks to any node over
+    the SIS, on M0LTE.S5066.Client only. The monitor (P8-1) is receive only: its own M0LTE.Ms110d
+    demodulator and the core's D_PDU codecs, with sound card capture from the radio project.
+
+    Licence: through the radio project it links pdn-soundmodem, so like s5066d it is distributed
+    under AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only (see M0LTE.S5066.Radio.csproj).
+  -->
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <PackageLicenseExpression>AGPL-3.0-or-later AND GPL-3.0-or-later AND GPL-3.0-only</PackageLicenseExpression>
     <AssemblyName>s5066-test</AssemblyName>
     <RootNamespace>M0LTE.S5066.TestClient</RootNamespace>
     <IsPackable>false</IsPackable>
@@ -11,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+    <ProjectReference Include="../../src/M0LTE.S5066.Radio/M0LTE.S5066.Radio.csproj" />
   </ItemGroup>
 
   <ItemGroup>

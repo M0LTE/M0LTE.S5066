@@ -700,6 +700,15 @@ Phase 7 done when: every scenario above passes; P7-10's curve beats the baseline
 
 Phase 7 coverage: the EOW rows C-0416 to C-0491, the rate selection rows C-0918 to C-0960 and C-1019 are each cited by an item above, except the rows the matrix marks as not applying (C-0400, C-0403, C-0404, C-0411, C-0414, C-0457, C-0458, C-0922 to C-0925, C-0928, C-0934), which need no test, and the info rows C-0926 and C-0933, cited for context. The reviewer of P7-10 re-runs the coverage check of this section against the matrix of that day.
 
+
+### Phase 8: station and packaging
+
+Plan 12 phase 8. Items run in parallel; each adds its own row.
+
+| Item | Contents | Tests |
+|---|---|---|
+| **P8-1** monitor | The receive-only monitor of plan 11.6 part 2, as `s5066-test monitor`: audio from a WAV file, the UDP audio channel or a sound card (the radio project's capture path, with no playback device and a PTT that refuses to key), its own M0LTE.Ms110d demodulator, and the core's D_PDU codecs read with `PeerEdition.Any`, so it shares no state with any node. One ASCII line per D_PDU (time, burst waveform and SNR, type, addresses, sequence numbers and windows, EOW, EOT, data length, CRC result), a line per burst start and end, a summary per source and destination, and the same records as JSON lines (`--jsonl`). It never transmits. No pcap output yet (plan 11.5). User docs in `docs/s5066-test.md` | T4: a synthesised two-station WAV (48 kHz, one data CRC broken on purpose) decodes to the expected lines and JSON records; a third station on the in-process audio medium hears, byte for byte, every D_PDU two s5066d hosts sent during a confirmed ARQ exchange |
+
 ---
 
 ## 10. Choices the standard does not make (NOT STATED)
