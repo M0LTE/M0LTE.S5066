@@ -1,0 +1,106 @@
+{
+  "profile": "final",
+  "channels": [
+    "awgn",
+    "poor",
+    "poor-ssb"
+  ],
+  "snr_tenth_db": [
+    0,
+    30,
+    60,
+    90,
+    120,
+    150,
+    180,
+    210,
+    240,
+    270,
+    300
+  ],
+  "configs": [
+    {
+      "id": "fixed-wn1-long",
+      "spec": "fixed:wn1-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn2-long",
+      "spec": "fixed:wn2-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn3-long",
+      "spec": "fixed:wn3-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn4-long",
+      "spec": "fixed:wn4-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn5-long",
+      "spec": "fixed:wn5-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn6-long",
+      "spec": "fixed:wn6-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn7-long",
+      "spec": "fixed:wn7-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn8-long",
+      "spec": "fixed:wn8-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "fixed-wn13-long",
+      "spec": "fixed:wn13-long",
+      "table_fnv1a64": "b934c86f612b17dc"
+    },
+    {
+      "id": "adaptive-ms110d-cs-0.6.1",
+      "spec": "adaptive:ms110d-cs-0.6.1",
+      "table_fnv1a64": "d2521f8f279cc235"
+    }
+  ],
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "duration_ms": 1800000,
+  "warmup_ms": 60000,
+  "node_overlay": {
+    "csma": {
+      "mode": "jitter",
+      "num_cont_slots": 8,
+      "cont_slot_width_ms": 3000,
+      "lbt_wait_dcd_ms": 2000,
+      "lbt_wait_vdcd_ms": 3000
+    },
+    "dts": {
+      "max_transmission_ms": 30000
+    },
+    "cas": {
+      "max_links": 4,
+      "link_request_retries": 5,
+      "break_retries": 3,
+      "first_data_timeout_ms": 456000
+    }
+  },
+  "versions": {
+    "hfchannel": "0.2.0\u002B6b9323b7700144bcca09cea208a9cfd0983e0b8a",
+    "ms110d": "0.6.1\u002Bae8ab3566473568a14e8f64e7f24753690353c4d",
+    "s5066_core": "0.1.2\u002B2ee88f4a71b6dc97d38ec953f14284f820bd411e",
+    "ssb_passband": "400-2600 Hz"
+  }
+}
