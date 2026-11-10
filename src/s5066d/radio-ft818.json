@@ -23,6 +23,9 @@
   "dts": { "max_transmission_ms": 6000 },
   "host": {
     "sis_listen": "127.0.0.1:5066",
+    // The station status page, http://127.0.0.1:8066/ on the Pi (docs/s5066d-radio.md). To send a CW
+    // ID, add "station": { "cw_id": { "text": "DE <your call>", "every_minutes": 10 } }.
+    "status_listen": "127.0.0.1:8066",
     "modem": {
       "kind": "ms110d",
       "radio": {

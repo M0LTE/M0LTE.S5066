@@ -19,7 +19,7 @@ Conventions in this document: type sketches are C# and are indicative, not final
 9. Work breakdown, phases 3 to 7
 10. Choices the standard does not make (NOT STATED)
 11. Proposed changes to the corpus format and harness contract
-12. The host: driving the core in real time (P6-3a), with the client library and chat sample (12.10) and s5066d on a radio (12.11)
+12. The host: driving the core in real time (P6-3a), with the client library and chat sample (12.10), s5066d on a radio (12.11) and the station status page and CW ID (12.12)
 
 ---
 
@@ -700,6 +700,14 @@ Phase 7 done when: every scenario above passes; P7-10's curve beats the baseline
 
 Phase 7 coverage: the EOW rows C-0416 to C-0491, the rate selection rows C-0918 to C-0960 and C-1019 are each cited by an item above, except the rows the matrix marks as not applying (C-0400, C-0403, C-0404, C-0411, C-0414, C-0457, C-0458, C-0922 to C-0925, C-0928, C-0934), which need no test, and the info rows C-0926 and C-0933, cited for context. The reviewer of P7-10 re-runs the coverage check of this section against the matrix of that day.
 
+### Phase 8: station and packaging
+
+Plan 12 phase 8. Host and `s5066d` work; the core is not changed except where a row says so.
+
+| Item | Contents | Rows | Tests |
+|---|---|---|---|
+| P8-2 | Station identification and status. The optional CW ID (`host.station.cw_id`, section 10 item 13): Morse audio with PARIS timing and raised-cosine keying, keyed after TXDELAY and before the burst of a keyup the core was granted, at start (first keyup after start-up or after 10 quiet minutes) and every N minutes while transmitting; nothing at the end of a transmission (D4). The station status page (`host.status_listen`, section 12.12). One core change: the read-only diagnostic `Node.QueueDepths` (internal, visible to the host). CAT control and the apt package are a later phase 8 item | K-0007 (reading revised) | Host `StationIdTests` (a Goertzel CW decoder reads the audio back as the configured text; PARIS timing; no keying steps; the schedule on a virtual clock), Radio `CwIdTests` (the keyup layout), T3 `IdentificationTests` (the C-0844 and C-0889 check made at the key; the ARQ transfer completes), Host `StationStatusTests` |
+
 ---
 
 ## 10. Choices the standard does not make (NOT STATED)
@@ -720,7 +728,7 @@ Each is an implementation choice a later item will need. Phase 7's choices are l
 | 10 | Request identity across the internal primitive interfaces | An integer handle allocated by the dispatcher; never on the wire | C-0039, B-0018 (notes) |
 | 11 | Timer values for CAS linking and breaking, confirmation waits, soft link times | Configurable with no default (`null` in `defaults.json`); scenarios supply them; T4 derives recommended values (plan A4). P5-1 (issue #49): the CAS timers, when null, are derived from the answer wait of C-1120 (B-0420); P5-2: so are the soft link times (A-0321) | B-0203, B-0283, A-0221, A-0226, A-0197 |
 | 12 | Where TTD wall-clock comes from in a core with no clock | `time.epoch_year`, `time.epoch_day` and `time.epoch_second` in configuration; the host sets them at start-up | A-0161, A-0162, A-0163, A-0166, A-0167 (new interp) |
-| 13 | Station-layer identification hook transmissions (D4, K-0007) | Not in phases 3 to 6. Phase 8 will need an input (hook requests a turn, with its duration) and an output (turn granted) so the hook obeys Annex K from inside the core. Both are corpus-format additions for that phase | K-0007 |
+| 13 | Station-layer identification hook transmissions (D4, K-0007) | P8-2 reading: the host keys the ID only at the start of a keyup the core has already been granted by Annex K (LINKING, after LBT and contention), after TXDELAY and before the 5066 burst, with 300 ms of silence between; never on its own, never at the end (D4). So it obeys channel access with no new core input: it starts exactly when the burst would have, never before another node's EOT end time (C-0844), and it is never inside the 5066 waveform. The EOTs stay true, since each is counted from its own D_PDU on air (C-0104, section 12.11 on TXDELAY); what grows is our keyup, by at most 20.3 s (the ID is capped at 20 s), and a peer waiting for our answer waits that much longer, inside its answer wait's slack (C-1120) on the occasional keyup that carries the ID. A departure from the letter of D4 ("a transmission of its own, queued like any other"): a separate turn would need a core input and output and corpus additions for no gain in channel access, and keyed alone after our burst it would run past the EOT we announced. The ID is in-band audio no MS110D modem locks to, so a far node without `busy_detect` cannot sense it and may start during it; with `busy_detect` the far node senses it within about 0.1 s. Pre-session: the first keyup after start-up or after 10 minutes with none; periodic: the first keyup once `every_minutes` have passed since the last ID (so an idle node stays silent) | K-0007 (reading revised P8-2) |
 | 14 | `terminate_receive` and `set_max_input_blocks` | Never emitted in phases 3 to 6 | plan 5.1 |
 | 15 | Merging an ACK into a DATA D_PDU | When a peer receives both an acknowledgement and new data in one transmission, the first data D_PDU to it becomes DATA-ACK and the ACK-ONLY is dropped; ACK-ONLY repeats in fill still refer to the same RX LWE | C-0658, C-0678 ("as appropriate"); recorded as C-1128 (P4-2), refined by C-1152 and C-1154 (P4-3) |
 | 16 | The address size m a sender uses | The smallest whole number of nibbles that holds both addresses, chosen per D_PDU; no setting (section 2.3) | C-0133 |
@@ -897,3 +905,21 @@ Added 2026-11-08 by the amendment to plan D3: a standalone `s5066d` on each mach
 | `rx_record` | WAV file for all received audio | none |
 
 `src/s5066d/radio-ft450.json` and `radio-ft818.json` are a pair for the two-radio bench (an FT-450 and an FT-818, one Raspberry Pi each): the CSMA and timer values of `bench-node1.json`, `busy_detect` on (the 1 s slots rely on it), a 300 ms TXDELAY, a low `tx_level` for the FT-450's 60 mVp-p data input, and placeholders for the device names. `docs/s5066d-radio.md` is the user's guide.
+
+### 12.12 The station status page and the CW identification (P8-2)
+
+**Status page.** `host.status_listen` (address:port, off unless set; the documented value is `127.0.0.1:8066`) starts a small read-only HTTP/1.0 server in the host library (`Station/StatusServer`): `GET /status.json` gives the status as JSON and `GET /` a page that shows it and polls every 2 s. No password and nothing can be changed, so it should stay on localhost (an SSH tunnel reaches it from elsewhere). `StationStatus` is fed by `NodeHost` on its loop, like the trace (12.9): each input and output, from which it keeps the links (`link_state`), each peer with the waveform we last sent it data on and the one we last heard it on with that burst's SNR (decoding D_PDU headers with its own copy of the codec, as `HostTrace` does), the last 20 bursts each way, and whether a transmission is in progress. After each input it samples `Node.QueueDepths`, the C_PDUs the DTS holds per destination (ARQ held or unacknowledged, non-ARQ still owed), a read-only diagnostic added to the core for this and never part of the T2 outputs. On a radio it also shows the PTT (`Keyed`) and the CW ID schedule. It observes only; nothing the node does depends on it.
+
+**CW identification.** `host.station.cw_id` (section 10 item 13 for the reading):
+
+| Key | Meaning | Default |
+|---|---|---|
+| `text` | what to send: A to Z, 0 to 9, `/ ? . , = - +` and spaces, at most 20 s long at the speed set | required |
+| `wpm` | speed, PARIS timing (one dit is 1200 / wpm ms), 5 to 40 | 20 |
+| `tone_hz` | the tone, 300 to 3000 | 1800, the modem's audio centre (plan 9.1) |
+| `level` | peak amplitude, a fraction of full scale | the radio's `tx_level` |
+| `at_start` | identify before the first keyup after start-up or after 10 minutes with none | true |
+| `every_minutes` | identify again with the first keyup once this many minutes have passed since the last ID, 1 to 60 | none |
+
+Each element rises and falls on a 5 ms raised-cosine edge inside its own time, so the timing is exact and the keying makes no clicks. The audio is made once at start-up at the sound card's rate, and `RadioAudioChannel` asks the schedule at each keyup, as the burst is queued, whether to put it after TXDELAY; the transmit guard allows for it. Only the radio medium sends it: over UDP audio `s5066d` logs a one-line warning and ignores it. Each ID sent is one log line, `radio: cw id "DE M0XYZ" (5.5 s) before this transmission`.
+

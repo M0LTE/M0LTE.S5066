@@ -105,6 +105,40 @@ Point an application, or `s5066-test`, at the SIS port (`127.0.0.1:5066` in the 
 - **TXDELAY:** neither the FT-450 nor the FT-818 manual gives its switching time, so the bench files use a safe 300 ms. If you can, measure from the PTT edge to RF out and shorten it.
 - **Passband:** both bench radios pass only about 400 to 2600 Hz on transmit, narrower than the 3 kHz waveforms, so expect the radios' filters, not the modem, to limit the faster waveforms.
 
+## Identifying your station in CW (optional)
+
+If your licence or your network asks you to identify, `s5066d` can send a short Morse ID that anyone can read by ear. It is off unless you add it, and you choose the text. Add a `station` part to `host`:
+
+```
+"host": {
+  "station": {
+    "cw_id": { "text": "DE M0XYZ", "wpm": 20, "every_minutes": 10 }
+  },
+  ...
+}
+```
+
+| Setting | What it does |
+|---|---|
+| `text` | what to send: letters, digits, spaces and `/ ? . , = - +` |
+| `wpm` | speed in words a minute (20 if not set) |
+| `tone_hz` | the tone (1800 Hz if not set, the middle of the data signal) |
+| `level` | how loud, like `tx_level` (the same as `tx_level` if not set) |
+| `at_start` | send it before the first transmission after a quiet spell of 10 minutes or more (on if not set) |
+| `every_minutes` | send it again with the next transmission once this many minutes have passed (off if not set) |
+
+The ID only ever goes out at the start of a transmission the node was already allowed to make, straight after `txdelay_ms` and just before the data, so it never starts over another station. An idle node sends nothing. It makes each transmission that carries it a few seconds longer, so keep it short: `s5066d` refuses one longer than 20 s. Each ID is one log line, `radio: cw id "DE M0XYZ" (5.5 s) before this transmission`.
+
+Other stations' modems do not hear CW as data, so they may start talking during your ID unless they have `busy_detect` on. Keep `busy_detect` on where you can.
+
+## Station status page (optional)
+
+Add `"status_listen": "127.0.0.1:8066"` to `host`, then open `http://127.0.0.1:8066/` on the Pi. It shows the links, each station heard with its waveform and SNR, what is waiting to be sent, the last bursts, the PTT and the CW ID schedule, and refreshes every 2 seconds. `http://127.0.0.1:8066/status.json` gives the same as JSON for scripts.
+
+It has no password, so keep it on `127.0.0.1`. From another machine, use an SSH tunnel: `ssh -L 8066:127.0.0.1:8066 pi@yourpi`, then open `http://127.0.0.1:8066/` there.
+
+CAT control and an apt package are not here yet; they come later.
+
 ## Running it as a service
 
 A minimal unit, `/etc/systemd/system/s5066d.service`:

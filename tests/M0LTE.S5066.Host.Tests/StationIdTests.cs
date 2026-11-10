@@ -39,6 +39,7 @@ public class StationIdTests
         Morse.Units("PARIS").Should().HaveCount(43);
         Morse.Units("PARIS PARIS").Should().HaveCount(43 + 7 + 43);
         Morse.DurationMs("PARIS", 20).Should().Be(43 * 60);
+        Morse.DurationMs("DE M0XYZ", 20).Should().Be(91 * 60, "the example in the docs, 5.5 s");
         Morse.Generate("PARIS", 20, 1800, 0.5, 48000).Should().HaveCount(43 * 60 * 48);
     }
 

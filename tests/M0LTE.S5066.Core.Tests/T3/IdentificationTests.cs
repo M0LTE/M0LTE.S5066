@@ -25,7 +25,7 @@ public class IdentificationTests(ITestOutputHelper output)
     {
         var channel = new ChannelModel(BlockErrorPpm: 100_000, BurstMissPpm: 30_000, HostLatencyMs: 50, TurnaroundMs: 100, EndOfBurstDelayMs: 50);
         var sim = new Simulation(seed, channel, [ArqTransferTests.Node("0.0.1.1", true, false), ArqTransferTests.Node("0.0.1.2", true, false)]);
-        const int IdMs = 5_000;   // about "DE M0XYZ" at 20 wpm
+        const int IdMs = 5_500;   // "DE M0XYZ" at 20 wpm, 91 dits of 60 ms
         var schedule = new CwIdSchedule(atStart: true, everyMinutes: 1);
         var keyups = new List<long>();
         sim.Identification = (node, t) =>
