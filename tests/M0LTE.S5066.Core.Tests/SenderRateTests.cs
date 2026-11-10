@@ -53,25 +53,25 @@ public class SenderRateTests
         // Interp C-1281 as revised in corpus 0.35.0 (P7-9 round 2).
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(1, true);
-        s.OnAnswered();
-        s.OnSent(2, true);
-        s.OnAnswered();
+        s.OnSent(1, true, 1);
+        s.OnDataAcknowledged(1);
+        s.OnSent(2, true, 2);
+        s.OnDataAcknowledged(2);
         s.AnsweredRung.Should().Be(2);
-        s.OnSent(0, true);                 // a short transmission at the LOW-SPEED rung
-        s.OnAnswered();
+        s.OnSent(0, true, 3);                 // a short transmission at the LOW-SPEED rung
+        s.OnDataAcknowledged(3);
         s.AnsweredRung.Should().Be(2);     // before: 0, and the next bulk transmission could go no higher than 1
-        s.OnSent(2, true);
+        s.OnSent(2, true, 4);
         s.TrialRung.Should().BeNull();
         s.OnAckWaitExpired(Table);         // silent, not a trial: rung 2 is no longer answered
         (s.AnsweredRung, s.Ceiling).Should().Be((1, null));
-        s.OnSent(2, true);
+        s.OnSent(2, true, 5);
         s.TrialRung.Should().Be(2);        // going back to it is a trial
         s.OnAckWaitExpired(Table);
         (s.Ceiling, s.AnsweredRung).Should().Be((1, 1));
         var low = new SenderRate();
         low.OnConnectionMade(0);
-        low.OnSent(0, true);
+        low.OnSent(0, true, 6);
         low.OnAckWaitExpired(Table);
         low.AnsweredRung.Should().Be(0);   // never below the lowest rung
     }
@@ -81,24 +81,24 @@ public class SenderRateTests
     {
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(1, true);
+        s.OnSent(1, true, 7);
         s.TrialRung.Should().Be(1);
         s.OnAckWaitExpired(Table);
         (s.Ceiling, s.CeilingLeft, s.HoldOff).Should().Be((0, 2, 4));
-        s.OnSent(0, true);
-        s.OnSent(0, true);
+        s.OnSent(0, true, 8);
+        s.OnSent(0, true, 9);
         s.Ceiling.Should().BeNull();
-        s.OnAnswered();
+        s.OnDataAcknowledged(9);
         s.AnsweredRung.Should().Be(0);
-        s.OnSent(1, true);
+        s.OnSent(1, true, 10);
         s.OnAckWaitExpired(Table);
         (s.Ceiling, s.CeilingLeft, s.HoldOff).Should().Be((0, 4, 5));
         for (int i = 0; i < 4; i++)
         {
-            s.OnSent(0, true);
+            s.OnSent(0, true, 11);
         }
 
-        s.OnSent(1, true);
+        s.OnSent(1, true, 12);
         s.OnAckWaitExpired(Table);
         (s.CeilingLeft, s.HoldOff).Should().Be((5, 5));
     }
@@ -108,23 +108,28 @@ public class SenderRateTests
     {
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(1, true);
+        s.OnSent(1, true, 13);
         s.OnAckWaitExpired(Table);
         s.HoldOff.Should().Be(4);
-        s.OnSent(0, true);
-        s.OnAnswered();
-        s.OnSent(0, true);
-        s.OnSent(1, true);
-        s.OnAnswered();
+        s.OnSent(0, true, 14);
+        s.OnDataAcknowledged(14);
+        s.OnSent(0, true, 15);
+        s.OnSent(1, true, 16);
+        s.OnDataAcknowledged(16);
         (s.HoldOff, s.AnsweredRung, s.TrialRung).Should().Be((0, 1, (int?)null));
 
-        s.OnSent(1, true);
+        s.OnSent(1, true, 17);
         s.OnAckWaitExpired(Table);
         s.StepDown.Should().Be(0);
-        s.OnSent(1, true);
+        s.OnSent(1, true, 18);
         s.OnAckWaitExpired(Table);
         s.StepDown.Should().Be(1);
-        s.OnAnswered();
+        s.OnDataAcknowledged(18);          // after the expiry: too late, it proves nothing
+        s.StepDown.Should().Be(1);
+        s.OnSent(0, true, 30);
+        s.OnAnswered();                    // the peer's own traffic, no acknowledgement: nothing changes
+        s.StepDown.Should().Be(1);
+        s.OnDataAcknowledged(30);
         (s.StepDown, s.SilentWaits).Should().Be((0, 0));
     }
 
@@ -133,11 +138,11 @@ public class SenderRateTests
     {
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(1, true);
-        s.OnAnswered();
+        s.OnSent(1, true, 19);
+        s.OnDataAcknowledged(19);
         s.OnAckWaitExpired(Table);   // the answer came after the transmission: not a silent wait
         (s.SilentWaits, s.Ceiling).Should().Be((0, (int?)null));
-        s.OnSent(3, false);
+        s.OnSent(3, false, 20);
         s.TrialRung.Should().BeNull();
         s.OnConnectionEnded();
         s.AnsweredRung.Should().BeNull();
@@ -148,7 +153,7 @@ public class SenderRateTests
     {
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(1, true);
+        s.OnSent(1, true, 21);
         s.OnAckWaitExpired(Table);   // a failed trial: ceiling 0 for 2 transmissions, next length 4
         s.OnConnectionEnded();
         s.OnConnectionMade(0);
@@ -157,7 +162,7 @@ public class SenderRateTests
 
         for (int i = 1; i <= 4; i++)
         {
-            s.OnSent(0, true);
+            s.OnSent(0, true, 22);
             s.OnAckWaitExpired(Table);
             s.StepDown.Should().Be(i / 2);   // every tx_step_down_waits silent waits, one more rung (interp C-1282)
         }
@@ -171,17 +176,67 @@ public class SenderRateTests
         // never come two in a row.
         var s = new SenderRate();
         s.OnConnectionMade(0);
-        s.OnSent(3, true);                    // straight to position 3: a trial
+        s.OnSent(3, true, 23);                    // straight to position 3: a trial
         s.TrialRung.Should().Be(3);
         s.OnAckWaitExpired(Table);
         (s.Ceiling, s.FailedSinceAnswer).Should().Be((2, true));
-        s.OnSent(0, true);                    // the planner keeps it at the answered rung: not a trial
+        s.OnSent(0, true, 24);                    // the planner keeps it at the answered rung: not a trial
         s.TrialRung.Should().BeNull();
         s.OnAckWaitExpired(Table);            // silent again, but not a failed trial: the ceiling stays
         (s.Ceiling, s.FailedSinceAnswer).Should().Be((2, true));
-        s.OnAnswered();
+        s.OnAnswered();                       // heard, but the last transmission carried unacknowledged data
+        s.FailedSinceAnswer.Should().BeTrue();
+        s.OnSent(0, true, 25);
+        s.OnDataAcknowledged(25);
         s.FailedSinceAnswer.Should().BeFalse();
         s.OnConnectionMade(0);
         s.FailedSinceAnswer.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Only_an_acknowledgement_of_its_data_answers_a_transmission()
+    {
+        // Coordinator ruling 2026-11-10 (interp C-1281 as revised in corpus 0.38.0, P7-9e): the peer's own
+        // traffic while our data goes unacknowledged is no answer, so the trial fails at the expiry.
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(2, true, 1);                 // a trial
+        s.OnAnswered();                       // the peer's own DATA-ONLY, acknowledging nothing of ours
+        s.OnSent(2, false, 2);                // our ACK-ONLY for it, no ARQ data
+        s.OnAnswered();                       // still nothing acknowledges the trial's data
+        (s.AnsweredRung, s.TrialRung).Should().Be((0, 2));
+        s.OnDataAcknowledged(0);              // an older transmission's D_PDU: not this one
+        s.OnAckWaitExpired(Table);
+        (s.Ceiling, s.FailedSinceAnswer, s.SilentWaits).Should().Be((1, true, 1));
+
+        s.OnSent(0, true, 3);
+        s.OnDataAcknowledged(3);              // acknowledged: answered
+        (s.AnsweredRung, s.FailedSinceAnswer, s.SilentWaits).Should().Be((0, false, 0));
+        s.OnSent(1, false, 4);                // no ARQ data: any answer still proves its rung
+        s.OnAnswered();
+        s.AnsweredRung.Should().Be(1);
+        s.OnAckWaitExpired(Table);            // nothing awaited: not a silent wait
+        s.SilentWaits.Should().Be(0);
+    }
+
+    [Fact]
+    public void An_acknowledgement_that_fails_all_of_the_awaited_data_is_no_answer()
+    {
+        // Reviewer decision on ruling 2026-11-10 (g), interp C-1281: an ACK marking every D_PDU of the awaited
+        // transmission failed (C-0908, C-0910) stops dts.ack_wait without an expiry, so it counts as one.
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(2, true, 1);                 // a trial
+        s.OnDataAllFailed(0, Table);          // an older transmission: nothing
+        s.TrialRung.Should().Be(2);
+        s.OnDataAllFailed(1, Table);          // the trial's data reported lost: a failed trial
+        (s.Ceiling, s.FailedSinceAnswer, s.SilentWaits, s.TrialRung).Should().Be((1, true, 1, (int?)null));
+        s.OnAckWaitExpired(Table);            // nothing awaited any more: not counted twice
+        s.SilentWaits.Should().Be(1);
+
+        s.OnSent(0, true, 2);
+        s.OnDataAcknowledged(2);
+        s.OnDataAllFailed(2, Table);          // already answered: nothing
+        (s.FailedSinceAnswer, s.SilentWaits).Should().Be((false, 0));
     }
 }

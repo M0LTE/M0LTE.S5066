@@ -118,6 +118,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     private readonly List<ArqCPdu> _arq = [];
     private readonly SortedDictionary<uint, ArqLink> _links = new();
     private readonly SortedSet<uint> _sentArqPeers = new();
+
+    /// <summary>Transmissions built so far: the number of the one being built, which each ARQ D_PDU placed in it records (ruling 2026-11-10, interp C-1281).</summary>
+    private long _builds;
     private readonly SortedSet<uint> _sentPeers = new();
     private readonly List<(int Handle, bool Expedited)> _sent = [];
     private readonly List<int> _droppedNormal = [];
@@ -510,12 +513,24 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
+        var failedIn = new SortedSet<long>();   // the transmissions whose D_PDUs this acknowledgement failed
         foreach (ArqFrame f in link.Outstanding)
         {
             if (f.State == ArqFrameState.Awaiting && (nacked.Contains(f.Fsn) || seq.Distance(rxLwe, f.Fsn) > lastExplicit))
             {
                 f.State = ArqFrameState.Failed;   // C-0908, C-0910
+                failedIn.Add(f.SentIn);
             }
+        }
+
+        // The transmission whose acknowledgement the sender's rate state awaits has had every D_PDU still
+        // awaiting failed, none acknowledged: unanswered, as at an expiry (interp C-1281). A data
+        // acknowledgement above has already cleared the awaited state, so this is then a no-op.
+        if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate rate
+            && rate.DataAwaited && rate.DataTransmission is long awaited && failedIn.Contains(awaited)
+            && !link.Outstanding.Any(f => f.SentIn == awaited && f.State == ArqFrameState.Awaiting))
+        {
+            rate.OnDataAllFailed(awaited, _context.Config.Drc.Table);
         }
 
         if (!link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))
@@ -540,10 +555,18 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// <summary>The receive side processed data from the peer and owes it an acknowledgement (C-0174, C-0242): the queue may now have something to place.</summary>
     public void AckOwed() => _mac.QueueState(Placeable());
 
-    private static void Acknowledge(ArqLink link, ArqFrame f)
+    /// <summary>
+    /// The peer acknowledged <paramref name="f"/>: it leaves the window, and the transmission it was last
+    /// placed in counts as answered for the sender's rate state (ruling 2026-11-10, interp C-1281).
+    /// </summary>
+    private void Acknowledge(ArqLink link, ArqFrame f)
     {
         link.Outstanding.Remove(f);   // the FSN may be reused (C-0767)
         f.Owner.Unacked--;
+        if (!_context.Config.Drc.Table.IsEmpty)
+        {
+            RateStateOf(link.Peer)?.Sender.OnDataAcknowledged(f.SentIn);
+        }
     }
 
     /// <summary>One diagnostic line with the link's window edges (issue #86); nothing when no sink is set.</summary>
@@ -617,6 +640,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         (Speed speed, int position, long capacity) = Shape();
+        _builds++;
         BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
         (List<ControlItem> chosenControl, List<Piece> chosen) = Select(capacity, shape);
         if (chosenControl.Count == 0 && chosen.Count == 0)
@@ -919,7 +943,7 @@ internal sealed class TransmitQueue : ITransmissionSource
             _context.TransmitSpeeds[peer] = speed;
             if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate s)
             {
-                s.OnSent(position, _sentArqPeers.Contains(peer));
+                s.OnSent(position, _sentArqPeers.Contains(peer), _builds);
             }
         }
     }
@@ -1642,6 +1666,7 @@ internal sealed class TransmitQueue : ITransmissionSource
                     f.Fsn == link.TxLwe);
                 var header = Header(TakeEow(link.Peer, false), eot, link.Peer);
                 f.State = ArqFrameState.Awaiting;
+                f.SentIn = _builds;
                 link.ArqUsed = true;
                 _sentArqPeers.Add(link.Peer);
                 if (d.Ack is AckPiece ack)

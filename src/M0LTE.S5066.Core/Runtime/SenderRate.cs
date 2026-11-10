@@ -43,8 +43,19 @@ internal sealed class SenderRate
     /// </summary>
     public bool FailedSinceAnswer { get; set; }
 
-    /// <summary>The peer has answered (C-1250) since our last transmission that carried ARQ data to it.</summary>
-    public bool HeardSinceSent { get; set; } = true;
+    /// <summary>
+    /// The last transmission that carried ARQ data to this peer awaits its acknowledgement (coordinator
+    /// ruling 2026-11-10, interp C-1281): set when it is sent, cleared when the peer acknowledges at least
+    /// one D_PDU it carried or when <c>dts.ack_wait</c> expires first. Until then other answers from the
+    /// peer (C-1250) say nothing about the rung.
+    /// </summary>
+    public bool DataAwaited { get; set; }
+
+    /// <summary>The last transmission that carried a D_PDU to this peer carried ARQ data.</summary>
+    public bool LastSentData { get; set; }
+
+    /// <summary>The build number of the last transmission that carried ARQ data to this peer, or null.</summary>
+    public long? DataTransmission { get; set; }
 
     /// <summary><c>dts.ack_wait</c> expiries in a row with no answer from the peer (open question 16).</summary>
     public int SilentWaits { get; set; }
@@ -72,7 +83,7 @@ internal sealed class SenderRate
         AnsweredRung = defaultRung;
         TrialRung = null;
         FailedSinceAnswer = false;
-        HeardSinceSent = true;
+        DataAwaited = false;
         SilentWaits = 0;
         StepDown = 0;
     }
@@ -83,19 +94,21 @@ internal sealed class SenderRate
         AnsweredRung = null;
         TrialRung = null;
         FailedSinceAnswer = false;
-        HeardSinceSent = true;
+        DataAwaited = false;
         SilentWaits = 0;
         StepDown = 0;
     }
 
     /// <summary>
-    /// A transmission at <paramref name="rung"/> carried a D_PDU to this peer; <paramref name="arqData"/>
-    /// when it carried ARQ data, so an answer is awaited (open question 16). A ceiling in force counts
-    /// down one transmission and is lifted at 0.
+    /// A transmission at <paramref name="rung"/>, build number <paramref name="transmission"/>, carried a
+    /// D_PDU to this peer; <paramref name="arqData"/> when it carried ARQ data, so its acknowledgement is
+    /// awaited (open question 16; ruling 2026-11-10). A ceiling in force counts down one transmission and
+    /// is lifted at 0.
     /// </summary>
-    public void OnSent(int rung, bool arqData)
+    public void OnSent(int rung, bool arqData, long transmission)
     {
         LastSentRung = rung;
+        LastSentData = arqData;
         if (Ceiling is not null && --CeilingLeft <= 0)
         {
             Ceiling = null;
@@ -105,19 +118,50 @@ internal sealed class SenderRate
         if (arqData)
         {
             DataRung = rung;
-            HeardSinceSent = false;
+            DataTransmission = transmission;
+            DataAwaited = true;
             TrialRung = AnsweredRung is int answered && rung > answered ? rung : null;
         }
     }
 
     /// <summary>
-    /// The peer answered (C-1250): the silence count and the step down end, a trial in flight has
-    /// succeeded (its hold-off goes back to the initial length), and the rung last sent counts as
-    /// answered when it is above the highest answered so far (interp C-1281).
+    /// The peer answered (C-1250). When our last transmission to it carried ARQ data this says nothing
+    /// about the rung (ruling 2026-11-10, interp C-1281): the peer may be answering with its own traffic
+    /// without having decoded ours, so only an acknowledgement of that data counts
+    /// (<see cref="OnDataAcknowledged"/>). When it carried none and no ARQ data awaits its
+    /// acknowledgement, the rule for such a transmission stands: the silence count and the step down end, and its
+    /// rung counts as answered when it is above the highest answered so far.
     /// </summary>
     public void OnAnswered()
     {
-        HeardSinceSent = true;
+        if (LastSentData || DataAwaited)
+        {
+            return;
+        }
+
+        Proven(LastSentRung);
+    }
+
+    /// <summary>
+    /// The peer acknowledged a D_PDU last placed in build number <paramref name="transmission"/> (ruling
+    /// 2026-11-10, interp C-1281). When that is the transmission whose acknowledgement is awaited, it is
+    /// answered: the silence count and the step down end, a trial on it has succeeded (its hold-off goes
+    /// back to the initial length), and its rung counts as answered when it is above the highest answered
+    /// so far. An acknowledgement of an older transmission's D_PDU proves nothing about the last one.
+    /// </summary>
+    public void OnDataAcknowledged(long transmission)
+    {
+        if (!DataAwaited || transmission != DataTransmission)
+        {
+            return;
+        }
+
+        DataAwaited = false;
+        Proven(DataRung);
+    }
+
+    private void Proven(int? rung)
+    {
         SilentWaits = 0;
         StepDown = 0;
         FailedSinceAnswer = false;
@@ -127,26 +171,45 @@ internal sealed class SenderRate
             TrialRung = null;
         }
 
-        if (LastSentRung is int sent)
+        if (rung is int sent)
         {
             AnsweredRung = AnsweredRung is int answered ? Math.Max(answered, sent) : sent;
         }
     }
 
     /// <summary>
-    /// <c>dts.ack_wait</c> expired for this peer and the connection was not lost. With nothing heard
-    /// from the peer since the transmission (open question 16) it is a silent wait: a trial in flight
-    /// has failed and caps the peer below it (design shape item 7); otherwise the rung of the
+    /// <c>dts.ack_wait</c> expired for this peer and the connection was not lost. With the ARQ data of the
+    /// last data transmission still unacknowledged (open question 16; ruling 2026-11-10, whatever else the
+    /// peer has sent meanwhile) it is a silent wait: a trial in flight has failed and caps the peer below it (design shape item 7); otherwise the rung of the
     /// unanswered data no longer counts as answered, so the answered rung goes below it and going back
     /// to it is a trial again (interp C-1281); and every <c>tx_step_down_waits</c> silent waits in a
     /// row step one rung down (plan 6.2).
     /// </summary>
-    public void OnAckWaitExpired(DrcTable table)
+    public void OnAckWaitExpired(DrcTable table) => Unanswered(table);
+
+    /// <summary>
+    /// An ACK-ONLY or DATA-ACK from the peer acknowledged none of the D_PDUs last placed in build number
+    /// <paramref name="transmission"/> and marked every one of them still awaiting an acknowledgement
+    /// failed (C-0908, C-0910, interp C-1121), so <c>dts.ack_wait</c> may stop without an expiry. When that
+    /// is the transmission whose acknowledgement is awaited it is unanswered, as at an expiry (reviewer
+    /// decision on ruling 2026-11-10 (g), interp C-1281): the peer has reported its data lost.
+    /// </summary>
+    public void OnDataAllFailed(long transmission, DrcTable table)
     {
-        if (HeardSinceSent)
+        if (transmission == DataTransmission)
+        {
+            Unanswered(table);
+        }
+    }
+
+    private void Unanswered(DrcTable table)
+    {
+        if (!DataAwaited)
         {
             return;
         }
+
+        DataAwaited = false;
 
         if (TrialRung is int failed)
         {
