@@ -32,6 +32,7 @@ public partial class P77Scenarios
 
         Save("tx-peer-traffic-is-no-answer", PeerTrafficIsNoAnswer());
         Save("tx-step-down-despite-peer-traffic", StepDownDespitePeerTraffic());
+        Save("tx-ack-failing-all-is-no-answer", AckFailingAllIsNoAnswer());
     }
 
     /// <summary>The peer's own ARQ U_PDU 'chat' from its SAP 9 to our SAP 5, as a C_PDU, TTD as <see cref="ArqCpdu"/>.</summary>
@@ -182,6 +183,47 @@ public partial class P77Scenarios
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         burst = (t + 5000) / 1000 * 1000;
         b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        return b;
+    }
+
+    private static ScenarioBuilder AckFailingAllIsNoAnswer()
+    {
+        var d = new Draws();
+        var b = new ScenarioBuilder(
+            "drc-tx-ack-failing-all-is-no-answer",
+            ["C-1281", "C-1121", "C-0908", "C-0910", "C-0776", "C-1120", "C-0929", "C-0894", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
+            "A trial whose D_PDUs the peer's acknowledgement marks all failed is a failed trial at once, though dts.ack_wait stops without expiring: for the rung only an acknowledgement of the transmission's D_PDUs is an answer.",
+            ArqConfig(Table(), A2L, A4L),
+            ArqCommon + TableNote
+            + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung, one above the answered rung drc.default_speed WN 2 Long: a trial. The peer's ACK-ONLY with RX LWE 0 and no selective bits follows: FSN 0 is at the RX LWE, so the peer has not received it (C-0776) and it has failed (C-0908, C-0910, interp C-1121); nothing awaits an acknowledgement, so dts.ack_wait stops (C-1120) without an expiry. The ACK is an answer for link failure (C-1250) but acknowledges none of the trial's D_PDUs and fails every one, so the trial is unanswered as at an expiry (interp C-1281 as revised in corpus 0.38.0): a failed trial (before, the trial was neither answered nor failed and FSN 0 went again at WN 4 Long, a trial again). The peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions and, until a transmission is answered, nothing goes above the answered rung. The burst was addressed only to us: LBT rule 1 from its predicted end, then contention, and FSN 0 is retransmitted at WN 2 Long, keeping its size (C-0549), not a trial. The ACK-ONLY (RX LWE 1) acknowledges it: answered; the queue is empty, so dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000).");
+        long t = CallerOpening(b, d);
+        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+
+        // The trial at WN 4 Long.
+        var tx = DataTx(A4L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A4L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+
+        // The peer's acknowledgement fails FSN 0: the wait stops, a failed trial.
+        long burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(0)).ExpectTimerCancel("dts.ack_wait/0.0.1.3");
+        b.BurstEnded(burst + 2000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", (burst + 1000 + 5000) - (burst + 2000));
+        t = burst + 6000;
+        int w = d.Next();
+        b.TimerExpired(t, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t += w;
+        tx = DataTx(A2L, 0, ping);
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
         return b;

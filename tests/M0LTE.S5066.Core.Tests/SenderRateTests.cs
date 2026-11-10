@@ -218,4 +218,25 @@ public class SenderRateTests
         s.OnAckWaitExpired(Table);            // nothing awaited: not a silent wait
         s.SilentWaits.Should().Be(0);
     }
+
+    [Fact]
+    public void An_acknowledgement_that_fails_all_of_the_awaited_data_is_no_answer()
+    {
+        // Reviewer decision on ruling 2026-11-10 (g), interp C-1281: an ACK marking every D_PDU of the awaited
+        // transmission failed (C-0908, C-0910) stops dts.ack_wait without an expiry, so it counts as one.
+        var s = new SenderRate();
+        s.OnConnectionMade(0);
+        s.OnSent(2, true, 1);                 // a trial
+        s.OnDataAllFailed(0, Table);          // an older transmission: nothing
+        s.TrialRung.Should().Be(2);
+        s.OnDataAllFailed(1, Table);          // the trial's data reported lost: a failed trial
+        (s.Ceiling, s.FailedSinceAnswer, s.SilentWaits, s.TrialRung).Should().Be((1, true, 1, (int?)null));
+        s.OnAckWaitExpired(Table);            // nothing awaited any more: not counted twice
+        s.SilentWaits.Should().Be(1);
+
+        s.OnSent(0, true, 2);
+        s.OnDataAcknowledged(2);
+        s.OnDataAllFailed(2, Table);          // already answered: nothing
+        (s.FailedSinceAnswer, s.SilentWaits).Should().Be((false, 0));
+    }
 }

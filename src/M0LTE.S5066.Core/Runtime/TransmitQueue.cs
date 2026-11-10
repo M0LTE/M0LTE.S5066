@@ -513,12 +513,24 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
+        var failedIn = new SortedSet<long>();   // the transmissions whose D_PDUs this acknowledgement failed
         foreach (ArqFrame f in link.Outstanding)
         {
             if (f.State == ArqFrameState.Awaiting && (nacked.Contains(f.Fsn) || seq.Distance(rxLwe, f.Fsn) > lastExplicit))
             {
                 f.State = ArqFrameState.Failed;   // C-0908, C-0910
+                failedIn.Add(f.SentIn);
             }
+        }
+
+        // The transmission whose acknowledgement the sender's rate state awaits has had every D_PDU still
+        // awaiting failed, none acknowledged: unanswered, as at an expiry (interp C-1281). A data
+        // acknowledgement above has already cleared the awaited state, so this is then a no-op.
+        if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate rate
+            && rate.DataAwaited && rate.DataTransmission is long awaited && failedIn.Contains(awaited)
+            && !link.Outstanding.Any(f => f.SentIn == awaited && f.State == ArqFrameState.Awaiting))
+        {
+            rate.OnDataAllFailed(awaited, _context.Config.Drc.Table);
         }
 
         if (!link.Outstanding.Any(f => f.State == ArqFrameState.Awaiting))

@@ -185,7 +185,24 @@ internal sealed class SenderRate
     /// to it is a trial again (interp C-1281); and every <c>tx_step_down_waits</c> silent waits in a
     /// row step one rung down (plan 6.2).
     /// </summary>
-    public void OnAckWaitExpired(DrcTable table)
+    public void OnAckWaitExpired(DrcTable table) => Unanswered(table);
+
+    /// <summary>
+    /// An ACK-ONLY or DATA-ACK from the peer acknowledged none of the D_PDUs last placed in build number
+    /// <paramref name="transmission"/> and marked every one of them still awaiting an acknowledgement
+    /// failed (C-0908, C-0910, interp C-1121), so <c>dts.ack_wait</c> may stop without an expiry. When that
+    /// is the transmission whose acknowledgement is awaited it is unanswered, as at an expiry (reviewer
+    /// decision on ruling 2026-11-10 (g), interp C-1281): the peer has reported its data lost.
+    /// </summary>
+    public void OnDataAllFailed(long transmission, DrcTable table)
+    {
+        if (transmission == DataTransmission)
+        {
+            Unanswered(table);
+        }
+    }
+
+    private void Unanswered(DrcTable table)
     {
         if (!DataAwaited)
         {
