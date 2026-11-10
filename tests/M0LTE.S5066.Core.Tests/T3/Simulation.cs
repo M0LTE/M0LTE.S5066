@@ -301,7 +301,7 @@ internal sealed class Simulation
                 break;
             case Transmit tx:
                 int given = n.Heard.Count;   // the headers this core had been given when it decided
-                At(t + _channel.TurnaroundMs, PhaseChannel, now => AirStart(n, t, now, tx, given));
+                At(t + _channel.TurnaroundMs, PhaseChannel, now => Key(n, t, now, tx, given));
                 break;
             case SisBytesOut b:
                 SisPrimitive? p = SisCodec.DecodeFrame(b.Bytes.Span).Primitive;
@@ -321,6 +321,75 @@ internal sealed class Simulation
 
                 break;
         }
+    }
+
+    /// <summary>
+    /// The station's identification hook (P8-2; core-architecture.md 10 item 13), or null for none:
+    /// called with the node and the time at each keyup, it gives the length in ms of an
+    /// identification keyed ahead of the burst, or 0. The ID is in-band audio no modem locks to: it
+    /// raises no DCD at the other nodes, corrupts any burst they are receiving while it lasts, and
+    /// keeps the sender off receive (half duplex). The burst starts when it ends.
+    /// </summary>
+    public Func<int, long, int>? Identification { get; set; }
+
+    /// <summary>Every identification keyed: node, start and end.</summary>
+    public List<(int Node, long Start, long End)> Identifications { get; } = [];
+
+    /// <summary>
+    /// The node keys up for the transmission its core decided on at <paramref name="emitT"/>: with an
+    /// identification, the checks of <see cref="AirStart"/> are made at the key, the identification
+    /// is on air, and the burst follows it; otherwise the burst starts at once.
+    /// </summary>
+    private void Key(SimNode sender, long emitT, long key, Transmit tx, int given)
+    {
+        int idMs = key < sender.DeadFrom ? Identification?.Invoke(sender.Index, key) ?? 0 : 0;
+        if (idMs <= 0)
+        {
+            AirStart(sender, emitT, key, tx, given);
+            return;
+        }
+
+        if (sender.OnAirUntil > key)
+        {
+            _violations.Add($"node {sender.Index}: identification at {key} while still on air to {sender.OnAirUntil}");
+        }
+
+        // C-0844, C-0889 at the key, as for a burst: never over a transmission another node announced (K-0007).
+        for (int i = 0; i < given; i++)
+        {
+            (long end, int burstId) = sender.Heard[i];
+            if (key < end)
+            {
+                _violations.Add($"node {sender.Index}: identification at {key} before {end}, announced by burst {burstId}");
+            }
+        }
+
+        foreach (SimBurst other in _bursts)
+        {
+            if (other.Sender != sender.Index && other.Start <= key && other.End > key)
+            {
+                Collisions++;
+            }
+        }
+
+        Identifications.Add((sender.Index, key, key + idMs));
+        sender.OnAirUntil = key + idMs;
+        if (sender.Rx is { } cut)
+        {
+            sender.Rx = null;
+            Modem(sender, new BurstEnded(Math.Max(key + _channel.HostLatencyMs, cut.StartedInputT), BurstEndReason.SignalLost,
+                tx.Wn, tx.Interleaver, tx.K, null, 0));
+        }
+
+        foreach (SimNode r in _nodes)
+        {
+            if (r != sender && r.Rx is { } locked)
+            {
+                locked.Corrupt.Add((key, key + idMs));
+            }
+        }
+
+        At(key + idMs, PhaseChannel, now => AirStart(sender, emitT, now, tx, given));
     }
 
     /// <summary>A burst goes on air: the C-0844 and C-0889 check, half duplex, then each receiver.</summary>
@@ -419,6 +488,15 @@ internal sealed class Simulation
                 if (other != burst && other.Sender != r.Index && other.End > start)
                 {
                     rx.Corrupt.Add((start, other.End));
+                }
+            }
+
+            // Likewise an identification another node still has on air.
+            foreach ((int idNode, long idStart, long idEnd) in Identifications)
+            {
+                if (idNode != r.Index && idNode != sender.Index && idEnd > start)
+                {
+                    rx.Corrupt.Add((Math.Max(idStart, start), idEnd));
                 }
             }
 

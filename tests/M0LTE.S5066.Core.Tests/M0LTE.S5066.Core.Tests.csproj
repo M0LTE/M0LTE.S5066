@@ -4,4 +4,9 @@
     <ProjectReference Include="../../src/M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The host's CW ID schedule, pure code, run in the T3 simulation on its virtual clock (P8-2). -->
+    <Compile Include="../../src/M0LTE.S5066.Host/Station/CwIdSchedule.cs" Link="T3/CwIdSchedule.cs" />
+  </ItemGroup>
+
 </Project>
