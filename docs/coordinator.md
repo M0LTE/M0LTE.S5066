@@ -50,3 +50,8 @@ Exact next steps, in order:
 4. DONE: docs/rate-selection.md filled, plan 12 and docs/status.md updated, phase 7 complete with that one exception.
 Next: phase 8 (monitor part of s5066-test and station hooks per plan 12), the radio bench with Tom's FT-450 and FT-818 when he says the interfaces are built, issues #109 and any open ones.
 Tracking issue: see the open "Phase 7 close-out" issue.
+
+## Resumed 2026-11-11 (Tom's allowance reset; push to completion, parallel agents allowed)
+- Releasing M0LTE.S5066 0.1.3 (tag on 8ed53d5).
+- In flight in parallel: P8-1 receive-only monitor in tools/s5066-test; P8-2 CW ID hooks (D4) and s5066d status page; P8-3 .deb packaging for s5066d and s5066-test attached to GitHub releases (not the packet-net apt repo without Tom's OK); #109 diagnosis (core). Each gets one Opus reviewer, then merge.
+- Then: CAT (rigctld or native, PKTUSB plus wide filter per Tom's preference), the phase 8 bench done-when on radio1/radio2 with Tom's FT-450 and FT-818 once he says the interfaces are built, phase 9 on air (GB7RDG and SA6DAZ), phase 10 (CFTP Annex V, IP client).
