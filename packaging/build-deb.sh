@@ -44,7 +44,7 @@ publish() { # <project> <assembly name> <outdir>
   dotnet publish "$ROOT/$1" \
     --configuration Release --runtime "$RID" --self-contained true \
     -p:PublishSingleFile=true -p:PublishTrimmed=false -p:PublishAot=false \
-    -p:Version="$VERSION" -p:DebugType=none -p:GenerateDocumentationFile=false \
+    -p:Version="${VERSION%%[~+]*}" -p:DebugType=none -p:GenerateDocumentationFile=false \
     --output "$3"
 }
 
