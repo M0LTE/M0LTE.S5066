@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using M0LTE.S5066.Core.Runtime;
 using M0LTE.S5066.Host;
 
 namespace M0LTE.S5066.Sweep;
@@ -97,6 +98,18 @@ internal sealed record SweepSettings
 
     public string? TablesDir { get; init; }
 
+    /// <summary>
+    /// <c>cas.first_data_timeout_ms</c> for every run of the sweep: null leaves the sweep node file's value
+    /// (unset, so derived per node: three answer waits with an empty table, more with a ladder, interp
+    /// B-0420); <c>derived</c> sets it on both arms to the value the sweep's adaptive table derives, so the
+    /// fixed baseline and the adaptive node wait alike (coordinator ruling on the P7-9d review); a number
+    /// sets that many ms.
+    /// </summary>
+    public string? FirstData { get; init; }
+
+    /// <summary>The calibrated drc.table the host loads by default (conformance calibration/, copied into tables/ at build).</summary>
+    public const string CalibratedTableName = "ms110d-cs-0.6.1";
+
     /// <summary>The named profiles; options given on the command line replace their parts.</summary>
     public static SweepSettings ForProfile(string profile) => profile switch
     {
@@ -133,7 +146,22 @@ internal sealed record SweepSettings
             DurationMs = 1_800_000,
             WarmupMs = 60_000,
         },
-        _ => throw new ArgumentException($"profile '{profile}' is not smoke, baseline or adaptive"),
+        // The published curve (P7-10, calibration plan "Final"): the fixed baseline rungs and the calibrated
+        // table in one sweep, one build, so the baseline rung per channel (open question 14), each point's
+        // best fixed rung and the gate all come from the same runs; 5 seeds; both arms with the same
+        // first-data wait, the one the calibrated table derives.
+        "final" => new SweepSettings
+        {
+            Profile = "final",
+            Channels = ["awgn", "poor", "poor-ssb"],
+            SnrTenths = [.. Enumerable.Range(0, 11).Select(i => i * 30)],
+            Configs = [.. Rung.LadderWns.Select(w => $"fixed:wn{w}-long"), "adaptive:" + CalibratedTableName],
+            Seeds = [1, 2, 3, 4, 5],
+            DurationMs = 1_800_000,
+            WarmupMs = 60_000,
+            FirstData = "derived",
+        },
+        _ => throw new ArgumentException($"profile '{profile}' is not smoke, baseline, adaptive or final"),
     };
 
     public JsonObject NodeOverlay()
@@ -143,10 +171,54 @@ internal sealed record SweepSettings
         return root.AsObject();
     }
 
+    /// <summary>The node file with <see cref="FirstData"/> applied: what every run of the sweep merges over the defaults.</summary>
+    public JsonObject EffectiveOverlay()
+    {
+        JsonObject overlay = NodeOverlay();
+        if (FirstData is null)
+        {
+            return overlay;
+        }
+
+        long ms;
+        if (FirstData == "derived")
+        {
+            var derived = Configs.Select(c => SweepConfig.Parse(c, TablesDir)).Where(c => c.Id.StartsWith("adaptive-", StringComparison.Ordinal))
+                .Select(c => DerivedFirstDataMs(c, overlay)).Distinct().ToList();
+            ms = derived.Count switch
+            {
+                1 => derived[0],
+                0 => throw new ArgumentException("--first-data-ms derived needs an adaptive config to derive it from"),
+                _ => throw new ArgumentException($"--first-data-ms derived: the adaptive configs derive different waits ({string.Join(", ", derived)} ms); give a number"),
+            };
+        }
+        else if (!long.TryParse(FirstData, NumberStyles.None, CultureInfo.InvariantCulture, out ms) || ms <= 0)
+        {
+            throw new ArgumentException($"--first-data-ms '{FirstData}' is not derived or a positive number of ms");
+        }
+
+        if (overlay["cas"] is not JsonObject cas)
+        {
+            overlay["cas"] = cas = [];
+        }
+
+        cas["first_data_timeout_ms"] = ms;
+        return overlay;
+    }
+
+    /// <summary>The first-data wait a node on this config derives with <c>cas.first_data_timeout_ms</c> unset (interp B-0420).</summary>
+    internal static long DerivedFirstDataMs(SweepConfig config, JsonObject overlay)
+    {
+        var unset = (JsonObject)overlay.DeepClone();
+        (unset["cas"] as JsonObject)?.Remove("first_data_timeout_ms");
+        JsonObject json = new RunSettings(ChannelSpec.Parse("awgn"), 0, config, 1, 0, 0, unset).NodeJson(a: true);
+        return ConfigReader.Read(json).FirstDataTimeoutMs(new SimModem(ssb: false));
+    }
+
     /// <summary>Every run of the sweep, in a fixed order (the order shards split on).</summary>
     public List<RunSettings> Jobs()
     {
-        JsonObject overlay = NodeOverlay();
+        JsonObject overlay = EffectiveOverlay();
         var configs = Configs.Select(c => SweepConfig.Parse(c, TablesDir)).ToList();
         var jobs = new List<RunSettings>();
         foreach (string ch in Channels)
@@ -185,7 +257,7 @@ internal sealed record SweepSettings
             ["seeds"] = new JsonArray([.. Seeds.Select(s => (JsonNode)s)]),
             ["duration_ms"] = DurationMs,
             ["warmup_ms"] = WarmupMs,
-            ["node_overlay"] = NodeOverlay(),
+            ["node_overlay"] = EffectiveOverlay(),
             ["versions"] = new JsonObject([.. Simulation.VersionInfo().Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)kv.Value))]),
         };
     }

@@ -155,6 +155,7 @@ internal sealed class DtsPeers
         _tx.Eows.TopPriority = p => Wanted(p).Top;
         _tx.Eows.RepeatingSet = p => Wanted(p).Set;
         _tx.Eows.Ed3Recommendation = p => Recommender.Ed3(_context.Config.Drc.Table, _peers.TryGetValue(p, out Peer? peer) ? peer.Recommendations : null);
+        _tx.FailedTrialSet = () => FailedTrials++;
         _tx.RateStateOf = p => _peers.TryGetValue(p, out Peer? peer) ? (peer.Received, peer.Sender) : null;
         _tx.Eows.SenderApproach = p => _context.Config.Drc.Table.IsEmpty ? null : OurApproach;
     }
@@ -185,6 +186,13 @@ internal sealed class DtsPeers
             Recommender.OnBurst(table, peer.Recommendations, rung, burst.SnrTenthDb, dataChecked, errors, peer.Received.SenderApproach?.Fixed == true, lostBlock);
         }
     }
+
+    /// <summary>
+    /// Failed trials over every peer since the node was made, each of which set a failed-trial ceiling
+    /// (design shape item 7, interp C-1281). Diagnostic only, never an input to the protocol: the stack
+    /// sweep counts the transmissions after a node's first ceiling (open question 14, ruling (f) of 2026-11-09).
+    /// </summary>
+    internal long FailedTrials { get; private set; }
 
     /// <summary>The receiver recommendation state of a peer (P7-6), or null; for tests.</summary>
     internal RecommendationState? RecommendationsOf(uint peer) => _peers.TryGetValue(peer, out Peer? p) ? p.Recommendations : null;
@@ -792,7 +800,10 @@ internal sealed class DtsPeers
         DrcTable table = _context.Config.Drc.Table;
         if (!table.IsEmpty)
         {
-            peer.Sender.OnAckWaitExpired(table);   // a failed trial, the step down (P7-7; open question 16)
+            if (peer.Sender.OnAckWaitExpired(table))   // a failed trial, the step down (P7-7; open question 16)
+            {
+                FailedTrials++;
+            }
         }
 
         return false;

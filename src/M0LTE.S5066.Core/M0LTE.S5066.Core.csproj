@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="M0LTE.S5066.Core.Tests" />
+    <InternalsVisibleTo Include="s5066-sweep" />
   </ItemGroup>
 
 </Project>

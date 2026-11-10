@@ -13,8 +13,8 @@ namespace M0LTE.S5066.Sweep
 
               run       one run on the virtual clock; prints a summary, --json writes the result
                         --channel awgn|poor|moderate[-ssb]  --snr <dB>  --config fixed:wn6-long|adaptive:<table>[@wnN-il]
-                        [--seed 1] [--duration-s 600] [--warmup-s 60] [--node-config file] [--json file] [--timeline 1]
-              plan      print a sweep's runs and size     [--profile smoke|baseline|adaptive] [grid options]
+                        [--seed 1] [--duration-s 600] [--warmup-s 60] [--node-config file] [--first-data-ms N] [--json file] [--timeline 1]
+              plan      print a sweep's runs and size     [--profile smoke|baseline|adaptive|final] [grid options]
               sweep     run a sweep (resumable, shardable) --out <dir> [--workers N] [--shard i/n] [--profile ...] [grid options]
               merge     merge a sweep's runs into aggregate/ --out <dir> [--profile ...] [grid options]
               realtime  the real-time cross-check: two s5066d over UDP audio through the same channel
@@ -22,6 +22,7 @@ namespace M0LTE.S5066.Sweep
 
             grid options (replace the profile's): --channels a,b  --snrs 0:30:3 or 6,12  --configs c1,c2
               --seeds 1,2,3  --duration-s N  --warmup-s N  --node-config file  --table <name or path> (for adaptive configs)
+              --first-data-ms derived|unset|N (cas.first_data_timeout_ms on both arms; final: derived from the adaptive table)
             """;
 
         public static int Execute(string[] args)
@@ -56,7 +57,13 @@ namespace M0LTE.S5066.Sweep
 
         private static RunSettings Single(Options o)
         {
-            var grid = new SweepSettings { NodeConfigPath = o.Get("node-config") ?? new SweepSettings().NodeConfigPath, TablesDir = o.Get("tables-dir") };
+            var grid = new SweepSettings
+            {
+                NodeConfigPath = o.Get("node-config") ?? new SweepSettings().NodeConfigPath,
+                TablesDir = o.Get("tables-dir"),
+                Configs = [o.Required("config")],
+                FirstData = o.Get("first-data-ms") is { } fd && fd != "unset" ? fd : null,
+            };
             return new RunSettings(
                 ChannelSpec.Parse(o.Required("channel")),
                 (int)Math.Round(double.Parse(o.Required("snr"), CultureInfo.InvariantCulture) * 10),
@@ -64,7 +71,7 @@ namespace M0LTE.S5066.Sweep
                 o.Int("seed", 1),
                 o.Int("duration-s", 600) * 1000L,
                 o.Int("warmup-s", 60) * 1000L,
-                grid.NodeOverlay());
+                grid.EffectiveOverlay());
         }
 
         private static int RunOne(Options o)
@@ -158,6 +165,11 @@ namespace M0LTE.S5066.Sweep
                 s = s with { NodeConfigPath = Path.GetFullPath(nc) };
             }
 
+            if (o.Get("first-data-ms") is { } fd)
+            {
+                s = s with { FirstData = fd == "unset" ? null : fd };
+            }
+
             return s with { TablesDir = o.Get("tables-dir") };
         }
 
@@ -190,6 +202,7 @@ namespace M0LTE.S5066.Sweep
             }
 
             Console.WriteLine($"configs: {string.Join(", ", s.Configs)}; seeds {string.Join(",", s.Seeds)}");
+            Console.WriteLine($"cas.first_data_timeout_ms: {s.EffectiveOverlay()["cas"]?["first_data_timeout_ms"]?.ToJsonString() ?? "unset (derived per node)"}");
             double hours = jobs.Count * s.DurationMs / 3_600_000.0;
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"profile {s.Profile}: {jobs.Count} runs of {s.DurationMs / 60000.0:0.#} min, {hours:F1} channel-hours ({2 * hours:F1} hours of demodulator time at most, two nodes)"));
