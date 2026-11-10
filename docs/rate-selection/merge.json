@@ -1,0 +1,8 @@
+{
+  "planned": 1650,
+  "merged": 1650,
+  "complete": true,
+  "versions": [{"hfchannel": "0.2.0+6b9323b7700144bcca09cea208a9cfd0983e0b8a","ms110d": "0.6.1+ae8ab3566473568a14e8f64e7f24753690353c4d","s5066_core": "0.1.2+2ee88f4a71b6dc97d38ec953f14284f820bd411e","ssb_passband": "400-2600 Hz"}],
+  "missing": [],
+  "failed": []
+}

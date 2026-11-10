@@ -1,10 +1,10 @@
 # Status
 
-Last updated: 2026-11-08.
+Last updated: 2026-11-10.
 
 ## Now
 
-Phases 0, 1, 3, 4, 5 and 6 are complete. Phase 6 (SIS and host) closed with P6-4: two `s5066d` processes over UDP audio through the real MS110D modem exchange chat both ways and a confirmed file, driven by the new test client `s5066-test` (docs/s5066-test.md). Issue #86 (long transfers stalling on the bench nodes) is fixed: the bench slots were narrower than the modem's carrier detect time, and a receiver's idle wait ignored a C_PDU still arriving; the long T4 test now passes (log below). Phase 7 (rate selection) is next. Phase 5 (CAS and MAC: link break and clean close, SIS soft link sessions, the Annex J analysis, the external busy input) closed with P5-5, the three-node T3 simulation (issue #59), which found four protocol issues, #70 to #73, fixed in one batch (see the log). Phase 4 (CAS-1 linking and ARQ on both FSN families, reset, expedited and management traffic in the CONNECTED states) closed with P4-7, the T3 ARQ tests (issue #45): two nodes complete a long transfer under loss, duplication and reordering with their windows in step. Phase 3 (runtime, thin SIS and CAS, Annex K CSMA, D_PDU receiver, planner, non-ARQ DTS) closed with P3-7, the T3 simulation harness (issue #26): every phase 3 scenario passes and the T3 broadcast test passes (core-architecture.md 9, "Phase 3 done when"). Phase 2 (modem work in M0LTE.Ms110d) runs alongside.
+Phases 0, 1, 3, 4, 5 and 6 are complete. Phase 6 (SIS and host) closed with P6-4: two `s5066d` processes over UDP audio through the real MS110D modem exchange chat both ways and a confirmed file, driven by the new test client `s5066-test` (docs/s5066-test.md). Issue #86 (long transfers stalling on the bench nodes) is fixed: the bench slots were narrower than the modem's carrier detect time, and a receiver's idle wait ignored a C_PDU still arriving; the long T4 test now passes (log below). Phase 7 (rate selection) is complete (docs/rate-selection.md); phase 8 is next. Phase 5 (CAS and MAC: link break and clean close, SIS soft link sessions, the Annex J analysis, the external busy input) closed with P5-5, the three-node T3 simulation (issue #59), which found four protocol issues, #70 to #73, fixed in one batch (see the log). Phase 4 (CAS-1 linking and ARQ on both FSN families, reset, expedited and management traffic in the CONNECTED states) closed with P4-7, the T3 ARQ tests (issue #45): two nodes complete a long transfer under loss, duplication and reordering with their windows in step. Phase 3 (runtime, thin SIS and CAS, Annex K CSMA, D_PDU receiver, planner, non-ARQ DTS) closed with P3-7, the T3 simulation harness (issue #26): every phase 3 scenario passes and the T3 broadcast test passes (core-architecture.md 9, "Phase 3 done when"). Phase 2 (modem work in M0LTE.Ms110d) runs alongside.
 
 Open from phase 3: the reception window commitment drops the last repeat of a U_PDU under any host latency in slotted mode at the last slot position (P3-7 log entry below).
 
@@ -19,7 +19,7 @@ Open from phase 3: the reception window commitment drops the last repeat of a U_
 | 4. DTS ARQ | done: P4-1 to P4-7 (#39 to #45) |
 | 5. CAS and MAC | done: P5-1 to P5-5 (#55 to #59), also #61 (time-based link loss), #64 (channel capture) and #70 to #73 (the P5-5 findings) |
 | 6. SIS and host | done: P6-1 (#75), P6-2, P6-3a (#79), host hardening (#80), #83, P6-3b (pdn-soundmodem), P6-4 (s5066-test and the T4 test) |
-| 7. Rate selection | P7-1 to P7-8 merged; P7-9a (calibrated table, host loads it) in review; then the P7-9 stack sweep rounds and P7-10 |
+| 7. Rate selection | done 2026-11-10: P7-1 to P7-10, final sweep published in docs/rate-selection.md (30 of 33 points pass; the three Poor-SSB failures at 0, 3 and 6 dB are links lost only, issue #109) |
 | 8. Station and packaging | s5066d radio medium (CM108 sound card and PTT) built, not yet on the bench |
 | 9. On air | not started |
 | 10. Applications | not started |
