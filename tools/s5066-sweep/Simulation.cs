@@ -217,6 +217,9 @@ internal sealed class Simulation
     /// <summary>A sink for one line per transmission and link change, for looking at a single run; null for none.</summary>
     public Action<string>? Timeline { get; init; }
 
+    /// <summary>The timeline lists each transmission's D_PDUs, with an x on those the far node did not get right (--timeline 2).</summary>
+    public bool Detailed { get; init; }
+
     public RunResult Run()
     {
         var wall = Stopwatch.StartNew();
@@ -294,7 +297,7 @@ internal sealed class Simulation
             foreach (TxRecord t in _txs)
             {
                 tl(string.Create(CultureInfo.InvariantCulture,
-                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.DpduCount}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}{t.Recommendations()}"));
+                    $"{t.StartMs,9} to {t.EndMs,9} {(t.Node == 0 ? "a" : "b")} {t.Rung.Name,-14} {t.Bytes.Length,6} bytes {t.Dpdus.Count(d => d.Data),3} data ({t.Dpdus.Count(d => d.Retransmission)} again) {t.Dpdus.Count(d => d.AckOnly)} ack: {t.Outcome} {t.DpdusOk}/{t.DpduCount}, end {t.EndReason?.ToString() ?? "-"}, snr {t.SnrTenthDb?.ToString(CultureInfo.InvariantCulture) ?? "-"}, eot +{(t.PredictedEndMs is long p ? p - t.EndMs : 0)}{t.Recommendations()}{(Detailed ? " [" + t.Detail + "]" : "")}"));
             }
         }
 
