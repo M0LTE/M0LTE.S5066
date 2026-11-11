@@ -674,6 +674,13 @@ internal sealed class TransmitQueue : ITransmissionSource
             (Speed speed, int position) = ChooseWaveform();
             BurstPlan shape = _context.Modem.PlanBurst(speed.Wn, speed.Interleaver, 0);
             int first = FirstItemSize() ?? throw new InvalidOperationException("nothing can be placed");
+            if (!WithinLimit(shape, first))
+            {
+                // Acknowledgements plus a retransmission that together need more than 127.5 s: the
+                // acknowledgements alone size it, as before issue #109, rather than failing the build.
+                first = FirstItemSize(withRetransmission: false) ?? first;
+            }
+
             long capacity = Capacity(shape, first);
             long longest = shape.PreambleMs + (shape.BlocksFor(capacity) * shape.BlockMs) + shape.FlushMs;
             List<Entry> late = _entries.Where(e => e.CommitEnd is long end && _context.Now + longest > end).ToList();
@@ -964,8 +971,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// an acknowledgement owed and a failed ARQ D_PDU awaiting retransmission it answers every owed
     /// acknowledgement plus that retransmission, which the build takes next (C-0852): a limit may not
     /// block the retransmission behind them (C-0551, C-0878; interp C-1042, revised for issue #109).
+    /// With <paramref name="withRetransmission"/> false the owed acknowledgements alone are answered,
+    /// for when the two together would need more than 127.5 s.
     /// </summary>
-    private int? FirstItemSize()
+    private int? FirstItemSize(bool withRetransmission = true)
     {
         List<ControlItem> control = SortedControl();
         if (control.Count > 0)
@@ -996,7 +1005,7 @@ internal sealed class TransmitQueue : ITransmissionSource
         {
             // The first retransmission the build would take comes after the acknowledgements; the limit may
             // not block it (C-0551, C-0878), so the transmission must hold both (interp C-1042, issue #109).
-            return FailedFrames(_control).FirstOrDefault() is ArqFrame owed
+            return withRetransmission && FailedFrames(_control).FirstOrDefault() is ArqFrame owed
                 ? ackBytes + DataOnlySize(_links[owed.Owner.Peer], FrameLength(owed))
                 : firstOwing.Acknowledgement().Sum(u => AckOnlySize(firstOwing, u.Data.Length));
         }
@@ -1448,13 +1457,17 @@ internal sealed class TransmitQueue : ITransmissionSource
         }
 
         long needed = shape.BlocksFor(first);
-        if (shape.PreambleMs + (needed * shape.BlockMs) + shape.FlushMs > DtsConfig.MaxTransmissionLimitMs)
+        if (!WithinLimit(shape, first))
         {
             throw new ConfigException("drc.default_speed", $"a {first}-byte D_PDU needs more than 127.5 s on this waveform");
         }
 
         return shape.CapacityOf(needed);
     }
+
+    /// <summary>True when the whole blocks <paramref name="bytes"/> need fit within 127.5 s (C-0106, K-0094).</summary>
+    private static bool WithinLimit(BurstPlan shape, long bytes) =>
+        shape.PreambleMs + (shape.BlocksFor(bytes) * shape.BlockMs) + shape.FlushMs <= DtsConfig.MaxTransmissionLimitMs;
 
     private long Budget => Math.Min(DtsConfig.MaxTransmissionLimitMs, _context.Config.Dts.MaxTransmissionMs);
 

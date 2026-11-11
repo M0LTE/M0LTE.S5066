@@ -79,10 +79,7 @@ internal sealed class TxRecord
             if (!d.Padding && rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
             {
                 ok++;
-                if (!d.Padding)
-                {
-                    detail.Add(d.Tag);
-                }
+                detail.Add(d.Tag);
             }
             else if (!d.Padding)
             {

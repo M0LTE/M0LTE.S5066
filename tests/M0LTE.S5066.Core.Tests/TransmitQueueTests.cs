@@ -470,6 +470,27 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_retransmission_behind_an_owed_acknowledgement_never_makes_the_build_throw_near_127_5_s()
+    {
+        // Issue #109 review: a retransmission that alone fits within 127.5 s, but not together with the
+        // owed acknowledgement placed before it, must not turn a valid configuration into a ConfigException.
+        var q = new Rig(blockBytes: 1, blockMs: 120);   // 1056 bytes within 127.5 s
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        ArqLink link = q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 1023));
+        q.Tx.AddArq(Arq(X, 4));
+        q.Tx.Build();
+        q.Tx.Build();
+        q.Tx.OnAck(X, 0, 1, 0, [0x81]);
+        link.Receive(0, true, true, false, false, [1]);
+        q.Tx.AckOwed();
+
+        Transmit t = q.Tx.Build();
+        q.Decode(t).Should().Contain(p => p is AckOnly || p is DataAck);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).DurationMs.Should().BeLessThanOrEqualTo(127500);
+    }
+
+    [Fact]
     public void A_first_segment_to_an_ed3_peer_stretches_the_transmission()
     {
         // Interp C-1042, C-0551, C-0554: towards an Ed3 peer a segment may not be shortened, so a 118-byte
