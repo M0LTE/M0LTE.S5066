@@ -45,6 +45,36 @@ public class TwoNodeAudioTests
     }
 
     [Fact]
+    public async Task Two_nodes_over_audio_exchange_CFTP_mail_both_ways()
+    {
+        // P10-1 (Annex V): a CFTP mail of about 5000 characters, compressed into a BFTPv1 PDU of
+        // more than one segment at the 2048-byte MTU, from a to b, acknowledged (V-0045) and whole at
+        // b (V-0068); then a short one back. Link set-up included.
+        JsonElement result = await RunAsync("""
+            [
+              { "do": "cftp", "node": "a", "to": "0.0.1.2", "bytes": 5000, "recipients": ["g4abc@example.org"] },
+              { "do": "expect_cftp", "node": "b", "from": "0.0.1.1" },
+              { "do": "cftp", "node": "b", "to": "0.0.1.1", "bytes": 200 },
+              { "do": "expect_cftp", "node": "a", "from": "0.0.1.2" }
+            ]
+            """, TimeSpan.FromMinutes(8));
+
+        JsonElement[] steps = [.. result.GetProperty("steps").EnumerateArray()];
+        steps.Should().HaveCount(4);
+        JsonElement sent = steps[0].GetProperty("detail");
+        sent.GetProperty("acknowledged").GetBoolean().Should().BeTrue();
+        sent.GetProperty("compressed_bytes").GetInt32().Should().BeGreaterThan(2044, "the file needs two segments");
+        JsonElement got = steps[1].GetProperty("detail");
+        got.GetProperty("message_id").GetString().Should().Be(sent.GetProperty("message_id").GetString());
+        got.GetProperty("sha256").GetString().Should().Be(sent.GetProperty("sha256").GetString());
+        got.GetProperty("matches_sent").GetBoolean().Should().BeTrue();
+        got.GetProperty("recipients").EnumerateArray().Select(x => x.GetString()).Should().Equal("g4abc@example.org");
+        steps[2].GetProperty("detail").GetProperty("acknowledged").GetBoolean().Should().BeTrue();
+        steps[3].GetProperty("detail").GetProperty("matches_sent").GetBoolean().Should().BeTrue();
+        result.GetProperty("pass").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Long_two_nodes_over_audio_files_both_ways_and_perf_with_echo()
     {
         // Five to six minutes; run locally with S5066_LONG_TESTS=1. The nodes run with --trace, so a failure

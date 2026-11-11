@@ -18,6 +18,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Cftp/M0LTE.S5066.Cftp.csproj" />
     <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
     <ProjectReference Include="../../src/M0LTE.S5066.Radio/M0LTE.S5066.Radio.csproj" />
   </ItemGroup>

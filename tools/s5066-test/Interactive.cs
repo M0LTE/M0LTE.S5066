@@ -15,6 +15,7 @@ internal static class Interactive
           text                  send a chat line to the current destination
           /to w.x.y.z           set the destination (16 to 31 for w is a group); /all for broadcast
           /file path [confirm]  send a file (confirm: none, node or client; default client)
+          /cftp path            send a file as a CFTP mail (Annex V, SAP 12); an .eml goes as it is
           /perf count size [nonarq] [none|node|client] [echo] [window n]
           /info                 show the node information (speed, interleaver, SNR per peer)
           /help, /quit
@@ -61,6 +62,29 @@ internal static class Interactive
                         {
                             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
                             Show(await Activities.SendFileAsync(s, dest, data, Path.GetFileName(w[1]), o, cts.Token));
+                        });
+                        break;
+                    }
+
+                    case "/cftp" when w.Length == 2:
+                    {
+                        SisAddress dest = to;
+                        if (dest.Group)
+                        {
+                            Print("CFTP goes to one node: pick one with /to");
+                            break;
+                        }
+
+                        string name = Path.GetFileName(w[1]);
+                        byte[] msg = CftpActivity.MessageFor(name, await File.ReadAllBytesAsync(w[1]), CftpActivity.DefaultFrom, CftpActivity.DefaultTo(dest));
+                        Print($"sending {w[1]} as a CFTP mail ({msg.Length} bytes) to {Addresses.Show(dest)}");
+                        _ = Background(async () =>
+                        {
+                            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+                            CftpSendOutcome r = await CftpActivity.SendAsync(s, dest, name, msg, null, null, cts.Token);
+                            Print(r.Acknowledged
+                                ? $"cftp {r.MessageId} to {r.To}: acknowledged after {r.Attempts} attempt(s), {r.CompressedBytes} bytes compressed, {r.ElapsedMs / 1000:F1} s"
+                                : $"cftp {r.MessageId} to {r.To}: FAILED, {r.Failure}");
                         });
                         break;
                     }

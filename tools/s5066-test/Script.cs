@@ -28,7 +28,7 @@ internal sealed class Scenario
 /// <summary>One step. Which fields matter depends on <see cref="Do"/>.</summary>
 internal sealed class ScenarioStep
 {
-    /// <summary>chat, expect_chat, file, expect_file, perf, info or sleep.</summary>
+    /// <summary>chat, expect_chat, file, expect_file, cftp, expect_cftp, perf, info or sleep.</summary>
     public string Do { get; set; } = "";
 
     /// <summary>The node that acts (not for sleep).</summary>
@@ -81,6 +81,12 @@ internal sealed class ScenarioStep
 
     /// <summary>Wait for the receiver's hash verdict; default true (file).</summary>
     public bool? Verdict { get; set; }
+
+    /// <summary>The mail's return path (cftp); default s5066-test@localhost.</summary>
+    public string? ReturnPath { get; set; }
+
+    /// <summary>The mail's recipients (cftp); default postmaster@ the destination address.</summary>
+    public List<string>? Recipients { get; set; }
 
     /// <summary>Seconds to sleep (sleep).</summary>
     public double? Seconds { get; set; }
@@ -172,7 +178,7 @@ internal static class ScenarioRunner
     private static async Task<StepResult> RunStepAsync(int index, ScenarioStep step, Dictionary<string, Station> stations, string baseDir, CancellationToken outer)
     {
         long t0 = Stopwatch.GetTimestamp();
-        double defaultTimeout = step.Do is "file" or "perf" or "expect_file" ? 900 : 120;
+        double defaultTimeout = step.Do is "file" or "perf" or "expect_file" or "cftp" or "expect_cftp" ? 900 : 120;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(outer);
         cts.CancelAfter(TimeSpan.FromSeconds(step.TimeoutS ?? defaultTimeout));
         CancellationToken ct = cts.Token;
@@ -242,6 +248,36 @@ internal static class ScenarioRunner
                     SisAddress? from = step.From is null ? null : Addresses.Parse(step.From);
                     FileReceived r = await s.Files.TakeAsync(f => from is null || f.From.Value == from.Value.Value, ct).ConfigureAwait(false);
                     return Done(r.Match, new { From = Addresses.Show(r.From), r.Id, r.Name, r.Size, r.Match, r.Sha256, ElapsedMs = Math.Round(r.ElapsedMs, 1), r.SavedTo });
+                }
+
+                case "cftp":
+                {
+                    SisAddress to = Addresses.Parse(Need(step.To, "to"));
+                    string from = step.ReturnPath ?? CftpActivity.DefaultFrom;
+                    string rcpt = step.Recipients is { Count: > 0 } r0 ? r0[0] : CftpActivity.DefaultTo(to);
+                    byte[] message;
+                    string name;
+                    if (step.Path is not null)
+                    {
+                        string p = System.IO.Path.Combine(baseDir, step.Path);
+                        name = System.IO.Path.GetFileName(p);
+                        message = CftpActivity.MessageFor(name, await File.ReadAllBytesAsync(p, ct).ConfigureAwait(false), from, rcpt);
+                    }
+                    else
+                    {
+                        int n = step.Bytes ?? throw new FormatException("cftp needs path or bytes");
+                        name = $"text-{n}";
+                        message = CftpActivity.TextMessage(n, from, rcpt);
+                    }
+
+                    CftpSendOutcome r = await CftpActivity.SendAsync(s, to, name, message, step.ReturnPath, step.Recipients, ct).ConfigureAwait(false);
+                    return Done(r.Acknowledged, r, r.Failure);
+                }
+
+                case "expect_cftp":
+                {
+                    CftpExpectOutcome r = await CftpActivity.ExpectAsync(s, step.From is null ? null : Addresses.Parse(step.From), ct).ConfigureAwait(false);
+                    return Done(r.Error is null && r.MatchesSent != false, r, r.Error ?? (r.MatchesSent == false ? "message differs from the one sent" : null));
                 }
 
                 case "perf":

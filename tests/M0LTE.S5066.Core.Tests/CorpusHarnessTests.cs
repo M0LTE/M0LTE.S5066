@@ -210,6 +210,15 @@ public class CorpusHarnessTests
                 Convert.ToHexStringLower(RunDrc(kind, root.GetProperty("value"))).Should().Be(root.GetProperty("bytes").GetString(), $"{line.Where}, bytes");
                 return null;
 
+            case "rcop1":
+            case "bftp1":
+            case "cftp_mail":
+            case "cftp_recipients":
+            case "cftp_gzip":
+                // CFTP (Annex V) is an application above the SIS, not part of the core
+                // (corpus-format.md 3.10); tests/M0LTE.S5066.Cftp.Tests runs these cases.
+                return CorpusResults.Skipped("CFTP kind, run by M0LTE.S5066.Cftp.Tests");
+
             default:
                 return CorpusResults.Unsupported($"unknown T1 kind '{kind}'");
         }
