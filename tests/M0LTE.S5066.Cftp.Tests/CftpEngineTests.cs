@@ -355,4 +355,117 @@ public class CftpEngineTests
         e.Receive(A, new Rcop1Pdu(0, 0, 1, pdu[20..]).Encode(), 2);
         e.Drain().OfType<CftpFileReceived>().Should().ContainSingle();
     }
+    // ---- interp V-0093: the application accepts a file before it is acknowledged
+
+    private static readonly CftpOptions AppAccepts = new() { AcceptByApplication = true };
+
+    [Fact]
+    public void With_application_accept_the_acknowledgement_waits_for_accept()
+    {
+        var l = new Link(AppAccepts);
+        long id = l.Engines[A].Submit(B, "f"u8.ToArray(), Data(10), 2048, 0);
+        l.Pump();
+
+        CftpFileReceived got = l.Of<CftpFileReceived>(B).Single();
+        got.AwaitsAccept.Should().BeTrue();
+        got.FileData.Should().Equal(Data(10));
+        l.Sent.Should().NotContain(s => s.From == B, "nothing is acknowledged before the application accepts");
+        l.Of<CftpTransferDone>(A).Should().BeEmpty();
+
+        l.Engines[B].Accept(got.ReceiveId, 5).Should().BeTrue();
+        l.Pump();
+
+        // V-0045, interp V-0075: the acknowledgement carries the file's IDs.
+        l.Sent.Where(s => s.From == B).Select(s => s.UPdu).Should().ContainSingle().Which.Should().Equal(0x00, 0x00, 0x00, 0x00, 0x10, 0x0B);
+        l.Of<CftpTransferDone>(A).Single().Should().Be(new CftpTransferDone(id, true, 1, null));
+        l.Engines[B].Accept(got.ReceiveId, 6).Should().BeFalse("it was answered already");
+    }
+
+    [Fact]
+    public void A_refused_file_is_not_acknowledged_and_is_delivered_again_when_sent_again()
+    {
+        var l = new Link(AppAccepts);
+        l.Engines[A].Submit(B, "f"u8.ToArray(), Data(30), 2048, 0);
+        l.Pump();
+        CftpFileReceived first = l.Of<CftpFileReceived>(B).Single();
+        l.Engines[B].Refuse(first.ReceiveId, 0).Should().BeTrue();
+        l.Pump();
+        l.Sent.Should().NotContain(s => s.From == B);
+
+        // Interp V-0076: no acknowledgement, so the sender sends it again after ack_wait.
+        l.RunUntil(300_000);
+        List<CftpFileReceived> got = l.Of<CftpFileReceived>(B);
+        got.Should().HaveCount(2);
+        got[1].ReceiveId.Should().NotBe(first.ReceiveId);
+        l.Engines[B].Accept(got[1].ReceiveId, l.Now).Should().BeTrue();
+        l.Pump();
+        l.Of<CftpTransferDone>(A).Single().Should().Match<CftpTransferDone>(d => d.Acknowledged && d.Attempts == 2);
+    }
+
+    [Fact]
+    public void A_copy_arriving_while_the_application_holds_the_file_is_not_delivered_twice()
+    {
+        var l = new Link(AppAccepts with { AckWait = TimeSpan.FromSeconds(10) });
+        l.Engines[A].Submit(B, "f"u8.ToArray(), Data(30), 2048, 0);
+        l.RunUntil(15_000);
+
+        // The sender sent it again while the application had not answered.
+        l.Sent.Count(s => s.From == A).Should().Be(2);
+        CftpFileReceived got = l.Of<CftpFileReceived>(B).Should().ContainSingle().Subject;
+        l.Engines[B].Accept(got.ReceiveId, l.Now).Should().BeTrue();
+        l.Pump();
+        l.Sent.Count(s => s.From == B).Should().Be(1);
+        l.Of<CftpTransferDone>(A).Single().Acknowledged.Should().BeTrue();
+    }
+
+    [Fact]
+    public void After_accept_a_copy_sent_again_for_a_lost_acknowledgement_is_acknowledged_at_once()
+    {
+        var l = new Link(AppAccepts);
+        int acks = 0;
+        l.Deliver = (from, u) => from == A || ++acks > 1;
+        l.Engines[A].Submit(B, "f"u8.ToArray(), Data(30), 2048, 0);
+        l.Pump();
+        l.Engines[B].Accept(l.Of<CftpFileReceived>(B).Single().ReceiveId, 0).Should().BeTrue();
+        l.RunUntil(1_000_000);
+
+        // Interp V-0077: the second copy is acknowledged without asking the application again.
+        l.Of<CftpFileReceived>(B).Should().ContainSingle();
+        l.Sent.Count(s => s.From == B).Should().Be(2);
+        l.Of<CftpTransferDone>(A).Single().Should().Match<CftpTransferDone>(d => d.Acknowledged && d.Attempts == 2);
+    }
+
+    [Fact]
+    public void A_file_the_application_does_not_answer_is_let_go_unacknowledged_after_the_reassembly_timeout()
+    {
+        var e = new CftpEngine(AppAccepts with { ReassemblyTimeout = TimeSpan.FromMinutes(1) });
+        byte[] pdu = new Bftp1Pdu("x"u8.ToArray(), Data(20)).Encode();
+        e.Receive(A, new Rcop1Pdu(0, 0, 0, pdu).Encode(), 1000);
+        CftpFileReceived got = e.Drain().OfType<CftpFileReceived>().Single();
+        e.NextDeadline.Should().Be(61_000);
+        e.Tick(61_000);
+        IReadOnlyList<CftpAction> acts = e.Drain();
+        acts.OfType<CftpSendUPdu>().Should().BeEmpty();
+        acts.OfType<CftpNote>().Should().ContainSingle().Which.Text.Should().Contain("V-0093");
+        e.NextDeadline.Should().BeNull();
+        e.Accept(got.ReceiveId, 62_000).Should().BeFalse();
+        e.Drain().Should().BeEmpty();
+
+        // Sent again, it is delivered again.
+        e.Receive(A, new Rcop1Pdu(0, 0, 0, pdu).Encode(), 63_000);
+        e.Drain().OfType<CftpFileReceived>().Should().ContainSingle().Which.ReceiveId.Should().NotBe(got.ReceiveId);
+    }
+
+    [Fact]
+    public void Without_the_option_files_are_acknowledged_on_the_last_byte_and_need_no_answer()
+    {
+        var e = new CftpEngine();
+        e.Receive(A, new Rcop1Pdu(0, 0, 0, new Bftp1Pdu("x"u8.ToArray(), Data(20)).Encode()).Encode(), 0);
+        IReadOnlyList<CftpAction> acts = e.Drain();
+        acts[0].Should().BeOfType<CftpSendUPdu>().Which.IsAck.Should().BeTrue();
+        CftpFileReceived got = acts.OfType<CftpFileReceived>().Single();
+        got.AwaitsAccept.Should().BeFalse();
+        got.ReceiveId.Should().Be(0);
+        e.NextDeadline.Should().BeNull();
+    }
 }

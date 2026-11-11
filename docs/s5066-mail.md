@@ -6,11 +6,12 @@ CFTP is for informal mail only [Ed4 V.2, p.V-1]. Over HF, think of it as a slow,
 
 ## How it works
 
-- **From HF:** each CFTP mail that arrives is saved to the spool, then given to the `relay` SMTP server with its envelope as sent: MAIL FROM is the return path and RCPT TO each recipient. The same mail sent twice by the far end (it never heard the acknowledgement) is forwarded only once.
-- **To HF:** a small SMTP server (`listen`, localhost by default) takes mail for recipients that match a route and refuses the rest. Each recipient's address or domain says which 5066 node it lives behind. Mail for several nodes is split, one CFTP mail per node.
+- **From HF:** each CFTP mail that arrives is saved to the spool, and only then acknowledged, so a crash or a full disk cannot lose a mail the far end thinks was delivered: unacknowledged, it simply comes again. It is then given to the `relay` SMTP server with its envelope as sent (MAIL FROM is the return path and RCPT TO each recipient) and a `Received:` line naming the node it came from. The same mail sent twice by the far end (it never heard the acknowledgement) is forwarded only once.
+- **To HF:** a small SMTP server (`listen`, localhost by default) takes mail for recipients that match a route and refuses the rest. Each recipient's address or domain says which 5066 node it lives behind. Mail for several nodes is split, one CFTP mail per node; the parts are queued all together or not at all, and a client that sends the same mail again (it never saw the reply) does not get it queued twice.
 - **When it cannot go:** the mail stays in the spool (`/var/lib/s5066-mail`) and is tried again after 1 minute, then 2, 4 and so on up to once an hour, across restarts. A recipient the relay refuses outright, or mail still not delivered after 5 days, is bounced to the sender with a standard delivery report. Bounces of mail from HF go back over HF when the sender's domain has a route.
 - **Size:** the listener advertises the most CFTP can carry at the node's MTU (about 130 MB at 2048 bytes). In practice keep HF mail small: every kilobyte costs airtime.
 - **Logging:** one line per event: mail taken in, delivered, tried again, bounced.
+- **Stopping:** the listener stops taking connections at once and gives open sessions up to 10 seconds to finish.
 
 ## Install
 
@@ -120,7 +121,7 @@ printf 'From: alice@a.test\r\nTo: bob@b.test\r\nSubject: over HF\r\n\r\nHello Bo
 curl smtp://127.0.0.1:2525 --mail-from alice@a.test --mail-rcpt bob@b.test --upload-file hello.eml
 ```
 
-Gateway A logs that it took the mail and, a little later, that node 0.0.1.2 acknowledged it. Gateway B logs the mail from node 0.0.1.1, and the test server prints it with a `Received:` line added by gw-a.test on top. Send to `bob@elsewhere.test` and gateway A refuses it at once: there is no route.
+Gateway A logs that it took the mail and, a little later, that node 0.0.1.2 acknowledged it. Gateway B logs the mail from node 0.0.1.1, and the test server prints it with two `Received:` lines on top: gw-b.test's for the HF hop, then gw-a.test's. Send to `bob@elsewhere.test` and gateway A refuses it at once: there is no route.
 
 ## Where the rules come from
 

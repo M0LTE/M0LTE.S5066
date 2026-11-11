@@ -25,6 +25,15 @@ public sealed record CftpOptions
 
     /// <summary>SIS priority of CFTP U_PDUs: 4, the Annex F default for CFTP (interp V-0074).</summary>
     public byte Priority { get; init; } = 4;
+
+    /// <summary>
+    /// When true, a completed file is not acknowledged until the application accepts it with
+    /// <see cref="CftpEngine.Accept"/>, so the acknowledgement means the file is stored, not just
+    /// reassembled (interp V-0093). A file refused with <see cref="CftpEngine.Refuse"/>, or not
+    /// answered within <see cref="ReassemblyTimeout"/>, is not acknowledged, and the sender sends it
+    /// again (interp V-0076). False (the default) acknowledges on the last byte, as before.
+    /// </summary>
+    public bool AcceptByApplication { get; init; }
 }
 
 /// <summary>Something the engine asks its owner to do or tells it.</summary>
@@ -41,8 +50,19 @@ public sealed record CftpSendUPdu(long SendId, uint Destination, byte[] UPdu, bo
 /// <summary>A transfer ended: acknowledged, or failed after its attempts.</summary>
 public sealed record CftpTransferDone(long TransferId, bool Acknowledged, int Attempts, string? Failure) : CftpAction;
 
-/// <summary>A whole file arrived and was acknowledged (V-0039, V-0045).</summary>
-public sealed record CftpFileReceived(uint Source, byte ConnectionId, byte UPduId, byte[] FileName, byte[] FileData) : CftpAction;
+/// <summary>
+/// A whole file arrived (V-0039). It has been acknowledged (V-0045), unless <see cref="AwaitsAccept"/>:
+/// then the acknowledgement waits for <see cref="CftpEngine.Accept"/> with <see cref="ReceiveId"/>
+/// (interp V-0093).
+/// </summary>
+public sealed record CftpFileReceived(uint Source, byte ConnectionId, byte UPduId, byte[] FileName, byte[] FileData) : CftpAction
+{
+    /// <summary>Names this file to <see cref="CftpEngine.Accept"/> and <see cref="CftpEngine.Refuse"/>; 0 when it was acknowledged already.</summary>
+    public long ReceiveId { get; init; }
+
+    /// <summary>True when the acknowledgement waits for the application (<see cref="CftpOptions.AcceptByApplication"/>).</summary>
+    public bool AwaitsAccept { get; init; }
+}
 
 /// <summary>Something worth a log line that changes nothing for the application.</summary>
 public sealed record CftpNote(string Text) : CftpAction;
@@ -62,8 +82,9 @@ public sealed record CftpNote(string Text) : CftpAction;
 /// says otherwise (V-0023, V-0024). The file is resent whole under the same ID when its
 /// acknowledgement does not come or a segment is rejected (interp V-0076).
 /// Receiving: files are kept apart by source, connection ID and U_PDU ID (V-0025, interp V-0088),
-/// reassembled (V-0040, interp V-0073) and acknowledged on their last byte (V-0045), duplicates
-/// acknowledged but not delivered twice (interp V-0077).
+/// reassembled (V-0040, interp V-0073) and acknowledged on their last byte (V-0045), or once the
+/// application accepts them with <see cref="CftpOptions.AcceptByApplication"/> (interp V-0093);
+/// duplicates acknowledged but not delivered twice (interp V-0077).
 /// </remarks>
 public sealed class CftpEngine
 {
@@ -76,6 +97,9 @@ public sealed class CftpEngine
     private readonly Dictionary<long, Transfer> _bySend = [];
     private readonly Dictionary<(uint Src, byte Conn, byte Id), Partial> _partials = [];
     private readonly Dictionary<(uint Src, byte Conn, byte Id), byte[]> _lastCompleted = [];
+    private readonly Dictionary<long, Held> _held = [];
+    private readonly Dictionary<(uint Src, byte Conn, byte Id), long> _heldByKey = [];
+    private long _nextReceiveId = 1;
     private long _nextTransferId = 1;
     private long _nextSendId = 1;
 
@@ -112,6 +136,14 @@ public sealed class CftpEngine
                 if (d is null || x < d)
                 {
                     d = x;
+                }
+            }
+
+            foreach (Held h in _held.Values)
+            {
+                if (d is null || h.Deadline < d)
+                {
+                    d = h.Deadline;
                 }
             }
 
@@ -232,10 +264,49 @@ public sealed class CftpEngine
     }
 
     /// <summary>
+    /// The application has stored a file it was given with <see cref="CftpFileReceived.AwaitsAccept"/>:
+    /// acknowledge it now (V-0045, interp V-0093), and treat the same file sent again as a duplicate
+    /// (interp V-0077). Returns false when <paramref name="receiveId"/> waits for nothing (answered
+    /// already, or timed out), in which case nothing is sent.
+    /// </summary>
+    public bool Accept(long receiveId, long now)
+    {
+        _ = now;
+        if (!_held.Remove(receiveId, out Held? h))
+        {
+            return false;
+        }
+
+        _heldByKey.Remove(h.Key);
+        _lastCompleted[h.Key] = h.Hash;
+        _actions.Add(new CftpSendUPdu(_nextSendId++, h.Key.Src, Rcop1Pdu.Ack(h.Key.Conn, h.Key.Id).Encode(), IsAck: true));
+        return true;
+    }
+
+    /// <summary>
+    /// The application could not store a file it was given with <see cref="CftpFileReceived.AwaitsAccept"/>:
+    /// it is not acknowledged, so the sender sends it again (interp V-0076, V-0093), and it is then
+    /// delivered again. Returns false when <paramref name="receiveId"/> waits for nothing.
+    /// </summary>
+    public bool Refuse(long receiveId, long now)
+    {
+        _ = now;
+        if (!_held.Remove(receiveId, out Held? h))
+        {
+            return false;
+        }
+
+        _heldByKey.Remove(h.Key);
+        Note($"file from {h.Key.Src:x7} (connection {h.Key.Conn}, U_PDU ID {h.Key.Id}) refused by the application; not acknowledged (interp V-0093)");
+        return true;
+    }
+
+    /// <summary>
     /// Runs every timer due at or before <paramref name="now"/>, in a total order that does not
     /// depend on how a dictionary happens to enumerate, so a port produces the same actions in
     /// the same order: transfers by (deadline, transfer ID), then partly received files by
-    /// (deadline, source, connection ID, U_PDU ID).
+    /// (deadline, source, connection ID, U_PDU ID), then files awaiting the application by
+    /// (deadline, receive ID).
     /// </summary>
     public void Tick(long now)
     {
@@ -280,6 +351,14 @@ public sealed class CftpEngine
         {
             _partials.Remove(key);
             Note($"dropped a partly received file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}): no segment for {_options.ReassemblyTimeout}");
+        }
+
+        foreach (long id in _held.Where(kv => kv.Value.Deadline <= now).OrderBy(kv => kv.Value.Deadline).ThenBy(kv => kv.Key).Select(kv => kv.Key).ToList())
+        {
+            Held h = _held[id];
+            _held.Remove(id);
+            _heldByKey.Remove(h.Key);
+            Note($"file from {h.Key.Src:x7} (connection {h.Key.Conn}, U_PDU ID {h.Key.Id}) not accepted by the application within {_options.ReassemblyTimeout}; not acknowledged (interp V-0093)");
         }
     }
 
@@ -396,11 +475,18 @@ public sealed class CftpEngine
             Note($"{ms.Length - total} octets after the end of a file from {key.Src:x7} ignored (interp V-0073)");
         }
 
+        byte[] hash = SHA256.HashData(bytes);
+        bool duplicate = _lastCompleted.TryGetValue(key, out byte[]? last) && last.AsSpan().SequenceEqual(hash);
+        if (_options.AcceptByApplication && !duplicate)
+        {
+            Hold(key, hash, bytes, now);
+            return;
+        }
+
         // The last byte is in: acknowledge it, with its connection and U_PDU ID (V-0045, interp V-0075).
         _actions.Add(new CftpSendUPdu(_nextSendId++, key.Src, Rcop1Pdu.Ack(key.Conn, key.Id).Encode(), IsAck: true));
 
-        byte[] hash = SHA256.HashData(bytes);
-        if (_lastCompleted.TryGetValue(key, out byte[]? last) && last.AsSpan().SequenceEqual(hash))
+        if (duplicate)
         {
             Note($"file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}) received again; acknowledged, not delivered twice (interp V-0077)");
             return;
@@ -409,8 +495,34 @@ public sealed class CftpEngine
         _lastCompleted[key] = hash;
         Bftp1Pdu.TryDecode(bytes, out Bftp1Pdu? pdu, out _);
         _actions.Add(new CftpFileReceived(key.Src, key.Conn, key.Id, pdu!.FileName.ToArray(), pdu.FileData.ToArray()));
-        _ = now;
     }
+
+    /// <summary>A complete new file waits for the application before it is acknowledged (interp V-0093).</summary>
+    private void Hold((uint Src, byte Conn, byte Id) key, byte[] hash, byte[] bytes, long now)
+    {
+        if (_heldByKey.TryGetValue(key, out long waiting))
+        {
+            // The sender sent it again before the application answered: the answer to the first
+            // copy decides. A different file under the same IDs is not acknowledged either; the
+            // sender sends it again once the first is answered.
+            Note(_held[waiting].Hash.AsSpan().SequenceEqual(hash)
+                ? $"file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}) received again while the application has it; not delivered twice (interp V-0093)"
+                : $"another file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}) while the application has one under those IDs; dropped unacknowledged (interp V-0093)");
+            return;
+        }
+
+        long id = _nextReceiveId++;
+        _held[id] = new Held(key, hash, now + Ms(_options.ReassemblyTimeout));
+        _heldByKey[key] = id;
+        Bftp1Pdu.TryDecode(bytes, out Bftp1Pdu? pdu, out _);
+        _actions.Add(new CftpFileReceived(key.Src, key.Conn, key.Id, pdu!.FileName.ToArray(), pdu.FileData.ToArray())
+        {
+            ReceiveId = id,
+            AwaitsAccept = true,
+        });
+    }
+
+    private sealed record Held((uint Src, byte Conn, byte Id) Key, byte[] Hash, long Deadline);
 
     private enum Wait
     {

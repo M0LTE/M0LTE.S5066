@@ -152,7 +152,9 @@ public class GatewayTests
         env.Recipients.Should().Equal("g4abc@b.test", "g4xyz@B.test");
         env.Helo.Should().Be("gw.test");
         string text = Encoding.ASCII.GetString(got);
-        text.Should().StartWith("Received: from client.test ([127.0.0.1])\r\n\tby gw.test (s5066-mail) with ESMTP id ");
+        // RFC 5321 4.4: each gateway adds its trace line, b's for the HF leg above a's for SMTP.
+        text.Should().StartWith("Received: from s5066-0-0-1-1\r\n\tby gw.test (s5066-mail) via STANAG-5066 with CFTP id ");
+        text.Should().Contain("\r\nReceived: from client.test ([127.0.0.1])\r\n\tby gw.test (s5066-mail) with ESMTP id ");
         text.Should().EndWith("\r\n" + message);
         await Until(() => a.Gateway.Spool.List(SpoolQueue.Hf).Count == 0 && b.Gateway.Spool.List(SpoolQueue.Smtp).Count == 0, "both spools empty", a);
         a.LogText.Should().Contain("delivered to node 0.0.1.2 as CFTP mail");
@@ -223,6 +225,61 @@ public class GatewayTests
         await Until(() => b.Sink.Mail.Count == 1, "one copy relayed", b);
         b.Sink.Mail[0].Envelope.ReturnPath.Should().Be("m0lte@c.test", "angle brackets in the RecipientList are removed");
         b.Sink.Mail[0].Envelope.Recipients.Should().Equal("g4abc@b.test");
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+        b.Sink.Mail.Should().HaveCount(1);
+    }
+    [Fact]
+    public async Task Mail_from_hf_is_acknowledged_only_once_it_is_in_the_spool()
+    {
+        var medium = new LoopbackMedium();
+        await using Side b = Start(medium, "0.0.1.2", "0000000000000002", ToA);
+        await using NodeHost c = TestNodes.StartLoopbackHost(medium, "0.0.1.3", "0000000000000003");
+        await using CftpClient sender = await CftpClient.ConnectAsync("127.0.0.1", TestNodes.Endpoint(c).Port, cancellationToken: TestContext.Current.CancellationToken);
+
+        // A slow disk: the spool write takes a second. The acknowledgement must wait for it.
+        bool written = false;
+        b.Gateway.Spool.BeforeWrite = item =>
+        {
+            if (item.Queue == SpoolQueue.Smtp)
+            {
+                Thread.Sleep(1000);
+                Volatile.Write(ref written, true);
+            }
+        };
+
+        var mail = new CftpMail("SLOWDISK1", new CftpRecipients("m0lte@c.test", ["g4abc@b.test"]), "Subject: slow\r\n\r\nx\r\n"u8.ToArray());
+        CftpSendResult r = await sender.SendAsync(SisAddress.FromParts(0, 0, 1, 2), mail, TestContext.Current.CancellationToken);
+        r.Acknowledged.Should().BeTrue();
+        Volatile.Read(ref written).Should().BeTrue("interp V-0091: the acknowledgement goes after the spool write");
+        await Until(() => b.Sink.Mail.Count == 1, "the mail relayed", b);
+    }
+
+    [Fact]
+    public async Task Mail_from_hf_that_cannot_be_spooled_is_not_acknowledged_and_comes_again()
+    {
+        var medium = new LoopbackMedium();
+        await using Side b = Start(medium, "0.0.1.2", "0000000000000002", ToA);
+        await using NodeHost c = TestNodes.StartLoopbackHost(medium, "0.0.1.3", "0000000000000003");
+        var options = new CftpOptions { AckWait = TimeSpan.FromSeconds(2) };
+        await using CftpClient sender = await CftpClient.ConnectAsync("127.0.0.1", TestNodes.Endpoint(c).Port, options, TestContext.Current.CancellationToken);
+
+        int fails = 1;
+        b.Gateway.Spool.BeforeWrite = item =>
+        {
+            if (item.Queue == SpoolQueue.Smtp && Interlocked.Decrement(ref fails) >= 0)
+            {
+                throw new IOException("No space left on device");
+            }
+        };
+
+        var mail = new CftpMail("FULLDISK1", new CftpRecipients("m0lte@c.test", ["g4abc@b.test"]), "Subject: full\r\n\r\nx\r\n"u8.ToArray());
+        CftpSendResult r = await sender.SendAsync(SisAddress.FromParts(0, 0, 1, 2), mail, TestContext.Current.CancellationToken);
+
+        // Interp V-0076, V-0093: no acknowledgement the first time, so the sender sent it again.
+        r.Acknowledged.Should().BeTrue();
+        r.Attempts.Should().Be(2);
+        b.LogText.Should().Contain("could not spool mail FULLDISK1 from node 0.0.1.3: No space left on device; not acknowledged");
+        await Until(() => b.Sink.Mail.Count == 1, "the mail relayed once", b);
         await Task.Delay(500, TestContext.Current.CancellationToken);
         b.Sink.Mail.Should().HaveCount(1);
     }
