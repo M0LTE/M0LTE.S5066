@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Cftp/M0LTE.S5066.Cftp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The corpus locator and version check of the core harness, shared so both refuse the same versions. -->
+    <Compile Include="../M0LTE.S5066.Core.Tests/Corpus.cs" Link="Corpus.cs" />
+  </ItemGroup>
+
+</Project>
