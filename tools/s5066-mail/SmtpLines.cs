@@ -133,12 +133,20 @@ internal sealed record SmtpReply(int Code, IReadOnlyList<string> Lines)
 
     public override string ToString() => $"{Code} {Text}";
 
-    /// <summary>Reads one reply, multi-line or not (RFC 5321 4.2.1).</summary>
+    /// <summary>The most lines one reply may have; a server sending more is not talking SMTP.</summary>
+    public const int MaxLines = 100;
+
+    /// <summary>Reads one reply, multi-line or not (RFC 5321 4.2.1), of at most <see cref="MaxLines"/> lines.</summary>
     public static async Task<SmtpReply> ReadAsync(SmtpLines lines, CancellationToken ct)
     {
         var text = new List<string>();
         while (true)
         {
+            if (text.Count == MaxLines)
+            {
+                throw new IOException($"an SMTP reply of more than {MaxLines} lines");
+            }
+
             string l = await lines.ReadTextLineAsync(2048, ct).ConfigureAwait(false) ?? throw new IOException("the server closed the connection");
             if (l.Length < 3 || !int.TryParse(l.AsSpan(0, 3), out int code) || code is < 200 or > 599)
             {

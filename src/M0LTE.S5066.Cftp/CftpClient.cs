@@ -12,13 +12,36 @@ namespace M0LTE.S5066.Cftp;
 /// <param name="CompressedBytes">The size of the compressed file sent.</param>
 public sealed record CftpSendResult(bool Acknowledged, int Attempts, string? Failure, int CompressedBytes);
 
-/// <summary>A file that arrived whole and was acknowledged.</summary>
+/// <summary>
+/// A file that arrived whole. It was acknowledged already, unless <see cref="AwaitsAccept"/>: then
+/// the application calls <see cref="Accept"/> once it has stored the file, or <see cref="Refuse"/>
+/// when it cannot, and the far end sends it again (<see cref="CftpOptions.AcceptByApplication"/>,
+/// interp V-0093).
+/// </summary>
 /// <param name="From">The node it came from.</param>
 /// <param name="FileName">The BFTPv1 file name as sent (V-0041); make it safe with <see cref="CftpFileNames"/> before storing it.</param>
 /// <param name="CompressedFile">The file as carried.</param>
 /// <param name="Mail">The mail it holds, or null when it is not a readable CFTP mail (interp V-0079).</param>
 /// <param name="Error">Why <paramref name="Mail"/> is null.</param>
-public sealed record CftpReceived(SisAddress From, string FileName, byte[] CompressedFile, CftpMail? Mail, string? Error);
+public sealed record CftpReceived(SisAddress From, string FileName, byte[] CompressedFile, CftpMail? Mail, string? Error)
+{
+    /// <summary>Answers the engine for this file: true accepts, false refuses; returns whether it still waited.</summary>
+    internal Func<bool, bool>? Answer { get; init; }
+
+    /// <summary>True when the far end has no acknowledgement yet and waits for <see cref="Accept"/>.</summary>
+    public bool AwaitsAccept => Answer is not null;
+
+    /// <summary>
+    /// The file is stored: send the acknowledgement now (V-0045). Returns false when there is
+    /// nothing to acknowledge: the file was acknowledged on arrival, answered already, waited
+    /// longer than <see cref="CftpOptions.ReassemblyTimeout"/>, or the client is disposed. A file
+    /// not acknowledged comes again, so the application should accept a copy it already holds.
+    /// </summary>
+    public bool Accept() => Answer?.Invoke(true) ?? false;
+
+    /// <summary>The file could not be stored: send no acknowledgement, so the far end sends it again (interp V-0076). Returns as <see cref="Accept"/> does.</summary>
+    public bool Refuse() => Answer?.Invoke(false) ?? false;
+}
 
 /// <summary>
 /// A CFTP client (Annex V) over the SIS: bound to SAP 12 (V-0010) for ARQ, it sends mail to one
@@ -216,10 +239,34 @@ public sealed class CftpClient : IAsyncDisposable
         bool ok = CftpMail.TryFromCompressedFile(f.FileData, out CftpMail? mail, out _, out string? what);
         if (!ok)
         {
-            Say($"a file from {f.Source:x7} was acknowledged but {what} (interp V-0079)");
+            Say($"a file from {f.Source:x7} was {(f.AwaitsAccept ? "received" : "acknowledged")} but {what} (interp V-0079)");
         }
 
-        _received.Writer.TryWrite(new CftpReceived(from, CftpMailFile.Octets.GetString(f.FileName), f.FileData, mail, what));
+        var r = new CftpReceived(from, CftpMailFile.Octets.GetString(f.FileName), f.FileData, mail, what)
+        {
+            Answer = f.AwaitsAccept ? accept => Answer(f.ReceiveId, accept) : null,
+        };
+        if (!_received.Writer.TryWrite(r) && f.AwaitsAccept)
+        {
+            Answer(f.ReceiveId, false);
+        }
+    }
+
+    private bool Answer(long receiveId, bool accept)
+    {
+        if (_stop.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        bool waited;
+        lock (_gate)
+        {
+            waited = accept ? _engine.Accept(receiveId, Now) : _engine.Refuse(receiveId, Now);
+        }
+
+        Run();
+        return waited;
     }
 
     private async Task SendOneAsync(CftpSendUPdu s, Task previous, TaskCompletionSource written)

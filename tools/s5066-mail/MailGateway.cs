@@ -43,7 +43,8 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
         _config = config;
         _log = log;
         _time = time ?? TimeProvider.System;
-        _cftpOptions = cftpOptions ?? new CftpOptions();
+        // The CFTP acknowledgement goes only once a received mail is in the spool (interp V-0091, V-0093).
+        _cftpOptions = (cftpOptions ?? new CftpOptions()) with { AcceptByApplication = true };
         _spool = new Spool(config.Spool, Now);
         if (config.Relay is { } r)
         {
@@ -175,13 +176,28 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
         byte[] traced = [.. Encoding.ASCII.GetBytes(SmtpListener.ReceivedHeader(envelope, _config.Hostname, id, now)), .. message];
         try
         {
+            // One spool item per node, all queued or none (Spool.AddAll). A part already queued
+            // under the same key, from a try the client did not see succeed, is not queued again.
+            var queued = _spool.List(SpoolQueue.Hf).Where(i => i.Key is not null).ToDictionary(i => i.Key!, i => i.Id, StringComparer.Ordinal);
+            var parts = new List<(SpoolItem Item, byte[] Message)>();
             int n = 0;
             foreach (IGrouping<SisAddress, string> g in envelope.Recipients.GroupBy(r => _config.Routes.Lookup(r)!.Value))
             {
                 string itemId = n++ == 0 ? id : id + "-" + n.ToString(CultureInfo.InvariantCulture);
-                var item = new SpoolItem(itemId, SpoolQueue.Hf, now, envelope.ReturnPath, [.. g], g.Key.Dotted, CftpMail.NewMessageId(), null) { NextAttempt = now };
-                _spool.Add(item, traced);
-                _log($"s5066-mail: {itemId} taken from <{envelope.ReturnPath}> for {item.Recipients.Count} recipient(s) at node {item.Node}, {traced.Length} octets");
+                string key = PartKey(envelope.ReturnPath, g.Key, [.. g], message);
+                if (queued.TryGetValue(key, out string? already))
+                {
+                    _log($"s5066-mail: mail from <{envelope.ReturnPath}> for node {g.Key.Dotted} is already queued as {already}; not queued again");
+                    continue;
+                }
+
+                parts.Add((new SpoolItem(itemId, SpoolQueue.Hf, now, envelope.ReturnPath, [.. g], g.Key.Dotted, CftpMail.NewMessageId(), null) { NextAttempt = now, Key = key }, traced));
+            }
+
+            _spool.AddAll(parts);
+            foreach ((SpoolItem item, _) in parts)
+            {
+                _log($"s5066-mail: {item.Id} taken from <{envelope.ReturnPath}> for {item.Recipients.Count} recipient(s) at node {item.Node}, {traced.Length} octets");
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -194,7 +210,30 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
         return new SmtpReply(250, [$"2.0.0 queued as {id}"]);
     }
 
-    private static int CountReceived(byte[] message)
+    /// <summary>What makes one node's part of a mail the same mail when a client tries again.</summary>
+    internal static string PartKey(string returnPath, SisAddress node, IReadOnlyList<string> recipients, byte[] message)
+    {
+        using var h = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        h.AppendData(Encoding.UTF8.GetBytes(returnPath + "\n" + node.Dotted + "\n" + string.Join(",", recipients) + "\n"));
+        h.AppendData(message);
+        return Convert.ToHexString(h.GetHashAndReset());
+    }
+
+    /// <summary>The trace line put on a mail from HF before it goes to the relay (RFC 5321 4.4).</summary>
+    internal static string HfReceivedHeader(SisAddress from, string hostname, string id, IReadOnlyList<string> recipients, DateTimeOffset now)
+    {
+        var sb = new StringBuilder();
+        sb.Append(CultureInfo.InvariantCulture, $"Received: from s5066-{from.Dotted.Replace('.', '-')}\r\n\tby {hostname} (s5066-mail) via STANAG-5066 with CFTP id {id}");
+        if (recipients.Count == 1)
+        {
+            sb.Append(CultureInfo.InvariantCulture, $"\r\n\tfor <{recipients[0]}>");
+        }
+
+        sb.Append(CultureInfo.InvariantCulture, $"; {now.ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss +0000", CultureInfo.InvariantCulture)}\r\n");
+        return sb.ToString();
+    }
+
+    private static int CountReceived(ReadOnlySpan<byte> message)
     {
         ReadOnlySpan<byte> headers = Dsn.HeaderSection(message);
         int count = 0;
@@ -256,8 +295,11 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
     }
 
     /// <summary>
-    /// Mail from HF: spooled for the relay once the CFTP client has acknowledged it, unless the same
-    /// node sent the same MessageID within a week (interp V-0092).
+    /// Mail from HF: spooled for the relay, unless the same node sent the same MessageID within a
+    /// week (interp V-0092), and only then accepted, so the CFTP acknowledgement goes once it is on
+    /// disk (interp V-0091, V-0093). A mail that cannot be spooled is refused, so the far end sends
+    /// it again. A file that will never be delivered (not a mail, a bad address, a loop) is accepted
+    /// and dropped, since sending it again would not help (interp V-0079).
     /// </summary>
     private async Task ReceiveLoopAsync(CftpClient cftp, CancellationToken ct)
     {
@@ -266,6 +308,7 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
             string from = r.From.Dotted;
             if (r.Mail is not { } mail)
             {
+                r.Accept();
                 _log($"s5066-mail: a file from node {from} is not a CFTP mail ({r.Error}); dropped (interp V-0079)");
                 continue;
             }
@@ -279,31 +322,53 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
             {
                 // The addresses go into SMTP commands to the relay: refuse anything that is not a
                 // plain ASCII user@domain rather than pass on control characters.
+                r.Accept();
                 _log($"s5066-mail: mail {messageId} from node {from} has an address that is not a plain user@domain; dropped");
+                continue;
+            }
+
+            if (CountReceived(mail.Message.Span) >= MaxHops)
+            {
+                r.Accept();
+                _log($"s5066-mail: mail {messageId} from node {from} has {MaxHops} or more Received lines, a mail loop; dropped");
                 continue;
             }
 
             DateTimeOffset now = Now;
             if (_spool.Seen(from, messageId, now))
             {
+                r.Accept();
                 _log($"s5066-mail: mail {messageId} from node {from} was already taken in; not forwarded again");
                 continue;
             }
 
             var item = new SpoolItem(Spool.NewId(now), SpoolQueue.Smtp, now, returnPath,
                 recipients, null, messageId, from) { NextAttempt = now };
+            byte[] traced = [.. Encoding.ASCII.GetBytes(HfReceivedHeader(r.From, _config.Hostname, item.Id, recipients, now)), .. mail.Message.Span];
             try
             {
-                _spool.Add(item, mail.Message.Span);
+                _spool.Add(item, traced);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                r.Refuse();
+                _log($"s5066-mail: could not spool mail {messageId} from node {from}: {e.Message}; not acknowledged, so it comes again");
+                continue;
+            }
+
+            try
+            {
                 _spool.Remember(from, messageId, now);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                _log($"s5066-mail: could not spool mail {messageId} from node {from}: {e.Message}; it is lost unless sent again");
-                continue;
+                // The mail is safe; forgetting its MessageID risks only a duplicate if it comes again.
+                _log($"s5066-mail: could not note mail {messageId} from node {from} as received: {e.Message}");
             }
 
-            _log($"s5066-mail: {item.Id} mail {messageId} from node {from} for {item.Recipients.Count} recipient(s), {mail.Message.Length} octets");
+            bool acked = r.Accept();
+            _log($"s5066-mail: {item.Id} mail {messageId} from node {from} for {item.Recipients.Count} recipient(s), {mail.Message.Length} octets"
+                + (acked || !r.AwaitsAccept ? "" : "; too late to acknowledge, the far end will send it again"));
             _smtpWork.Set();
         }
     }

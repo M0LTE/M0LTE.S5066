@@ -114,7 +114,7 @@ public class MailGatewayAudioTests
             (SmtpEnvelope env, byte[] body) = got.Single(m => m.Envelope.Helo == "gw-b.test");
             env.ReturnPath.Should().Be("alice@a.test");
             env.Recipients.Should().Equal("bob@b.test");
-            Encoding.ASCII.GetString(body).Should().StartWith("Received: from client.test").And.EndWith("\r\n" + message);
+            Encoding.ASCII.GetString(body).Should().StartWith("Received: from s5066-").And.Contain("\r\nReceived: from client.test").And.EndWith("\r\n" + message);
 
             (SmtpEnvelope bounceEnv, byte[] bounce) = got.Single(m => m.Envelope.Helo == "gw-a.test");
             bounceEnv.ReturnPath.Should().BeEmpty();

@@ -251,4 +251,89 @@ public class SmtpTests
         using X509Certificate2 c = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
         return X509CertificateLoader.LoadPkcs12(c.Export(X509ContentType.Pfx), null);
     }
+    [Fact]
+    public async Task A_relay_reply_of_more_than_100_lines_is_refused()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Task server = Task.Run(async () =>
+        {
+            using TcpClient c = await listener.AcceptTcpClientAsync(ct);
+            var lines = new SmtpLines(c.GetStream());
+            for (int n = 0; n < 200; n++)
+            {
+                await lines.WriteLineAsync("220-more", ct);
+            }
+
+            await lines.WriteLineAsync("220 done", ct);
+        }, ct);
+
+        Func<Task> send = () => ClientFor(port).SendAsync("a@x.test", ["b@x.test"], "x"u8.ToArray(), ct);
+        await send.Should().ThrowAsync<IOException>().WithMessage("*more than 100 lines*");
+        try
+        {
+            await server;
+        }
+        catch (IOException)
+        {
+            // The client hung up while the server was still writing.
+        }
+
+        listener.Stop();
+    }
+
+    /// <summary>A handler whose Deliver blocks until the test lets it go.</summary>
+    private sealed class SlowHandler : ISmtpHandler
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ManualResetEventSlim Go { get; } = new();
+
+        public long MaxMessageBytes => 1_000_000;
+
+        public SmtpReply? CheckRecipient(string returnPath, IReadOnlyList<string> accepted, string recipient) => null;
+
+        public SmtpReply Deliver(SmtpEnvelope envelope, byte[] message)
+        {
+            Entered.TrySetResult();
+            Go.Wait(TimeSpan.FromSeconds(30));
+            return new SmtpReply(250, ["2.0.0 queued"]);
+        }
+    }
+
+    [Fact]
+    public async Task Shutdown_lets_a_session_finish_the_mail_it_is_taking()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var h = new SlowHandler();
+        var l = new SmtpListener(new IPEndPoint(IPAddress.Loopback, 0), "gw.test", h, _ => { });
+        l.Start();
+        Task<IReadOnlyList<RecipientResult>> send = ClientFor(l.Endpoint.Port).SendAsync("a@x.test", ["b@x.test"], "Subject: t\r\n\r\nhi\r\n"u8.ToArray(), ct);
+        await h.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Task dispose = l.DisposeAsync().AsTask();
+        await Task.Delay(300, ct);
+        dispose.IsCompleted.Should().BeFalse("the listener waits for the open session");
+        h.Go.Set();
+        (await send.WaitAsync(TimeSpan.FromSeconds(20), ct)).Should().ContainSingle().Which.Outcome.Should().Be(RecipientOutcome.Accepted);
+        await dispose.WaitAsync(TimeSpan.FromSeconds(20), ct);
+    }
+
+    [Fact]
+    public async Task Shutdown_cuts_off_an_idle_session_after_the_grace_period()
+    {
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        var l = new SmtpListener(new IPEndPoint(IPAddress.Loopback, 0), "gw.test", new SlowHandler(), _ => { }) { ShutdownGrace = TimeSpan.FromMilliseconds(300) };
+        l.Start();
+        using var c = new TcpClient();
+        await c.ConnectAsync(IPAddress.Loopback, l.Endpoint.Port, ct);
+        var lines = new SmtpLines(c.GetStream());
+        (await lines.ReadTextLineAsync(512, ct)).Should().StartWith("220 ");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await l.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(20), ct);
+        clock.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(250)).And.BeLessThan(TimeSpan.FromSeconds(5));
+    }
 }

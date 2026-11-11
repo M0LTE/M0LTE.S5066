@@ -29,6 +29,21 @@ await foreach (CftpReceived r in cftp.Received.ReadAllAsync())
 
 `CftpOptions` changes the acknowledgement wait, the retry delay, the number of tries, the priority (4 by default) and, for a far end known to take several files at once, how many go together.
 
+By default a file is acknowledged as soon as its last byte is in. An application that stores what it receives can hold the acknowledgement until the file is safe, so a crash or a full disk never loses a file the far end thinks was delivered:
+
+```csharp
+var options = new CftpOptions { AcceptByApplication = true };
+await using CftpClient cftp = await CftpClient.ConnectAsync("127.0.0.1", 5066, options);
+
+await foreach (CftpReceived r in cftp.Received.ReadAllAsync())
+{
+    if (TrySave(r)) r.Accept();   // the acknowledgement goes now
+    else r.Refuse();              // none goes; the far end sends the file again
+}
+```
+
+A file not answered within the reassembly timeout (1 hour) is let go unacknowledged. A copy that comes again after it was accepted is acknowledged at once and not handed over twice. Interp V-0093 has the details.
+
 The protocol itself is `CftpEngine`, which has no clock, socket or thread of its own, so it can be tested on a virtual clock and ported byte for byte; `CftpClient` drives it over `SisClient`.
 
 ## Trying it
