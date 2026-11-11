@@ -15,7 +15,7 @@ on:
       - 'v*.*.*'
 
 jobs:
-  # The .debs for s5066d and s5066-test, built on native amd64 and arm64 runners and install-tested
+  # The .debs for s5066d, s5066-test and s5066-ip, built on native amd64 and arm64 runners and install-tested
   # on Debian 13. Independent of the NuGet job; attached to the GitHub release by attach-debs below.
   debs:
     uses: ./.github/workflows/deb.yml
