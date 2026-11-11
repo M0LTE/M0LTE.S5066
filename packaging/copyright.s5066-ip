@@ -1,0 +1,19 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: M0LTE.S5066
+Source: https://github.com/M0LTE/M0LTE.S5066
+Comment:
+ s5066-ip ships as a self-contained single-file executable that bundles the .NET
+ runtime and libraries (Copyright .NET Foundation and Contributors, MIT
+ licence).
+ .
+ s5066-ip links only M0LTE.S5066.Client and M0LTE.S5066.Core, not
+ pdn-soundmodem or anything else under the GPL, so it is distributed under
+ AGPL-3.0-or-later, and like those libraries it can also be licensed
+ commercially from the copyright holder (see the repository README).
+
+Files: *
+Copyright: 2026 Tom Fanning M0LTE
+License: AGPL-3.0-or-later
+ The full text of the GNU Affero General Public License version 3 is in
+ /usr/share/common-licenses/AGPL-3 on systems that ship it, and at
+ https://www.gnu.org/licenses/agpl-3.0.html.

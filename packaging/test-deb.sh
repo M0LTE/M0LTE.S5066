@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install test for the s5066d and s5066-test .debs in a throwaway Debian 13 container.
+# Install test for the s5066d, s5066-test and s5066-ip .debs in a throwaway Debian 13 container.
 #
 #   packaging/build-deb.sh 0.0.0-test amd64
 #   packaging/test-deb.sh [version] [debdir] [arch]
@@ -14,7 +14,7 @@ VERSION="${1:-0.0.0-test}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEBDIR="$(cd "${2:-$(dirname "$HERE")/artifacts}" && pwd)"
 ARCH="${3:-amd64}"
-for p in s5066d s5066-test; do
+for p in s5066d s5066-test s5066-ip; do
   [ -f "$DEBDIR/${p}_${VERSION}_${ARCH}.deb" ] || { echo "no $DEBDIR/${p}_${VERSION}_${ARCH}.deb" >&2; exit 2; }
 done
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
@@ -35,7 +35,7 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1
-if ! apt-get install -y -qq "/debs/s5066d_${VERSION}_${ARCH}.deb" "/debs/s5066-test_${VERSION}_${ARCH}.deb" >/tmp/apt.log 2>&1; then
+if ! apt-get install -y -qq "/debs/s5066d_${VERSION}_${ARCH}.deb" "/debs/s5066-test_${VERSION}_${ARCH}.deb" "/debs/s5066-ip_${VERSION}_${ARCH}.deb" >/tmp/apt.log 2>&1; then
   cat /tmp/apt.log; bad "apt install"
 fi
 
@@ -70,6 +70,22 @@ check "s5066d example.json starts"  "echo \"\$OUT\" | grep -q 's5066d: node'"
 OUT="$(timeout 20 s5066d /etc/s5066d/radio-ft818.json 2>&1 </dev/null)"; RC=$?
 echo "$OUT" | head -3 | sed 's/^/    /'
 check "radio config reaches ALSA"   "[ $RC -eq 1 ] && echo \"\$OUT\" | grep -q capture_device && ! echo \"\$OUT\" | grep -qi 'libasound\|unhandled'"
+
+echo "== s5066-ip =="
+check "s5066-ip installed"          "dpkg -l s5066-ip | grep -q '^ii'"
+check "s5066-ip on PATH"            "command -v s5066-ip >/dev/null && [ -x /usr/lib/s5066-ip/s5066-ip ]"
+check "s5066-ip unit installed"     "grep -q '^ExecStart=/usr/bin/s5066-ip /etc/s5066-ip/s5066-ip.json' /usr/lib/systemd/system/s5066-ip.service"
+check "s5066-ip unit has the cap"   "grep -q '^AmbientCapabilities=CAP_NET_ADMIN' /usr/lib/systemd/system/s5066-ip.service && grep -q '^Type=notify' /usr/lib/systemd/system/s5066-ip.service"
+check "s5066-ip conffile"           "[ -f /etc/s5066-ip/example.json ] && dpkg-query -W -f='\${Conffiles}' s5066-ip | grep -q /etc/s5066-ip/example.json"
+check "s5066-ip unit not enabled"   "[ ! -e /etc/systemd/system/multi-user.target.wants/s5066-ip.service ]"
+check "s5066-ip doc and copyright"  "[ -f /usr/share/doc/s5066-ip/copyright ] && [ -f /usr/share/doc/s5066-ip/s5066-ip.md ]"
+OUT="$(s5066-ip --help 2>&1)"; RC=$?; echo "$OUT" | head -2 | sed 's/^/    /'
+check "s5066-ip --help prints usage" "[ $RC -eq 2 ] && echo \"\$OUT\" | grep -qi usage"
+# The example parses; with no /dev/net/tun (or no CAP_NET_ADMIN) in the container it stops at the device, cleanly.
+OUT="$(timeout 20 s5066-ip /etc/s5066-ip/example.json 2>&1 </dev/null)"; RC=$?; echo "$OUT" | head -2 | sed 's/^/    /'
+check "s5066-ip example reaches the tun" "[ $RC -eq 1 ] && echo \"\$OUT\" | grep -q 'tun' && ! echo \"\$OUT\" | grep -qi 'unhandled'"
+apt-get purge -y -qq s5066-ip >/dev/null 2>&1
+check "s5066-ip purged clean"       "[ ! -e /etc/s5066-ip ] && [ ! -e /usr/bin/s5066-ip ]"
 
 echo "== upgrade =="
 # The same package as a newer version: edited conffiles and the operator's s5066d.json survive.

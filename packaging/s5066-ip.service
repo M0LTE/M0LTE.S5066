@@ -1,0 +1,28 @@
+[Unit]
+Description=s5066-ip STANAG 5066 IP client (Annex U) on a tun device
+Documentation=https://github.com/M0LTE/M0LTE.S5066/blob/main/docs/s5066-ip.md
+After=network.target s5066d.service
+# Not enabled by the package. Copy /etc/s5066-ip/example.json to s5066-ip.json, edit it, add your
+# addresses and routes in a drop-in (see the docs), then "systemctl enable --now s5066-ip".
+ConditionPathExists=/etc/s5066-ip/s5066-ip.json
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+# Ready once the tun device is up, so ExecStartPost lines in a drop-in can add addresses and routes.
+Type=notify
+ExecStart=/usr/bin/s5066-ip /etc/s5066-ip/s5066-ip.json
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+DynamicUser=yes
+# Creating and configuring the tun device needs CAP_NET_ADMIN, and nothing else.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
