@@ -222,3 +222,20 @@ Studybox, 1800 s, seeds 1 to 3, the same table and `sweep-node.json` as round 4.
 No link was lost in any run. Seeds 1 and 2 are identical to the bit at every point but Poor-SSB 30 dB: the change altered no decision in them. Seed 3 diverges at every point but Poor-SSB 18 dB, after one such wait changes the contention order; the changes are within the 10 to 20% a seed moves when that happens (AWGN 9 dB seed 3 1111 to 1017 is the only fall). On Poor-SSB 30 dB the transmissions on WN 8 Long, the rung that never decodes there, went from 17, 10 and 1 per run to 4, 3 and 3 (10 of 207 transmissions in all, 4.8%, before ruling (f) leaves out those before each node's first ceiling): each is now a failed trial, and the failed-trial ceiling, doubling to `tx_ceiling_cap`, spaces them out; node b still recommends WN 8 Long throughout, since it never decodes a header of them.
 
 Review change (same corpus): an ACK that acknowledges none of the awaited transmission's D_PDUs and marks them all failed (C-0908, C-0910) stops `dts.ack_wait` without an expiry. As first built that left the transmission neither answered nor failed, and its retransmission at the same rung was a trial again, so a peer that sends its receive state with its own traffic, whether or not it has new data to acknowledge (C-1128 leaves that to the implementation), would have reproduced the defect. Such an ACK now counts as the silent wait it replaces (interp C-1281, scenario `drc/tx-ack-failing-all-is-no-answer`). Between two of our nodes it arises only when a node acknowledges data it decoded from that transmission without covering any of its D_PDUs, which our acknowledgement rules do not do. Checked on studybox: Poor and Poor-SSB at 18 and 30 dB, seeds 1 and 3, 1800 s, eight runs before and after the change, every result file identical but for build versions and timings, so the table above stands.
+
+## Issue #109: no trial or probe before a link's first C_PDU (2026-11-11)
+
+Interp C-1293 (coordinator ruling 2026-11-11, corpus 0.41.0): on a new link the sender sends nothing above the answered rung until a C_PDU of the link is confirmed in full, and the receiver does not probe MAX-SPEED until it has received a complete C_PDU from the peer. Studybox, 1800 s, warm-up 60 s, `--first-data-ms derived` (456 s), the calibrated table. Before is main 212e789, after is this change. Goodput in bit/s, mean over the seeds, and links lost summed over both nodes.
+
+| Point | Seeds | Links lost before | after | Goodput before | after |
+|---|---|---|---|---|---|
+| Poor-SSB 0 dB | 1 to 5 | 8 (seeds 1, 3, 4, 5) | 2 (seed 3) | 22.6 | 35.8 |
+| Poor-SSB 3 dB | 1 to 5 | 0 | 0 | 69.7 | 64.0 |
+| Poor-SSB 6 dB | 1 to 5 | 0 | 0 | 209.0 | 178.9 |
+| Poor-SSB 18 dB | 1, 2 | 0 | 0 | 1149 | 758 |
+| Poor 18 dB | 1, 2 | 0 | 0 | 2175 | 1874 |
+| AWGN 18 dB | 1, 2 | 0 | 0 | 2495 | 2255 |
+
+- **0 dB:** one seed in five still loses its link. In seed 3 the first link never leaves WN 1 Long, but three collisions and the peer's own traffic mean the first 2048-byte C_PDU is not done when the Called node's derived first-data wait (456 s, interp B-0420) runs out at 495 s. The wait itself is unchanged.
+- **18 dB costs 10 to 34%.** The first 2048-byte C_PDU now goes at drc.default_speed (WN 2 Long), which takes about 85 s more. After that the climb starts from a MAX-SPEED the receiver set by the estimate alone. With the probe held, AWGN 18 dB seed 1 reached WN 8 Long at 402 s instead of 240 s.
+- **3 and 6 dB:** within seed noise, or slightly lower (6 dB seed 2: 217 to 75 bit/s).
