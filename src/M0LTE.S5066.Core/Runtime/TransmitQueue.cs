@@ -978,12 +978,24 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
+        int? acks = null;
         foreach (ArqLink link in _links.Values)
         {
             if (link.AckOwed && !link.Suspended)   // C-0257
             {
-                return link.Acknowledgement().Sum(u => AckOnlySize(link, u.Data.Length));
+                acks = (acks ?? 0) + link.Acknowledgement().Sum(u => AckOnlySize(link, u.Data.Length));
             }
+        }
+
+        if (acks is int ackBytes)
+        {
+            // Issue #109: the oldest retransmission goes after the acknowledgements, and a limit may not
+            // block it (C-0551, C-0878): the transmission must hold both (interp C-1042).
+            return FailedFrames(_control).FirstOrDefault() is ArqFrame owed
+                ? ackBytes + DataOnlySize(_links[owed.Owner.Peer], FrameLength(owed))
+                : _links.Values.First(l => l.AckOwed && !l.Suspended) is ArqLink firstLink
+                    ? firstLink.Acknowledgement().Sum(u => AckOnlySize(firstLink, u.Data.Length))
+                    : ackBytes;
         }
 
         foreach (ArqFrame f in FailedFrames(_control))
