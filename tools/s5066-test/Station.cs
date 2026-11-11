@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using M0LTE.S5066.Cftp;
 using M0LTE.S5066.Client;
 using M0LTE.S5066.Core.Sis;
 
@@ -82,6 +83,12 @@ internal sealed class Station : IAsyncDisposable
     /// <summary>Verdicts on files sent.</summary>
     public Inbox<FileVerdict> Verdicts { get; } = new();
 
+    /// <summary>CFTP mail received (Annex V, SAP 12).</summary>
+    public Inbox<MailReceived> Mails { get; } = new();
+
+    /// <summary>The CFTP client on SAP 12, or null when the node would not bind it.</summary>
+    public CftpClient? Cftp { get; private set; }
+
     /// <summary>Echoes received.</summary>
     public Inbox<EchoReceived> Echoes { get; } = new();
 
@@ -104,6 +111,7 @@ internal sealed class Station : IAsyncDisposable
             s.Hook(data);
             _ = s.ChatLoopAsync();
             _ = s.DataLoopAsync();
+            await s.StartCftpAsync(host, port, cancellationToken).ConfigureAwait(false);
             return s;
         }
         catch
@@ -162,8 +170,49 @@ internal sealed class Station : IAsyncDisposable
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
+        if (Cftp is not null)
+        {
+            await Cftp.DisposeAsync().ConfigureAwait(false);
+        }
+
         await Chat.DisposeAsync().ConfigureAwait(false);
         await Data.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Binds SAP 12 on a third connection for CFTP; a node that refuses leaves the other activities working.</summary>
+    private async Task StartCftpAsync(string host, int port, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Cftp = await CftpClient.ConnectAsync(host, port, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (SisBindRejectedException e)
+        {
+            Say($"CFTP unavailable: the node refused SAP {CftpClient.Sap}, reason {e.Reason}");
+            return;
+        }
+
+        Cftp.Note += t => Say($"cftp: {t}");
+        _ = CftpLoopAsync(Cftp);
+    }
+
+    private async Task CftpLoopAsync(CftpClient c)
+    {
+        await foreach (CftpReceived r in c.Received.ReadAllAsync().ConfigureAwait(false))
+        {
+            try
+            {
+                MailReceived m = CftpActivity.Receive(r, SaveDir);
+                Mails.Add(m);
+                Say(m.Error is null
+                    ? $"cftp mail {m.MessageId} ({m.Bytes} bytes) from {Addresses.Show(r.From)} for {string.Join(", ", m.Recipients)}{(m.SavedTo.Count == 0 ? "" : $", saved as {m.SavedTo[^2]}")}"
+                    : $"cftp file from {Addresses.Show(r.From)} that is not a mail: {m.Error}");
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Say($"could not save a CFTP mail: {e.Message}");
+            }
+        }
     }
 
     private void Hook(SisClient c)

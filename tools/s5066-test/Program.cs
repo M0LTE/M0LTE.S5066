@@ -10,6 +10,7 @@ const string Usage = """
       s5066-test run <scenario.json> [--json result.json] [--quiet]
       s5066-test chat --to addr --text text [--node host:port]
       s5066-test file --to addr (--path file | --bytes n) [--confirm none|node|client] [--window n] [--no-verdict]
+      s5066-test cftp --to addr (--path file | --bytes n) [--rcpt mailbox] [--return-path mailbox]
       s5066-test perf --to addr [--count n] [--size bytes] [--mode arq|nonarq] [--confirm none|node|client] [--echo] [--window n]
       s5066-test info [--node host:port]
       s5066-test monitor (--wav file | --udp host:port | --card alsa-device [--rate 48000]) [--jsonl file] [--quiet]
@@ -67,7 +68,7 @@ try
             return await RunAndReportAsync(scenario, Path.GetDirectoryName(Path.GetFullPath(positional))!, opts.GetValueOrDefault("--json"), flags.Contains("--quiet"));
         }
 
-        case "chat" or "file" or "perf" or "info":
+        case "chat" or "file" or "cftp" or "perf" or "info":
         {
             var step = new ScenarioStep
             {
@@ -88,6 +89,8 @@ try
                 Ttl = Int(opts, "--ttl") is { } ttl ? (uint)ttl : null,
                 SegmentBytes = Int(opts, "--segment-bytes"),
                 Verdict = flags.Contains("--no-verdict") ? false : null,
+                ReturnPath = opts.GetValueOrDefault("--return-path"),
+                Recipients = opts.TryGetValue("--rcpt", out string? rc) ? [.. rc.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)] : null,
                 TimeoutS = opts.TryGetValue("--timeout", out string? t) ? double.Parse(t, CultureInfo.InvariantCulture) : null,
             };
             var scenario = new Scenario { Nodes = new() { ["node"] = node }, Sap = sap, Steps = [step] };
@@ -155,7 +158,7 @@ static async Task<int> ServeAsync(string node, byte sap, string? saveDir, double
 {
     await using Station s = await Station.ConnectAsync("serve", node, sap, saveDir);
     s.Note += line => Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] {line}");
-    Console.WriteLine($"s5066-test serving on {node}: chat on SAP {Station.ChatSap}, data on SAP {sap}");
+    Console.WriteLine($"s5066-test serving on {node}: chat on SAP {Station.ChatSap}, data on SAP {sap}{(s.Cftp is null ? "" : $", CFTP on SAP {M0LTE.S5066.Cftp.CftpClient.Sap}")}");
     var stop = new TaskCompletionSource();
     Console.CancelKeyPress += (_, e) =>
     {
