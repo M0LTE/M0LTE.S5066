@@ -444,6 +444,32 @@ public class TransmitQueueTests
     }
 
     [Fact]
+    public void A_retransmission_behind_an_owed_acknowledgement_still_stretches_the_transmission()
+    {
+        // Interp C-1042 (issue #109), C-0852, C-0551, C-0878: as above, but the peer has sent data and is owed
+        // an acknowledgement, which the build places first. The 219-byte retransmission does not fit the
+        // one-block limit after it; it must not be skipped (before the fix it went only when no acknowledgement
+        // was owed, so a peer sending on every turn starved it), so the transmission holds both.
+        var q = new Rig(maxTransmissionMs: 720 + 3 * 4800);
+        q.Context.Peers.SetEdition(X, KnownEdition.Ed4);
+        ArqLink link = q.Tx.OpenLink(X);
+        q.Tx.AddArq(Arq(X, 200));
+        q.Tx.AddArq(Arq(X, 4));
+        q.Tx.AddArq(Arq(X, 4));
+        q.Tx.Build();
+        q.Tx.OnAck(X, 0, 1, 0, [0x81]);
+        link.Receive(0, true, true, false, false, [1]);
+        q.Tx.AckOwed();
+
+        q.Context.Config = q.Context.Config with { Dts = new DtsConfig(1023, 720 + 4800) };
+        Transmit t = q.Tx.Build();
+        q.Decode(t).Where(p => p is DataOnly or DataAck).Select(p => p switch { DataOnly d => d.TxFsn, DataAck d => d.TxFsn, _ => -1 }).Should().Equal(0);
+        q.Decode(t).Should().Contain(p => p is AckOnly || p is DataAck);
+        q.Context.Modem.PlanBurst(2, Interleaver.Long, t.Bytes.Length).Blocks.Should().BeGreaterThan(1);
+        link.Outstanding.Should().ContainSingle().Which.State.Should().Be(ArqFrameState.Awaiting);
+    }
+
+    [Fact]
     public void A_first_segment_to_an_ed3_peer_stretches_the_transmission()
     {
         // Interp C-1042, C-0551, C-0554: towards an Ed3 peer a segment may not be shortened, so a 118-byte

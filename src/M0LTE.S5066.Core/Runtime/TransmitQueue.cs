@@ -960,7 +960,10 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// eligibility rules of <see cref="Select"/>, so a non-null answer is exactly what Select takes first,
     /// except that a first transmission of an ARQ segment to a peer recorded Ed4 answers the smallest
     /// D_PDU it may be cut to, one byte of segment (C-0553; interp C-1042): that D_PDU is cut to the
-    /// configured length rather than stretching the transmission past it (interp C-1155).
+    /// configured length rather than stretching the transmission past it (interp C-1155), and that with
+    /// an acknowledgement owed and a failed ARQ D_PDU awaiting retransmission it answers every owed
+    /// acknowledgement plus that retransmission, which the build takes next (C-0852): a limit may not
+    /// block the retransmission behind them (C-0551, C-0878; interp C-1042, revised for issue #109).
     /// </summary>
     private int? FirstItemSize()
     {
@@ -978,24 +981,24 @@ internal sealed class TransmitQueue : ITransmissionSource
             }
         }
 
-        int? acks = null;
+        ArqLink? firstOwing = null;
+        int ackBytes = 0;   // every owed acknowledgement, which the build places before any retransmission (C-0852)
         foreach (ArqLink link in _links.Values)
         {
             if (link.AckOwed && !link.Suspended)   // C-0257
             {
-                acks = (acks ?? 0) + link.Acknowledgement().Sum(u => AckOnlySize(link, u.Data.Length));
+                firstOwing ??= link;
+                ackBytes += link.Acknowledgement().Sum(u => AckOnlySize(link, u.Data.Length));
             }
         }
 
-        if (acks is int ackBytes)
+        if (firstOwing is not null)
         {
-            // Issue #109: the oldest retransmission goes after the acknowledgements, and a limit may not
-            // block it (C-0551, C-0878): the transmission must hold both (interp C-1042).
+            // The first retransmission the build would take comes after the acknowledgements; the limit may
+            // not block it (C-0551, C-0878), so the transmission must hold both (interp C-1042, issue #109).
             return FailedFrames(_control).FirstOrDefault() is ArqFrame owed
                 ? ackBytes + DataOnlySize(_links[owed.Owner.Peer], FrameLength(owed))
-                : _links.Values.First(l => l.AckOwed && !l.Suspended) is ArqLink firstLink
-                    ? firstLink.Acknowledgement().Sum(u => AckOnlySize(firstLink, u.Data.Length))
-                    : ackBytes;
+                : firstOwing.Acknowledgement().Sum(u => AckOnlySize(firstOwing, u.Data.Length));
         }
 
         foreach (ArqFrame f in FailedFrames(_control))
