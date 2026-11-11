@@ -166,4 +166,20 @@ public class PolicyTests
             """);
         (c.SisHost, c.SisPort, c.Device, c.QueueLimit).Should().Be(("192.0.2.5", 5070, "hf0", 8));
     }
+
+    [Fact]
+    public void The_packaged_example_configuration_parses()
+    {
+        string dir = AppContext.BaseDirectory;
+        while (!File.Exists(Path.Combine(dir, "tools", "s5066-ip", "example.json")))
+        {
+            dir = Path.GetDirectoryName(dir) ?? throw new FileNotFoundException("tools/s5066-ip/example.json");
+        }
+
+        IpConfig c = IpConfig.Load(Path.Combine(dir, "tools", "s5066-ip", "example.json"));
+        c.Routes.Should().HaveCount(2);
+        c.Device.Should().Be("s5066");
+        c.Allow.Should().BeNull();
+        c.MulticastGroup.Should().BeNull();
+    }
 }

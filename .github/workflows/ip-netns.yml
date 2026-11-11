@@ -1,0 +1,36 @@
+name: ip-netns
+
+# End-to-end test of s5066-ip on real tun devices (P10-2): two network namespaces on the runner,
+# each with an s5066d over UDP audio and an s5066-ip, and IPv4 and IPv6 pings across the 5066
+# link. Needs root on the runner, which GitHub-hosted runners give through sudo.
+on:
+  pull_request:
+    paths:
+      - 'tools/s5066-ip/**'
+      - 'src/**'
+      - '.github/workflows/ip-netns.yml'
+  workflow_dispatch:
+
+jobs:
+  netns:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up .NET (from global.json)
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build s5066d and s5066-ip
+        run: |
+          dotnet build src/s5066d/s5066d.csproj -c Release
+          dotnet build tools/s5066-ip/S5066Ip.csproj -c Release
+
+      - name: Two nodes, two IP clients, pings across
+        run: |
+          sudo env DOTNET_ROOT="$DOTNET_ROOT" PATH="$PATH" tools/s5066-ip/netns-test.sh \
+            "$PWD/src/s5066d/bin/Release/net10.0/s5066d" "$PWD/tools/s5066-ip/bin/Release/net10.0/s5066-ip"

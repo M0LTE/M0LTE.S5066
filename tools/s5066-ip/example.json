@@ -1,0 +1,35 @@
+// s5066-ip example: this station's networks are 10.66.1.0/24 and fd66:1::/64, the far station
+// (5066 node 0.0.1.2) has 10.66.2.0/24 and fd66:2::/64. Copy to /etc/s5066-ip/s5066-ip.json and
+// edit. See /usr/share/doc/s5066-ip/s5066-ip.md.
+{
+  // The node's SIS (s5066d's host.sis_listen, or any other 5066 node).
+  "sis": "127.0.0.1:5066",
+  // The tun device this creates. Its addresses and routes are yours to add.
+  "device": "s5066",
+  // Which 5066 node each IP prefix lives behind; the longest match wins.
+  "routes": [
+    { "prefix": "10.66.2.0/24", "node": "0.0.1.2" },
+    { "prefix": "fd66:2::/64", "node": "0.0.1.2" }
+  ],
+  // Optional: where anything no route matches goes.
+  // "default_node": "0.0.1.2",
+
+  // Optional: send IP multicast to this 5066 group, non-ARQ, with this many repeats.
+  // Without it multicast is dropped.
+  // "multicast": { "group": "16.0.0.9", "repeats": 1 },
+
+  // Defaults: everything ARQ at priority 4, ICMP at priority 8 (0 lowest, 15 highest).
+  "mode": "arq",
+  "priority": 4,
+  "icmp_priority": 8,
+  // Per-packet choices, first match wins. Match on prefix (destination), protocol
+  // (icmp, icmpv6, tcp, udp or a number) and port (source or destination).
+  "rules": [
+    // { "protocol": "udp", "port": 53, "mode": "non_arq" }
+  ],
+  // Optional allow-list with the same matches. Without it everything is allowed.
+  // "allow": [ { "protocol": "icmp" }, { "protocol": "icmpv6" }, { "protocol": "udp" } ],
+
+  // Datagrams held while the node has flow off; when full, new ones are dropped.
+  "queue_limit": 32
+}

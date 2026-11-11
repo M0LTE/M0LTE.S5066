@@ -1,6 +1,6 @@
 name: deb
 
-# Builds the s5066d and s5066-test .debs, one architecture per native runner (self-contained
+# Builds the s5066d, s5066-test and s5066-ip .debs, one architecture per native runner (self-contained
 # .NET, no cross-compiling, no trimming), and install-tests each on Debian 13. Nothing is
 # published here: a pull request or a manual run only proves the build, and the tag-triggered
 # publish.yml calls this workflow and attaches the artifacts to the GitHub release.
@@ -11,6 +11,9 @@ on:
       - 'src/s5066d/**'
       - 'src/M0LTE.S5066.Radio/**'
       - 'tools/s5066-test/**'
+      - 'tools/s5066-ip/**'
+      - 'src/M0LTE.S5066.Client/**'
+      - 'docs/s5066-ip.md'
       - '.github/workflows/deb.yml'
       - '.github/workflows/publish.yml'
   workflow_dispatch:
@@ -72,7 +75,7 @@ jobs:
           done
           # The binaries really are for this architecture.
           want="$([ '${{ matrix.arch }}' = amd64 ] && echo 'x86-64' || echo 'ARM aarch64')"
-          for exe in /usr/lib/s5066d/s5066d /usr/lib/s5066-test/s5066-test; do
+          for exe in /usr/lib/s5066d/s5066d /usr/lib/s5066-test/s5066-test /usr/lib/s5066-ip/s5066-ip; do
             d="$(mktemp -d)"; pkg="$(basename "$(dirname "$exe")")"
             dpkg-deb -x "./artifacts/${pkg}_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb" "$d"
             file "$d$exe" | tee /dev/stderr | grep -q "$want"

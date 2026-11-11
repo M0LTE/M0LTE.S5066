@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Builds the s5066d and s5066-test .debs for one architecture.
+# Builds the s5066d, s5066-test and s5066-ip .debs for one architecture.
 #
 #   packaging/build-deb.sh <version> [amd64|arm64] [outdir]
 #
-# Produces <outdir>/s5066d_<version>_<arch>.deb and <outdir>/s5066-test_<version>_<arch>.deb,
-# each a self-contained single-file build (no .NET runtime dependency on the target). Not
-# trimmed and not NativeAOT: build each architecture on its own native runner. Default outdir
+# Produces <outdir>/s5066d_<version>_<arch>.deb, <outdir>/s5066-test_<version>_<arch>.deb and
+# <outdir>/s5066-ip_<version>_<arch>.deb, each a self-contained single-file build (no .NET
+# runtime dependency on the target). Not trimmed and not NativeAOT: build each architecture on
+# its own native runner. Default outdir
 # is <repo>/artifacts.
 #
 # Layout: PublishSingleFile bundles the managed code and the runtime but leaves native shims
@@ -259,3 +260,77 @@ fi
 exit 0
 EOF
 build s5066d
+
+# -------------------------------------------------------------------- s5066-ip
+publish tools/s5066-ip/S5066Ip.csproj s5066-ip "$STAGE/pub-ip"
+stage_pkg s5066-ip "$STAGE/pub-ip" s5066-ip
+R="$STAGE/s5066-ip/root"
+mkdir -p "$R/usr/lib/systemd/system" "$R/etc/s5066-ip"
+install -m 0644 "$HERE/s5066-ip.service" "$R/usr/lib/systemd/system/s5066-ip.service"
+install -m 0644 "$ROOT/tools/s5066-ip/example.json" "$R/etc/s5066-ip/example.json"
+printf '%s\n' /etc/s5066-ip/example.json > "$R/DEBIAN/conffiles"
+install -m 0644 "$ROOT/docs/s5066-ip.md" "$R/usr/share/doc/s5066-ip/s5066-ip.md"
+DEPS="$(depends_for s5066-ip)"
+cat > "$R/DEBIAN/control" <<CTL
+Package: s5066-ip
+Version: $VERSION
+Architecture: $ARCH
+Maintainer: Tom Fanning M0LTE <tom@m0lte.uk>
+Installed-Size: $(du -k -s --exclude=DEBIAN "$R" | cut -f1)
+Depends: $DEPS
+Recommends: iproute2
+Suggests: s5066d
+Section: hamradio
+Priority: optional
+Homepage: https://github.com/M0LTE/M0LTE.S5066
+Description: STANAG 5066 IP client (Annex U) on a tun device
+ Carries IPv4 and IPv6 over a STANAG 5066 node (s5066d, or another
+ implementation that serves the SIS) as the Annex U IP client on SAP 9. It
+ makes a Linux tun device; you add its addresses and routes. Each datagram
+ goes to the 5066 node its destination prefix maps to, ARQ or non-ARQ and at a
+ priority chosen per packet.
+ .
+ Installs a systemd unit that is NOT enabled: copy /etc/s5066-ip/example.json
+ to /etc/s5066-ip/s5066-ip.json, edit it, then "systemctl enable --now
+ s5066-ip". The service runs as a dynamic user with only CAP_NET_ADMIN.
+ .
+ AGPL-3.0-or-later; see /usr/share/doc/s5066-ip/copyright.
+CTL
+
+cat > "$R/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -z "${2:-}" ]; then
+    echo "s5066-ip: not enabled. Copy /etc/s5066-ip/example.json to /etc/s5066-ip/s5066-ip.json, edit it,"
+    echo "          then: systemctl enable --now s5066-ip"
+fi
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    systemctl --system daemon-reload >/dev/null || true
+    if [ -n "${2:-}" ] && command -v deb-systemd-invoke >/dev/null; then
+        deb-systemd-invoke try-restart s5066-ip.service >/dev/null || true
+    fi
+fi
+exit 0
+EOF
+cat > "$R/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ] && [ "$1" = "remove" ] && command -v deb-systemd-invoke >/dev/null; then
+    deb-systemd-invoke stop s5066-ip.service >/dev/null || true
+fi
+exit 0
+EOF
+cat > "$R/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    systemctl --system daemon-reload >/dev/null || true
+fi
+if [ "$1" = "purge" ]; then
+    # s5066-ip.json is the operator's own file and stays; /etc/s5066-ip goes only if empty.
+    rm -f /etc/systemd/system/multi-user.target.wants/s5066-ip.service
+    rmdir --ignore-fail-on-non-empty /etc/s5066-ip 2>/dev/null || true
+fi
+exit 0
+EOF
+build s5066-ip
