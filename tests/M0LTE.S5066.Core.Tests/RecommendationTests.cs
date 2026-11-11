@@ -272,6 +272,27 @@ public class RecommendationTests
     }
 
     [Fact]
+    public void The_probe_is_held_until_the_link_has_a_complete_cpdu_and_the_estimate_still_moves()
+    {
+        // Coordinator ruling 2026-11-11, interp C-1293: no probe up while ProbeHeld; estimate moves are unaffected.
+        DrcTable t = Table with { ProbeRun = 1 };
+        var st = new RecommendationState { ProbeHeld = true };
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);    // first: bulk target 1, MAX-SPEED WN 4
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);    // clean run 2: the probe would go to WN 6
+        st.MaxSpeed.Should().Be(1);
+        Recommender.OnBurst(t, st, R(4), 300, 1, 0, false);   // the estimate reaches WN 6 (bulk 100 on WN 4): moves up, backed by the clean run
+        st.MaxSpeed.Should().Be(2);
+
+        st = new RecommendationState { ProbeHeld = true };
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);
+        st.MaxSpeed.Should().Be(1);
+        st.ProbeHeld = false;                                  // the link's first C_PDU is through
+        Recommender.OnBurst(t, st, R(4), 50, 1, 0, false);
+        st.MaxSpeed.Should().Be(2);                            // the probe runs again
+    }
+
+    [Fact]
     public void Probe_run_is_read_and_checked()
     {
         var table = JsonNode.Parse("""{"ladder": [], "thresholds": [], "probe_run": 4}""")!.AsObject();

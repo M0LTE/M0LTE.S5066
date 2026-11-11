@@ -49,23 +49,25 @@ public partial class P77Scenarios
         byte[] chat = "chat"u8.ToArray();
         var b = new ScenarioBuilder(
             "drc-tx-peer-traffic-is-no-answer",
-            ["C-1281", "C-1250", "C-0912", "C-0929", "C-0894", "C-1120", "C-0174", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            ["C-1281", "C-1293", "C-1250", "C-0912", "C-0929", "C-0894", "C-1120", "C-0174", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
             "A trial whose data the peer never acknowledges fails at its ack wait expiry even though the peer sent its own data meanwhile: for the rung only an acknowledgement of the transmission's D_PDUs is an answer.",
             ArqConfig(Table(), A2L, A4L),
-            ArqCommon + TableNote
-            + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung, one above the answered rung drc.default_speed WN 2 Long: a trial. At 116000 the peer's own DATA-ONLY (FSN 0, 'chat' from its SAP 9 to our SAP 5, EOW 0, EOT 10) arrives: an answer for link failure (C-1250), delivered with S_UNIDATA_INDICATION to conn 1, and it owes an acknowledgement (C-0174). It acknowledges nothing of ours, so for the rung it is no answer (coordinator ruling 2026-11-10, interp C-1281 as revised in corpus 0.38.0; C-0912: a transmission heard from the peer with none of our D_PDUs accounted for suggests ours were lost). The burst was addressed only to us: LBT rule 1 from its predicted end, 121000, then contention. The ACK-ONLY (RX LWE 1, EOW the rotation's MAX-SEGMENT 255), filled with two copies of itself (interp C-1154: 3 x 15 bytes of the 50-byte block, no room for a PADDING), goes at WN 4 Long: a transmission with nothing but an acknowledgement is for latency, and with no LOW-SPEED MAX-SPEED stands in (interp C-1284, C-1285); it carries no ARQ data, so it is not a trial and starts no dts.ack_wait, and FSN 0's wait from 111150 runs on. At 171150 it expires with FSN 0 unacknowledged: a failed trial (before corpus 0.38.0 the peer's DATA-ONLY made it no silent wait, and FSN 0 went again at WN 4 Long). The peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions and, until a transmission is answered, nothing goes above the answered rung: FSN 0 is retransmitted at WN 2 Long, keeping its size (C-0549), not a trial. The ACK-ONLY (RX LWE 1) acknowledges it: answered, WN 2 Long stays the answered rung; the queue is empty, so dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000).");
-        long t = CallerOpening(b, d);
-        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+            string.Empty);
+        (long t, long pingAt) = CallerOpeningConfirmed(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+        long t1 = t;
+        byte[] ping = ArqCpdu(pingAt, "ping"u8.ToArray());
 
         // The trial at WN 4 Long.
-        var tx = DataTx(A4L, 0, ping);
+        var tx = DataTx(A4L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
+        long t1Done = t;
         long ackWaitEnd = t + 60000;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
 
+        long chatAt = ((t + 4000) / 1000 * 1000) + 1000;   // where PeerChatAndOurAck places the peer's D_PDU
         t = PeerChatAndOurAck(b, d, t, PeerCpdu(0, chat), chat);
         if (t + 1000 > ackWaitEnd)
         {
@@ -79,15 +81,17 @@ public partial class P77Scenarios
         int w = d.Next();
         b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
         t += w;
-        tx = DataTx(A2L, 0, ping);
+        tx = DataTx(A2L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         long burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1))
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        b.SetNote(ArqCommon + TableNote
+            + $"At {t1} 'ping' (FSN 1) goes at WN 4 Long, the MAX-SPEED rung, one above the answered rung drc.default_speed WN 2 Long, the link's first C_PDU being confirmed: a trial. At {chatAt} the peer's own DATA-ONLY (FSN 0, 'chat' from its SAP 9 to our SAP 5, EOW 0, EOT 10) arrives: an answer for link failure (C-1250), delivered with S_UNIDATA_INDICATION to conn 1, and it owes an acknowledgement (C-0174). It acknowledges nothing of ours, so for the rung it is no answer (coordinator ruling 2026-11-10, interp C-1281 as revised in corpus 0.38.0; C-0912: a transmission heard from the peer with none of our D_PDUs accounted for suggests ours were lost). The burst was addressed only to us: LBT rule 1 from its predicted end, {chatAt + 5000}, then contention. The ACK-ONLY (RX LWE 1, EOW the rotation's MAX-SEGMENT 255), filled with two copies of itself (interp C-1154: 3 x 15 bytes of the 50-byte block, no room for a PADDING), goes at WN 4 Long: a transmission with nothing but an acknowledgement is for latency, and with no LOW-SPEED MAX-SPEED stands in (interp C-1284, C-1285); it carries no ARQ data, so it is not a trial and starts no dts.ack_wait, and FSN 1's wait from {t1Done} runs on. At {ackWaitEnd} it expires with FSN 1 unacknowledged: a failed trial (before corpus 0.38.0 the peer's DATA-ONLY made it no silent wait, and the scenario's first FSN went again at WN 4 Long). The peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions and, until a transmission is answered, nothing goes above the answered rung: FSN 1 is retransmitted at WN 2 Long, keeping its size (C-0549), not a trial. The ACK-ONLY (RX LWE 2) acknowledges it: answered, WN 2 Long stays the answered rung; the queue is empty, so dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000). Re-derived in corpus 0.41.0 for interp C-1293: the link's first C_PDU 'open' is confirmed first, so each FSN is one higher and the times later than before.");
         return b;
     }
 
@@ -129,41 +133,42 @@ public partial class P77Scenarios
         byte[] chat = "chat"u8.ToArray();
         var b = new ScenarioBuilder(
             "drc-tx-step-down-despite-peer-traffic",
-            ["C-1282", "C-1281", "C-1250", "C-0912", "C-0929", "C-0894", "C-1120", "C-0174", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            ["C-1282", "C-1281", "C-1293", "C-1250", "C-0912", "C-0929", "C-0894", "C-1120", "C-0174", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
             "Data at the answered rung that the peer never acknowledges is a silent wait even though the peer sent its own data meanwhile, so the sender steps down.",
             ArqConfig(Table(stepDownWaits: 1), A2L, A4L),
-            ArqCommon + TableNote.Replace("tx_step_down_waits 2", "tx_step_down_waits 1")
-            + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung, one above the answered WN 2 Long: a trial, acknowledged by the ACK-ONLY (RX LWE 1), so WN 4 Long is the answered rung and the queue's last C_PDU is confirmed (dts.ttd cancelled, the idle wait started, A-0321). 'pong' (FSN 1, requested at 240000) goes at WN 4 Long, the answered rung: not a trial. The peer's own DATA-ONLY ('chat', FSN 0, EOW 0, EOT 10) follows: an answer for link failure (C-1250), delivered with S_UNIDATA_INDICATION, owing an acknowledgement (C-0174), but no answer for the rung (coordinator ruling 2026-11-10, interp C-1281 as revised in corpus 0.38.0; C-0912). Our ACK-ONLY (RX LWE 1, filled with two copies, interp C-1154) goes at WN 4 Long with no ARQ data, so FSN 1's wait runs on. At its expiry FSN 1 is unacknowledged: a silent wait that is not a failed trial, so the answered rung goes one below WN 4 Long, to WN 2 Long, and with tx_step_down_waits 1 the sender steps down one rung (interp C-1282): FSN 1 is retransmitted at WN 2 Long, keeping its size (C-0549), where the MAX-SPEED rung less the step down puts it (before corpus 0.38.0 the peer's DATA-ONLY ended the silence count, and FSN 1 went again at WN 4 Long). The ACK-ONLY (RX LWE 2) acknowledges it: answered, which ends the step down; the queue is empty again.");
-        long t = CallerOpening(b, d);
-        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
-        byte[] pong = ArqCpdu(240000, "pong"u8.ToArray());
+            string.Empty);
+        (long t, long pingAt) = CallerOpeningConfirmed(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+        long t1 = t;
+        byte[] ping = ArqCpdu(pingAt, "ping"u8.ToArray());
 
         // The trial at WN 4 Long, acknowledged.
-        var tx = DataTx(A4L, 0, ping);
+        var tx = DataTx(A4L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         long burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1))
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
 
         // 'pong' at the answered rung, not a trial.
-        b.SisBytes(240000, 1, ArqRequest("pong"u8.ToArray()))
+        long pongAt = burst + 60000;
+        byte[] pong = ArqCpdu(pongAt, "pong"u8.ToArray());
+        b.SisBytes(pongAt, 1, ArqRequest("pong"u8.ToArray()))
             .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000);
         int w = d.Next();
         b.ExpectTimerStart("csma.cont_wait", w);
-        t = 240000 + w;
-        tx = DataTx(A4L, 1, pong);
+        t = pongAt + w;
+        tx = DataTx(A4L, 2, pong);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
         long ackWaitEnd = t + 60000;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
 
-        t = PeerChatAndOurAck(b, d, t, PeerCpdu(240000, chat), chat);
+        t = PeerChatAndOurAck(b, d, t, PeerCpdu(pongAt, chat), chat);
         if (t + 1000 > ackWaitEnd)
         {
             throw new InvalidOperationException("timeline overran");
@@ -176,15 +181,17 @@ public partial class P77Scenarios
         w = d.Next();
         b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
         t += w;
-        tx = DataTx(A2L, 1, pong);
+        tx = DataTx(A2L, 2, pong);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(3))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        b.SetNote(ArqCommon + TableNote.Replace("tx_step_down_waits 2", "tx_step_down_waits 1")
+            + $"At {t1} 'ping' (FSN 1) goes at WN 4 Long, the MAX-SPEED rung, one above the answered WN 2 Long, the link's first C_PDU being confirmed: a trial, acknowledged by the ACK-ONLY (RX LWE 2), so WN 4 Long is the answered rung and the queue's last C_PDU is confirmed (dts.ttd cancelled, the idle wait started, A-0321). 'pong' (FSN 2, requested at {pongAt}) goes at WN 4 Long, the answered rung: not a trial. The peer's own DATA-ONLY ('chat', FSN 0, EOW 0, EOT 10) follows: an answer for link failure (C-1250), delivered with S_UNIDATA_INDICATION, owing an acknowledgement (C-0174), but no answer for the rung (coordinator ruling 2026-11-10, interp C-1281 as revised in corpus 0.38.0; C-0912). Our ACK-ONLY (RX LWE 1, filled with two copies, interp C-1154) goes at WN 4 Long with no ARQ data, so FSN 2's wait runs on. At its expiry FSN 2 is unacknowledged: a silent wait that is not a failed trial, so the answered rung goes one below WN 4 Long, to WN 2 Long, and with tx_step_down_waits 1 the sender steps down one rung (interp C-1282): FSN 2 is retransmitted at WN 2 Long, keeping its size (C-0549), where the MAX-SPEED rung less the step down puts it (before corpus 0.38.0 the peer's DATA-ONLY ended the silence count, and 'pong' went again at WN 4 Long). The ACK-ONLY (RX LWE 3) acknowledges it: answered, which ends the step down; the queue is empty again. Re-derived in corpus 0.41.0 for interp C-1293: the link's first C_PDU 'open' is confirmed first, so each FSN is one higher and the times later than before.");
         return b;
     }
 
@@ -193,39 +200,41 @@ public partial class P77Scenarios
         var d = new Draws();
         var b = new ScenarioBuilder(
             "drc-tx-ack-failing-all-is-no-answer",
-            ["C-1281", "C-1121", "C-0908", "C-0910", "C-0776", "C-1120", "C-0929", "C-0894", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            ["C-1281", "C-1293", "C-1121", "C-0908", "C-0910", "C-0776", "C-1120", "C-0929", "C-0894", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
             "A trial whose D_PDUs the peer's acknowledgement marks all failed is a failed trial at once, though dts.ack_wait stops without expiring: for the rung only an acknowledgement of the transmission's D_PDUs is an answer.",
             ArqConfig(Table(), A2L, A4L),
-            ArqCommon + TableNote
-            + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung, one above the answered rung drc.default_speed WN 2 Long: a trial. The peer's ACK-ONLY with RX LWE 0 and no selective bits follows: FSN 0 is at the RX LWE, so the peer has not received it (C-0776) and it has failed (C-0908, C-0910, interp C-1121); nothing awaits an acknowledgement, so dts.ack_wait stops (C-1120) without an expiry. The ACK is an answer for link failure (C-1250) but acknowledges none of the trial's D_PDUs and fails every one, so the trial is unanswered as at an expiry (interp C-1281 as revised in corpus 0.38.0): a failed trial (before, the trial was neither answered nor failed and FSN 0 went again at WN 4 Long, a trial again). The peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions and, until a transmission is answered, nothing goes above the answered rung. The burst was addressed only to us: LBT rule 1 from its predicted end, then contention, and FSN 0 is retransmitted at WN 2 Long, keeping its size (C-0549), not a trial. The ACK-ONLY (RX LWE 1) acknowledges it: answered; the queue is empty, so dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000).");
-        long t = CallerOpening(b, d);
-        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
+            string.Empty);
+        (long t, long pingAt) = CallerOpeningConfirmed(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+        long t1 = t;
+        byte[] ping = ArqCpdu(pingAt, "ping"u8.ToArray());
 
         // The trial at WN 4 Long.
-        var tx = DataTx(A4L, 0, ping);
+        var tx = DataTx(A4L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
 
-        // The peer's acknowledgement fails FSN 0: the wait stops, a failed trial.
+        // The peer's acknowledgement fails FSN 1: the wait stops, a failed trial.
         long burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(0)).ExpectTimerCancel("dts.ack_wait/0.0.1.3");
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1)).ExpectTimerCancel("dts.ack_wait/0.0.1.3");
         b.BurstEnded(burst + 2000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", (burst + 1000 + 5000) - (burst + 2000));
         t = burst + 6000;
         int w = d.Next();
         b.TimerExpired(t, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
         t += w;
-        tx = DataTx(A2L, 0, ping);
+        tx = DataTx(A2L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1))
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        b.SetNote(ArqCommon + TableNote
+            + $"At {t1} 'ping' (FSN 1) goes at WN 4 Long, the MAX-SPEED rung, one above the answered rung drc.default_speed WN 2 Long, the link's first C_PDU being confirmed: a trial. The peer's ACK-ONLY with RX LWE 1 and no selective bits follows: FSN 1 is at the RX LWE, so the peer has not received it (C-0776) and it has failed (C-0908, C-0910, interp C-1121); nothing awaits an acknowledgement, so dts.ack_wait stops (C-1120) without an expiry. The ACK is an answer for link failure (C-1250) but acknowledges none of the trial's D_PDUs and fails every one, so the trial is unanswered as at an expiry (interp C-1281 as revised in corpus 0.38.0): a failed trial (before, the trial was neither answered nor failed and the scenario's first FSN went again at WN 4 Long, a trial again). The peer is capped at WN 2 Long for tx_ceiling_initial 2 transmissions and, until a transmission is answered, nothing goes above the answered rung. The burst was addressed only to us: LBT rule 1 from its predicted end, then contention, and FSN 1 is retransmitted at WN 2 Long, keeping its size (C-0549), not a trial. The ACK-ONLY (RX LWE 2) acknowledges it: answered; the queue is empty, so dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000). Re-derived in corpus 0.41.0 for interp C-1293: the link's first C_PDU 'open' is confirmed first, so each FSN is one higher and the times later than before.");
         return b;
     }
 }

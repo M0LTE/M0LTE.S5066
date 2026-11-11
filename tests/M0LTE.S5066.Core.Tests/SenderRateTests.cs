@@ -77,6 +77,28 @@ public class SenderRateTests
     }
 
     [Fact]
+    public void A_confirmed_cpdu_frees_trials_until_the_next_connection()
+    {
+        // Coordinator ruling 2026-11-11, interp C-1293: the flag the planner reads to hold a new link at the answered rung.
+        var s = new SenderRate();
+        s.CpduConfirmed.Should().BeFalse();
+        s.OnConnectionMade(0);
+        s.CpduConfirmed.Should().BeFalse();
+        s.OnSent(0, true, 1);
+        s.OnDataAcknowledged(1);
+        s.CpduConfirmed.Should().BeFalse("an answered transmission is not a confirmed C_PDU");
+        s.OnCpduConfirmed();
+        s.CpduConfirmed.Should().BeTrue();
+        s.OnAckWaitExpired(Table);
+        s.CpduConfirmed.Should().BeTrue("silence does not undo it within the connection");
+        s.OnConnectionEnded();
+        s.CpduConfirmed.Should().BeFalse();
+        s.OnCpduConfirmed();
+        s.OnConnectionMade(0);
+        s.CpduConfirmed.Should().BeFalse("a new link starts unconfirmed");
+    }
+
+    [Fact]
     public void A_failed_trial_caps_below_it_and_the_cap_doubles_up_to_the_limit()
     {
         var s = new SenderRate();

@@ -487,6 +487,7 @@ public partial class P77Scenarios
         ["modem"] = Fixture(w),
         ["cas"] = new JsonObject { ["max_links"] = 4, ["link_request_timeout_ms"] = 60000, ["link_request_retries"] = 2, ["first_data_timeout_ms"] = 120000 },
         ["dts"] = new JsonObject { ["ack_wait_ms"] = 60000 },
+        ["sis"] = new JsonObject { ["soft_link_max_ms"] = 900000 },   // corpus 0.41.0: room for the confirmed opening (interp C-1293)
         ["drc"] = new JsonObject { ["table"] = table },
     };
 
@@ -499,12 +500,10 @@ public partial class P77Scenarios
 
     /// <summary>
     /// The Caller's opening of dts-arq/ack-wait-expiry-retransmit, with the peer's PHYSICAL LINK ACCEPTED
-    /// carrying MAX-SPEED WN 4 Long (0x8A4) in its EOW, up to the burst end at 92000 and the contention
-    /// that follows (draws 1 and 2 of seed 0). Returns the time of the first data transmission.
+    /// carrying <paramref name="acceptedEow"/> in its EOW and <paramref name="firstUpdu"/> as the U_PDU that
+    /// makes the call, up to the burst end at 92000 and the contention that follows (draws 1 and 2 of seed 0).
+    /// Returns the time of the first data transmission.
     /// </summary>
-    private static long CallerOpening(ScenarioBuilder b, Draws d) => CallerOpeningWith(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
-
-    /// <summary>As <see cref="CallerOpening"/>, with the EOW of the peer's PHYSICAL LINK ACCEPTED and the first U_PDU given.</summary>
     private static long CallerOpeningWith(ScenarioBuilder b, Draws d, int acceptedEow, byte[] firstUpdu)
     {
         b.SisConnect(0, 1);
@@ -517,15 +516,46 @@ public partial class P77Scenarios
         accepted = accepted with { Header = accepted.Header with { Eow = acceptedEow } };
         b.BurstStarted(90000).BytesReceived(91000, Hex(Enc(accepted)))
             .ExpectTimerCancel("cas.link_request/0.0.1.3").ExpectLinkState("0.0.1.3", LinkStateName.Linked)
-            .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 360000).ExpectTimerStart("dts.ttd", 1295909000);
+            .ExpectTimerStart("sis.soft_link_max/0.0.1.3", 900000).ExpectTimerStart("dts.ttd", 1295909000);
         b.BurstEnded(92000, snrTenthDb: 60).ExpectTimerStart("csma.vdcd_end", 4000);
         int wait = d.Next();
         b.TimerExpired(96000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", wait);
         return 96000 + wait;
     }
 
+    /// <summary>The U_PDU of the link's first C_PDU in the ARQ sender scenarios, confirmed before each scenario's own story (interp C-1293).</summary>
+    private static readonly byte[] Open = "open"u8.ToArray();
+
+    /// <summary>
+    /// <see cref="CallerOpeningWith"/> with 'open' as the call's U_PDU, then the link's first C_PDU: 'open' (FSN 0)
+    /// goes at the answered rung, drc.default_speed WN 2 Long, whatever the recommendation, since no C_PDU of the
+    /// link has been confirmed (coordinator ruling 2026-11-11, interp C-1293); the peer's ACK-ONLY (RX LWE 1)
+    /// confirms it; then <paramref name="firstUpdu"/> is requested 3000 ms after that burst's end, with the
+    /// rest of its predicted end as csma.vdcd_end (K-0067). Returns the time of the scenario's first data
+    /// transmission and of its request; its FSNs start at 1.
+    /// </summary>
+    private static (long T, long At) CallerOpeningConfirmed(ScenarioBuilder b, Draws d, int acceptedEow, byte[] firstUpdu)
+    {
+        long t = CallerOpeningWith(b, d, acceptedEow, Open);
+        var tx = DataTx(A2L, 0, ArqCpdu(0, Open));
+        b.TimerExpired(t, "csma.cont_wait");
+        Transmit(b, tx, A2L);
+        t += tx.Duration;
+        b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        long burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(1))
+            .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        long at = burst + 5000;
+        b.SisBytes(at, 1, ArqRequest(firstUpdu))
+            .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
+        int w = d.Next();
+        b.TimerExpired(at + 1000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        return (at + 1000 + w, at);
+    }
+
     private const string ArqCommon =
-        "Link setup as dts-arq/ack-wait-expiry-retransmit: conn 1 binds SAP 5 for ARQ, its S_UNIDATA_REQUEST 'ping' to SAP 9 at 0.0.1.3 at 0 makes the CAS call (request at 75000 at drc.default_speed, WN 2 Long, EOW EMPTY to a peer of unknown edition), and at 91000 the peer's PHYSICAL LINK ACCEPTED makes the link (16-bit family) and records the peer Ed4 (B-0408). That D_PDU's EOW is MAX-SPEED WN 4 Long (0x8A4: interleaver 101, speed 4), recorded (interp C-1262). On D_CONNECTION_MADE the rung the link was made at, drc.default_speed, position 0, counts as the last answered (interp C-1281). A transmission goes at the recommended rung, with no climb limit (corpus 0.36.0, P7-9 round 3; before, at most one above the last answered rung), except that after a failed trial it goes no higher than the answered rung until the peer answers; a transmission of ARQ data above the answered rung is a trial, and a dts.ack_wait expiry with none of the D_PDUs of the last transmission that carried ARQ data acknowledged is a silent wait, whatever else the peer has sent (open question 16; coordinator ruling 2026-11-10, corpus 0.38.0; before, a wait with nothing heard from the peer since); a silent wait after a trial is a failed trial, which caps the peer one rung below it for tx_ceiling_initial of its transmissions to the peer, doubling on each repeat failure up to tx_ceiling_cap (design shape item 7, interp C-1281); tx_step_down_waits silent waits in a row step down one rung (plan 6.2, interp C-1282); an acknowledgement of one of those D_PDUs (or, after a transmission with no ARQ data, any answer, C-1250) ends the silence count and the step down and makes that transmission's rung the answered one when it is higher. Every data D_PDU to the peer is the first header to it in its transmission and carries SENDER-APPROACH, 0xB04 (interp C-1286); PADDING carries MAX-SEGMENT 255 (interp C-1271, C-1272). Fixture: preamble 600, flush 150; WN 2 Long 25 bytes and 4800 ms a block, WN 4 Long 50 bytes and 2400 ms (test data). The 29-byte DATA-ONLY needs two blocks at WN 2 Long (EOT 20, its PADDING in block 1 EOT 10, 10350 ms) and one at WN 4 Long (EOT and the PADDING's EOT ceil(2550 / 500) = 6, 3150 ms; one PADDING, 11 bytes). Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285). dts.ack_wait_ms 60000; after our own transmission, a queue that refills with nothing heard goes through LBT rule 3, 3000 ms (K-0071, K-0074); after a burst addressed only to us, rule 1 (K-0067). Contention waits are seed 0's draws, uniform(16) x 3000 ms (K-0080). ";
+        "Link setup as dts-arq/ack-wait-expiry-retransmit: conn 1 binds SAP 5 for ARQ, its S_UNIDATA_REQUEST 'open' to SAP 9 at 0.0.1.3 at 0 makes the CAS call (request at 75000 at drc.default_speed, WN 2 Long, EOW EMPTY to a peer of unknown edition), and at 91000 the peer's PHYSICAL LINK ACCEPTED makes the link (16-bit family) and records the peer Ed4 (B-0408). That D_PDU's EOW is MAX-SPEED WN 4 Long (0x8A4: interleaver 101, speed 4), recorded (interp C-1262). On D_CONNECTION_MADE the rung the link was made at, drc.default_speed, position 0, counts as the last answered (interp C-1281). A transmission goes at the recommended rung, with no climb limit (corpus 0.36.0, P7-9 round 3; before, at most one above the last answered rung), except that after a failed trial it goes no higher than the answered rung until the peer answers, and that until a C_PDU of the connection has been confirmed (acknowledged in full) it goes no higher than the answered rung (coordinator ruling 2026-11-11, interp C-1293, corpus 0.41.0); a transmission of ARQ data above the answered rung is a trial, and a dts.ack_wait expiry with none of the D_PDUs of the last transmission that carried ARQ data acknowledged is a silent wait, whatever else the peer has sent (open question 16; coordinator ruling 2026-11-10, corpus 0.38.0; before, a wait with nothing heard from the peer since); a silent wait after a trial is a failed trial, which caps the peer one rung below it for tx_ceiling_initial of its transmissions to the peer, doubling on each repeat failure up to tx_ceiling_cap (design shape item 7, interp C-1281); tx_step_down_waits silent waits in a row step down one rung (plan 6.2, interp C-1282); an acknowledgement of one of those D_PDUs (or, after a transmission with no ARQ data, any answer, C-1250) ends the silence count and the step down and makes that transmission's rung the answered one when it is higher. Every data D_PDU to the peer is the first header to it in its transmission and carries SENDER-APPROACH, 0xB04 (interp C-1286); PADDING carries MAX-SEGMENT 255 (interp C-1271, C-1272). Fixture: preamble 600, flush 150; WN 2 Long 25 bytes and 4800 ms a block, WN 4 Long 50 bytes and 2400 ms (test data). The 29-byte DATA-ONLY needs two blocks at WN 2 Long (EOT 20, its PADDING in block 1 EOT 10, 10350 ms) and one at WN 4 Long (EOT and the PADDING's EOT ceil(2550 / 500) = 6, 3150 ms; one PADDING, 11 bytes). Each data transmission is one D_PDU, within one block of the MAX-SPEED rung, so for latency, and with no LOW-SPEED, MAX-SPEED stands in (interp C-1284, C-1285). dts.ack_wait_ms 60000; after our own transmission, a queue that refills with nothing heard goes through LBT rule 3, 3000 ms (K-0071, K-0074); after a burst addressed only to us, rule 1 (K-0067). Contention waits are seed 0's draws, uniform(16) x 3000 ms (K-0080). sis.soft_link_max_ms is set to 900000 (test data; corpus 0.41.0, before it was derived, 360000, A-0321), so the soft link's maximum hold does not end within the scenario. The link's first C_PDU: at 108000 'open' (FSN 0) goes at WN 2 Long, the answered rung, below the MAX-SPEED rung, since no C_PDU of the link has been confirmed yet (interp C-1293); it is not a trial. The peer's ACK-ONLY (RX LWE 1, EOT 10) at 124000 acknowledges it, so its C_PDU is confirmed and from then on a transmission may go above the answered rung; WN 2 Long stays the answered rung, dts.ttd is cancelled and the idle wait starts (A-0321: three answer waits, 180000). The scenario's first U_PDU is requested at 128000 (the idle wait cancelled, A-0320, dts.ttd restarted, and csma.vdcd_end 1000 for the rest of the ACK's predicted burst, K-0067), and its contention, seed 0's third draw, ends at 174000, when its first transmission goes; its FSNs start at 1 (before corpus 0.41.0 the scenario's first U_PDU made the call and took FSN 0, its first transmission at 108000). ";
 
     private static (string Hex, long Duration) DataTx(Wf w, int fsn, byte[] cpdu) =>
         Transmission(w, [DataOnlyItem(fsn, cpdu, Approach)], P3, _ => MaxSegment255);
@@ -535,44 +565,48 @@ public partial class P77Scenarios
         var d = new Draws();
         var b = new ScenarioBuilder(
             "drc-tx-failed-trial-ceiling",
-            ["C-0929", "C-0894", "C-0930", "C-1281", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            ["C-0929", "C-0894", "C-0930", "C-1281", "C-1293", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.4.4, p.C-115",
             "A trial above the last answered rung that draws no answer caps the peer below it for a number of transmissions that doubles on the next failure.",
             ArqConfig(Table(stepDownWaits: 2, ceilingInitial: 1, ceilingCap: 2), A2L, A4L),
-            ArqCommon + TableNote.Replace("tx_ceiling_initial 2, tx_ceiling_cap 4", "tx_ceiling_initial 1, tx_ceiling_cap 2") + "At 108000 'ping' (FSN 0) goes at WN 4 Long, the MAX-SPEED rung and one above the answered WN 2 Long: a trial. Nothing is heard; at 171150 dts.ack_wait expires, a failed trial: the peer is capped at WN 2 Long for 1 transmission (tx_ceiling_initial), the next failure's length doubling to 2. FSN 0 is retransmitted at WN 2 Long, keeping its size (C-0549), and the ceiling ends with it. The ACK-ONLY (RX LWE 1) at 236000 answers it: WN 2 Long is the answered rung. 'pong' (FSN 1, requested at 240000) goes at WN 4 Long, a trial again (the ceiling has ended), and fails at its dts.ack_wait expiry: capped at WN 2 Long for 2 transmissions (min(2, tx_ceiling_cap 2)). Its retransmission goes at WN 2 Long and is answered (RX LWE 2), and 'last' (FSN 2) still goes at WN 2 Long, the second transmission of the doubled ceiling, where a ceiling of 1 would have let it try WN 4 Long. Each request after an answer cancels sis.soft_link_idle (A-0320) and restarts dts.ttd; the answer that confirms the queue's last C_PDU cancels dts.ttd and starts the idle wait (A-0321: three answer waits, 180000).");
-        long t = CallerOpening(b, d);
-        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
-        byte[] pong = ArqCpdu(240000, "pong"u8.ToArray());
-        byte[] last = ArqCpdu(400000, "last"u8.ToArray());
+            string.Empty);
+        (long t, long pingAt) = CallerOpeningConfirmed(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+        long t1 = t;
+        byte[] ping = ArqCpdu(pingAt, "ping"u8.ToArray());
 
         // Trial 1 at WN 4 Long, fails.
-        var tx = DataTx(A4L, 0, ping);
+        var tx = DataTx(A4L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
         t += 60000;
+        long expiry1 = t;
         b.TimerExpired(t, "dts.ack_wait/0.0.1.3").ExpectTimerStart("csma.lbt_wait", 3000);
         t += 3000;
         int w = d.Next();
         b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
         t += w;
-        tx = DataTx(A2L, 0, ping);
+        tx = DataTx(A2L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
-        b.BurstStarted(235000).BytesReceived(236000, Ack(1))
+        long burst = (t + 5000) / 1000 * 1000;
+        long answer1 = burst + 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
-        b.BurstEnded(237000, snrTenthDb: 60);
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
 
         // Trial 2 at WN 4 Long, fails; doubled ceiling.
-        b.SisBytes(240000, 1, ArqRequest("pong"u8.ToArray()))
+        long pongAt = burst + 5000;
+        byte[] pong = ArqCpdu(pongAt, "pong"u8.ToArray());
+        b.SisBytes(pongAt, 1, ArqRequest("pong"u8.ToArray()))
             .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
         w = d.Next();
-        b.TimerExpired(241000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
-        t = 241000 + w;
-        tx = DataTx(A4L, 1, pong);
+        b.TimerExpired(pongAt + 1000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t = pongAt + 1000 + w;
+        tx = DataTx(A4L, 2, pong);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
@@ -583,32 +617,30 @@ public partial class P77Scenarios
         w = d.Next();
         b.TimerExpired(t, "csma.lbt_wait").ExpectTimerStart("csma.cont_wait", w);
         t += w;
-        tx = DataTx(A2L, 1, pong);
+        tx = DataTx(A2L, 2, pong);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
-        long burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+        burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(3))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
 
         // Within the doubled ceiling: WN 2 Long.
-        if (burst + 5000 > 400000)
-        {
-            throw new InvalidOperationException("timeline overran");
-        }
-
-        b.SisBytes(400000, 1, ArqRequest("last"u8.ToArray()))
+        long lastAt = burst + 60000;
+        byte[] last = ArqCpdu(lastAt, "last"u8.ToArray());
+        b.SisBytes(lastAt, 1, ArqRequest("last"u8.ToArray()))
             .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000);
         w = d.Next();
         b.ExpectTimerStart("csma.cont_wait", w);
-        t = 400000 + w;
-        tx = DataTx(A2L, 2, last);
+        t = lastAt + w;
+        tx = DataTx(A2L, 3, last);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
+        b.SetNote(ArqCommon + TableNote.Replace("tx_ceiling_initial 2, tx_ceiling_cap 4", "tx_ceiling_initial 1, tx_ceiling_cap 2") + $"At {t1} 'ping' (FSN 1) goes at WN 4 Long, the MAX-SPEED rung and one above the answered WN 2 Long, the link's first C_PDU being confirmed: a trial. Nothing is heard; at {expiry1} dts.ack_wait expires, a failed trial: the peer is capped at WN 2 Long for 1 transmission (tx_ceiling_initial), the next failure's length doubling to 2. FSN 1 is retransmitted at WN 2 Long, keeping its size (C-0549), and the ceiling ends with it. The ACK-ONLY (RX LWE 2) at {answer1} answers it: WN 2 Long is the answered rung. 'pong' (FSN 2, requested at {pongAt}) goes at WN 4 Long, a trial again (the ceiling has ended), and fails at its dts.ack_wait expiry: capped at WN 2 Long for 2 transmissions (min(2, tx_ceiling_cap 2)). Its retransmission goes at WN 2 Long and is answered (RX LWE 3), and 'last' (FSN 3, requested at {lastAt}) still goes at WN 2 Long, the second transmission of the doubled ceiling, where a ceiling of 1 would have let it try WN 4 Long. Each request after an answer cancels sis.soft_link_idle (A-0320) and restarts dts.ttd; the answer that confirms the queue's last C_PDU cancels dts.ttd and starts the idle wait (A-0321: three answer waits, 180000). Re-derived in corpus 0.41.0 for interp C-1293: the link's first C_PDU 'open' is confirmed first, so each FSN is one higher and the times later than before.");
         return b;
     }
 
@@ -617,30 +649,34 @@ public partial class P77Scenarios
         var d = new Draws();
         var b = new ScenarioBuilder(
             "drc-tx-step-down-on-silence",
-            ["C-0929", "C-0894", "C-1282", "C-1281", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
+            ["C-0929", "C-0894", "C-1282", "C-1281", "C-1293", "C-1250", "C-1120", "C-0904", "C-0549", "C-1286", "C-1284", "C-1285"],
             "Ed4 C.7.6.2, pp.C-119 to C-120; C.7.5.6, pp.C-116 to C-117",
             "After tx_step_down_waits answer waits in a row with no answer, the sender steps down one rung by itself, below the peer's recommendation.",
             ArqConfig(Table(), A2L, A4L),
-            ArqCommon + TableNote + "At 108000 'ping' (FSN 0) goes at WN 4 Long, a trial, and is answered by the ACK-ONLY at 116000 (RX LWE 1): WN 4 Long is now the answered rung and the trial succeeded. 'pong' (FSN 1, requested at 120000) goes at WN 4 Long, no longer a trial. Nothing is heard: the first dts.ack_wait expiry is one silent wait, and FSN 1 is retransmitted at WN 4 Long; the second in a row reaches tx_step_down_waits 2, so the sender steps down one rung by itself (plan 6.2, interp C-1282) and the next retransmission goes at WN 2 Long, below the recommendation, which going lower never exceeds (C-0894, plan 5.3), keeping its size (C-0549). The ACK-ONLY (RX LWE 2) answers it, which ends the step down. The connection is not lost: 2 answer waits, not 16 (C-1250).");
-        long t = CallerOpening(b, d);
-        byte[] ping = ArqCpdu(0, "ping"u8.ToArray());
-        byte[] pong = ArqCpdu(120000, "pong"u8.ToArray());
-        var tx = DataTx(A4L, 0, ping);
+            string.Empty);
+        (long t, long pingAt) = CallerOpeningConfirmed(b, d, MaxSpeed(4, Interleaver.Long), "ping"u8.ToArray());
+        long t1 = t;
+        byte[] ping = ArqCpdu(pingAt, "ping"u8.ToArray());
+        var tx = DataTx(A4L, 1, ping);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A4L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
-        b.BurstStarted(115000).BytesReceived(116000, Ack(1))
+        long burst = (t + 5000) / 1000 * 1000;
+        long answer1 = burst + 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
-        b.BurstEnded(117000, snrTenthDb: 60);
-        b.SisBytes(120000, 1, ArqRequest("pong"u8.ToArray()))
+        b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        long pongAt = burst + 5000;
+        byte[] pong = ArqCpdu(pongAt, "pong"u8.ToArray());
+        b.SisBytes(pongAt, 1, ArqRequest("pong"u8.ToArray()))
             .ExpectTimerCancel("sis.soft_link_idle/0.0.1.3").ExpectTimerStart("dts.ttd", 1296000000).ExpectTimerStart("csma.vdcd_end", 1000);
         int w = d.Next();
-        b.TimerExpired(121000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
-        t = 121000 + w;
+        b.TimerExpired(pongAt + 1000, "csma.vdcd_end").ExpectTimerStart("csma.cont_wait", w);
+        t = pongAt + 1000 + w;
         foreach (Wf wf in (Wf[])[A4L, A4L])
         {
-            tx = DataTx(wf, 1, pong);
+            tx = DataTx(wf, 2, pong);
             b.TimerExpired(t, "csma.cont_wait");
             Transmit(b, tx, wf);
             t += tx.Duration;
@@ -653,15 +689,16 @@ public partial class P77Scenarios
             t += w;
         }
 
-        tx = DataTx(A2L, 1, pong);
+        tx = DataTx(A2L, 2, pong);
         b.TimerExpired(t, "csma.cont_wait");
         Transmit(b, tx, A2L);
         t += tx.Duration;
         b.TransmitDone(t).ExpectTimerStart("dts.ack_wait/0.0.1.3", 60000);
-        long burst = (t + 5000) / 1000 * 1000;
-        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(2))
+        burst = (t + 5000) / 1000 * 1000;
+        b.BurstStarted(burst).BytesReceived(burst + 1000, Ack(3))
             .ExpectTimerCancel("dts.ack_wait/0.0.1.3").ExpectTimerCancel("dts.ttd").ExpectTimerStart("sis.soft_link_idle/0.0.1.3", 180000);
         b.BurstEnded(burst + 2000, snrTenthDb: 60);
+        b.SetNote(ArqCommon + TableNote + $"At {t1} 'ping' (FSN 1) goes at WN 4 Long, a trial (the link's first C_PDU is confirmed), and is answered by the ACK-ONLY at {answer1} (RX LWE 2): WN 4 Long is now the answered rung and the trial succeeded. 'pong' (FSN 2, requested at {pongAt}) goes at WN 4 Long, no longer a trial. Nothing is heard: the first dts.ack_wait expiry is one silent wait, and FSN 2 is retransmitted at WN 4 Long; the second in a row reaches tx_step_down_waits 2, so the sender steps down one rung by itself (plan 6.2, interp C-1282) and the next retransmission goes at WN 2 Long, below the recommendation, which going lower never exceeds (C-0894, plan 5.3), keeping its size (C-0549). The ACK-ONLY (RX LWE 3) answers it, which ends the step down. The connection is not lost: 2 answer waits, not 16 (C-1250). Re-derived in corpus 0.41.0 for interp C-1293: the link's first C_PDU 'open' is confirmed first, so each FSN is one higher and the times later than before.");
         return b;
     }
 

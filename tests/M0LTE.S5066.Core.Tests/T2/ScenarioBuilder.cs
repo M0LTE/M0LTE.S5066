@@ -33,6 +33,13 @@ internal sealed class ScenarioBuilder
         _lines.Add(header);
     }
 
+    /// <summary>Replaces the header's note, for a note that states times the timeline works out.</summary>
+    public ScenarioBuilder SetNote(string note)
+    {
+        _lines[0]["note"] = note;
+        return this;
+    }
+
     /// <summary>The encoded hex of a D_PDU.</summary>
     public static string DpduHex(Dpdu pdu) => Convert.ToHexStringLower(DpduCodec.Encode(pdu));
 

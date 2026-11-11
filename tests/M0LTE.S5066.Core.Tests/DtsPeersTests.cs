@@ -229,13 +229,35 @@ public class DtsPeersTests
         r.Tx.PendingControl.Should().ContainSingle().Which.Should().BeOfType<WarningItem>();
     }
 
+    [Fact]
+    public void The_probe_is_held_on_a_new_link_until_a_complete_cpdu_from_the_peer()
+    {
+        // Coordinator ruling 2026-11-11, interp C-1293: set at D_CONNECTION_MADE with a table, cleared by the
+        // first complete C_PDU received from the peer, and not held without a connection.
+        var table = new DrcTable([new Speed(2, Interleaver.Long), new Speed(4, Interleaver.Long)], [], CleanRun: 1, ProbeRun: 1);
+        NodeConfig basic = TestConfig.Basic(CsmaMode.Jitter);
+        var r = new Rig(basic with { Drc = basic.Drc with { Table = table } });
+        r.Peers.OnConnectionMade(new DConnectionMade(X, true, false));
+        r.Peers.RecommendationsOf(X)!.ProbeHeld.Should().BeTrue();
+        r.Peers.OnDpdu(new DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(true, false, false, false, true, true), 0, new Octets([7]), true));
+        r.Peers.RecommendationsOf(X)!.ProbeHeld.Should().BeTrue("the first segment alone is not a complete C_PDU");
+        r.Peers.OnDpdu(new DataOnly(new DpduHeader(0, 10, 3, Us, X), new DataFlags(false, true, false, false, true, false), 1, new Octets([8]), true));
+        r.Peers.RecommendationsOf(X)!.ProbeHeld.Should().BeFalse();
+        r.Peers.OnConnectionMade(new DConnectionMade(X, true, false));   // ignored while connected (C-0651)
+        r.Peers.RecommendationsOf(X)!.ProbeHeld.Should().BeFalse();
+    }
+
     private sealed class Rig
     {
         private readonly CoreContext _context;
 
         public Rig()
+            : this(TestConfig.Basic(CsmaMode.Jitter))
         {
-            NodeConfig config = TestConfig.Basic(CsmaMode.Jitter);
+        }
+
+        public Rig(NodeConfig config)
+        {
             _context = new CoreContext(config, new FixtureModem(config.Modem));
             Tx = new TransmitQueue(_context, new NoObserver());
             Peers = new DtsPeers(_context, Tx);
