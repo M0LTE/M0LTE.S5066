@@ -1,0 +1,32 @@
+[Unit]
+Description=s5066-mail STANAG 5066 CFTP mail gateway (Annex V)
+Documentation=https://github.com/M0LTE/M0LTE.S5066/blob/main/docs/s5066-mail.md
+After=network.target s5066d.service
+# Not enabled by the package. Copy /etc/s5066-mail/example.json to s5066-mail.json, edit it,
+# then "systemctl enable --now s5066-mail".
+ConditionPathExists=/etc/s5066-mail/s5066-mail.json
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/s5066-mail /etc/s5066-mail/s5066-mail.json
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+# The package's own user, so a relay credentials file can be made readable by it alone.
+User=s5066-mail
+Group=s5066-mail
+# The spool, /var/lib/s5066-mail, kept across restarts and upgrades.
+StateDirectory=s5066-mail
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

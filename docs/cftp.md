@@ -9,7 +9,7 @@
 3. The file is cut into pieces that fit the node's MTU, each with a 4-byte header, and sent ARQ to one node.
 4. The far end puts the pieces back together and answers with a two-byte acknowledgement. Then it unpacks the mail.
 
-If no acknowledgement comes within 5 minutes, the whole file goes again; after three tries the send fails. Files to one node go one at a time.
+If no acknowledgement comes within 5 minutes, the whole file goes again; after three tries the send fails. Files to one node go one at a time, and the pieces of a file reach the node in order.
 
 ## Using the library
 
@@ -40,9 +40,9 @@ s5066-test cftp --node 127.0.0.1:5066 --to 0.0.1.2 --bytes 5000
 s5066-test cftp --node 127.0.0.1:5066 --to 0.0.1.2 --path report.pdf --rcpt g4abc@example.org
 ```
 
-## Not yet
+## With a mail server
 
-Handing received mail to an SMTP server, and taking mail from one, is the job of a bridge (phase 10, P10-3). For now the application gets the mail and decides what to do with it.
+`s5066-mail` is a gateway built on this library: it hands mail that arrives over HF to an SMTP server and takes mail from one to send. See [s5066-mail.md](s5066-mail.md).
 
 ## Where the rules come from
 

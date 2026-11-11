@@ -15,11 +15,13 @@
     <Project Path="tests/M0LTE.S5066.Core.Tests/M0LTE.S5066.Core.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Host.Tests/M0LTE.S5066.Host.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Ip.Tests/M0LTE.S5066.Ip.Tests.csproj" />
+    <Project Path="tests/M0LTE.S5066.Mail.Tests/M0LTE.S5066.Mail.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Radio.Tests/M0LTE.S5066.Radio.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.T4.Tests/M0LTE.S5066.T4.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/s5066-ip/S5066Ip.csproj" />
+    <Project Path="tools/s5066-mail/S5066Mail.csproj" />
     <Project Path="tools/s5066-sweep/S5066Sweep.csproj" />
     <Project Path="tools/s5066-test/S5066Test.csproj" />
   </Folder>
