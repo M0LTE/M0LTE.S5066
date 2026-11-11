@@ -54,6 +54,13 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
     /// <summary>Where the SMTP listener is, once started.</summary>
     public IPEndPoint? ListenEndpoint => _listener?.Endpoint;
 
+    /// <summary>Looks at both queues now, rather than at the next due time (tests move the clock).</summary>
+    internal void Poke()
+    {
+        _hfWork.Set();
+        _smtpWork.Set();
+    }
+
     /// <summary>The spool, for tests.</summary>
     internal Spool Spool => _spool;
 

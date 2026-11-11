@@ -15,6 +15,7 @@
     <Project Path="tests/M0LTE.S5066.Core.Tests/M0LTE.S5066.Core.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Host.Tests/M0LTE.S5066.Host.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Ip.Tests/M0LTE.S5066.Ip.Tests.csproj" />
+    <Project Path="tests/M0LTE.S5066.Mail.Tests/M0LTE.S5066.Mail.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Radio.Tests/M0LTE.S5066.Radio.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.T4.Tests/M0LTE.S5066.T4.Tests.csproj" />
   </Folder>

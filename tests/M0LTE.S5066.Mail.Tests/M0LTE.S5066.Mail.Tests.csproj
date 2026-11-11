@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The CFTP mail gateway (s5066-mail, P10-3): routes, spool, retries, SMTP client and listener, and two gateways over two loopback hosts with in-process SMTP sinks. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <ProjectReference Include="../../tools/s5066-mail/S5066Mail.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../M0LTE.S5066.Host.Tests/TestNodes.cs" Link="TestNodes.cs" />
+    <None Include="../../tools/s5066-mail/example.json" Link="example.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
