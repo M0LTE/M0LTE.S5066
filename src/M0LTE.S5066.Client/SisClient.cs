@@ -199,6 +199,21 @@ public sealed class SisClient : IAsyncDisposable
     /// <exception cref="ArgumentException">The U_PDU is longer than the MTU of the bind (the client splits messages, A-0003).</exception>
     public async Task<SendResult> SendAsync(UnidataSend send, CancellationToken cancellationToken = default)
     {
+        Task<SendResult> outcome = await StartSendAsync(send, cancellationToken).ConfigureAwait(false);
+        return await outcome.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a U_PDU to the node, waiting while the node has flow off (S-0020, S-0021), and returns
+    /// once it is written, with a task for its outcome: the node's confirmation or rejection when the
+    /// delivery mode asks for one, otherwise <see cref="SendStatus.Sent"/> at once. A caller that
+    /// awaits each write before starting the next keeps its U_PDUs in order at the node.
+    /// <paramref name="cancellationToken"/> also cancels the wait for the outcome.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Not bound.</exception>
+    /// <exception cref="ArgumentException">The U_PDU is longer than the MTU of the bind (the client splits messages, A-0003).</exception>
+    public async Task<Task<SendResult>> StartSendAsync(UnidataSend send, CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(send);
         SisBindAccepted binding = Binding ?? throw new InvalidOperationException("not bound");
         if (send.UPdu.Length > binding.Mtu)
@@ -242,19 +257,19 @@ public sealed class SisClient : IAsyncDisposable
                 throw;
             }
 
-            if (pending is null)
-            {
-                return new SendResult(SendStatus.Sent);
-            }
+            return pending is null ? Task.FromResult(new SendResult(SendStatus.Sent)) : AwaitConfirmAsync(pending, cancellationToken);
+        }
+    }
 
-            using (cancellationToken.Register(() =>
-            {
-                Remove(pending);
-                pending.Result.TrySetCanceled(cancellationToken);
-            }))
-            {
-                return await pending.Result.Task.ConfigureAwait(false);
-            }
+    private async Task<SendResult> AwaitConfirmAsync(PendingSend pending, CancellationToken cancellationToken)
+    {
+        using (cancellationToken.Register(() =>
+        {
+            Remove(pending);
+            pending.Result.TrySetCanceled(cancellationToken);
+        }))
+        {
+            return await pending.Result.Task.ConfigureAwait(false);
         }
     }
 

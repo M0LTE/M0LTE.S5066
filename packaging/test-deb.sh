@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install test for the s5066d, s5066-test and s5066-ip .debs in a throwaway Debian 13 container.
+# Install test for the s5066d, s5066-test, s5066-ip and s5066-mail .debs in a throwaway Debian 13 container.
 #
 #   packaging/build-deb.sh 0.0.0-test amd64
 #   packaging/test-deb.sh [version] [debdir] [arch]
@@ -14,7 +14,7 @@ VERSION="${1:-0.0.0-test}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEBDIR="$(cd "${2:-$(dirname "$HERE")/artifacts}" && pwd)"
 ARCH="${3:-amd64}"
-for p in s5066d s5066-test s5066-ip; do
+for p in s5066d s5066-test s5066-ip s5066-mail; do
   [ -f "$DEBDIR/${p}_${VERSION}_${ARCH}.deb" ] || { echo "no $DEBDIR/${p}_${VERSION}_${ARCH}.deb" >&2; exit 2; }
 done
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
@@ -35,7 +35,7 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1
-if ! apt-get install -y -qq "/debs/s5066d_${VERSION}_${ARCH}.deb" "/debs/s5066-test_${VERSION}_${ARCH}.deb" "/debs/s5066-ip_${VERSION}_${ARCH}.deb" >/tmp/apt.log 2>&1; then
+if ! apt-get install -y -qq "/debs/s5066d_${VERSION}_${ARCH}.deb" "/debs/s5066-test_${VERSION}_${ARCH}.deb" "/debs/s5066-ip_${VERSION}_${ARCH}.deb" "/debs/s5066-mail_${VERSION}_${ARCH}.deb" >/tmp/apt.log 2>&1; then
   cat /tmp/apt.log; bad "apt install"
 fi
 
@@ -86,6 +86,25 @@ OUT="$(timeout 20 s5066-ip /etc/s5066-ip/example.json 2>&1 </dev/null)"; RC=$?; 
 check "s5066-ip example reaches the tun" "[ $RC -eq 1 ] && echo \"\$OUT\" | grep -q 'tun' && ! echo \"\$OUT\" | grep -qi 'unhandled'"
 apt-get purge -y -qq s5066-ip >/dev/null 2>&1
 check "s5066-ip purged clean"       "[ ! -e /etc/s5066-ip ] && [ ! -e /usr/bin/s5066-ip ]"
+
+echo "== s5066-mail =="
+check "s5066-mail installed"        "dpkg -l s5066-mail | grep -q '^ii'"
+check "s5066-mail on PATH"          "command -v s5066-mail >/dev/null && [ -x /usr/lib/s5066-mail/s5066-mail ]"
+check "s5066-mail unit installed"   "grep -q '^ExecStart=/usr/bin/s5066-mail /etc/s5066-mail/s5066-mail.json' /usr/lib/systemd/system/s5066-mail.service && grep -q '^User=s5066-mail' /usr/lib/systemd/system/s5066-mail.service"
+check "s5066-mail conffile"         "[ -f /etc/s5066-mail/example.json ] && dpkg-query -W -f='\${Conffiles}' s5066-mail | grep -q /etc/s5066-mail/example.json"
+check "s5066-mail user exists"      "getent passwd s5066-mail >/dev/null"
+check "s5066-mail unit not enabled" "[ ! -e /etc/systemd/system/multi-user.target.wants/s5066-mail.service ]"
+check "s5066-mail doc and copyright" "[ -f /usr/share/doc/s5066-mail/copyright ] && [ -f /usr/share/doc/s5066-mail/s5066-mail.md ]"
+OUT="$(s5066-mail --help 2>&1)"; RC=$?; echo "$OUT" | head -2 | sed 's/^/    /'
+check "s5066-mail --help prints usage" "[ $RC -eq 2 ] && echo \"\$OUT\" | grep -qi usage"
+# The example parses and starts as the service user with its spool; no node is running here, so it
+# says so and keeps trying.
+mkdir -p /var/lib/s5066-mail && chown s5066-mail:s5066-mail /var/lib/s5066-mail
+OUT="$(timeout 5 setpriv --reuid=s5066-mail --regid=s5066-mail --init-groups s5066-mail /etc/s5066-mail/example.json 2>&1 </dev/null)"
+echo "$OUT" | head -3 | sed 's/^/    /'
+check "s5066-mail example starts"   "echo \"\$OUT\" | grep -q 's5066-mail: node 127.0.0.1:5066, relay 127.0.0.1:25' && echo \"\$OUT\" | grep -q 'trying again' && ! echo \"\$OUT\" | grep -qi 'unhandled'"
+apt-get purge -y -qq s5066-mail >/dev/null 2>&1
+check "s5066-mail purged, user gone" "! getent passwd s5066-mail >/dev/null && [ ! -e /etc/s5066-mail ] && [ ! -e /usr/bin/s5066-mail ]"
 
 echo "== upgrade =="
 # The same package as a newer version: edited conffiles and the operator's s5066d.json survive.

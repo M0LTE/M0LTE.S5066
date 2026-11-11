@@ -38,6 +38,7 @@ public sealed class CftpClient : IAsyncDisposable
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly Dictionary<long, (TaskCompletionSource<CftpSendResult> Done, int Bytes)> _transfers = [];
     private readonly Dictionary<uint, SisAddress> _addresses = [];
+    private readonly Dictionary<uint, Task> _writeTails = [];
     private readonly Channel<CftpReceived> _received = Channel.CreateUnbounded<CftpReceived>();
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _receiveLoop;
@@ -155,9 +156,21 @@ public sealed class CftpClient : IAsyncDisposable
     private void Run()
     {
         IReadOnlyList<CftpAction> actions;
+        var order = new Dictionary<CftpSendUPdu, (Task Previous, TaskCompletionSource Written)>(ReferenceEqualityComparer.Instance);
         lock (_gate)
         {
             actions = _engine.Drain();
+
+            // U_PDUs to one node are written in the order the engine asked for them, each after the
+            // one before it is written, so none overtakes another while the node has flow off
+            // (issue #119). Chained under the lock, so concurrent runs keep the engine's order.
+            foreach (CftpSendUPdu s in actions.OfType<CftpSendUPdu>())
+            {
+                Task previous = _writeTails.GetValueOrDefault(s.Destination, Task.CompletedTask);
+                var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _writeTails[s.Destination] = written.Task;
+                order[s] = (previous, written);
+            }
         }
 
         foreach (CftpAction a in actions)
@@ -165,7 +178,8 @@ public sealed class CftpClient : IAsyncDisposable
             switch (a)
             {
                 case CftpSendUPdu s:
-                    _ = SendOneAsync(s);
+                    (Task previous, TaskCompletionSource written) = order[s];
+                    _ = SendOneAsync(s, previous, written);
                     break;
                 case CftpTransferDone d:
                     (TaskCompletionSource<CftpSendResult> Done, int Bytes) t;
@@ -208,8 +222,21 @@ public sealed class CftpClient : IAsyncDisposable
         _received.Writer.TryWrite(new CftpReceived(from, CftpMailFile.Octets.GetString(f.FileName), f.FileData, mail, what));
     }
 
-    private async Task SendOneAsync(CftpSendUPdu s)
+    private async Task SendOneAsync(CftpSendUPdu s, Task previous, TaskCompletionSource written)
     {
+        try
+        {
+            await SendInOrderAsync(s, previous, written).ConfigureAwait(false);
+        }
+        finally
+        {
+            written.TrySetResult();
+        }
+    }
+
+    private async Task SendInOrderAsync(CftpSendUPdu s, Task previous, TaskCompletionSource written)
+    {
+        await previous.ConfigureAwait(false);
         SisAddress to;
         lock (_gate)
         {
@@ -226,7 +253,9 @@ public sealed class CftpClient : IAsyncDisposable
         byte reason = 0;
         try
         {
-            SendResult r = await _sis.SendAsync(send, _stop.Token).ConfigureAwait(false);
+            Task<SendResult> outcome = await _sis.StartSendAsync(send, _stop.Token).ConfigureAwait(false);
+            written.TrySetResult();
+            SendResult r = await outcome.ConfigureAwait(false);
             confirmed = r.Status != SendStatus.Rejected;
             reason = r.Reason;
         }
