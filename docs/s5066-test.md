@@ -4,6 +4,7 @@
 
 - **chat**: HF Operator Chat lines (Annex O, SAP 5);
 - **file**: a file sent as ARQ U_PDUs with delivery confirmation, checked at the far end by SHA-256;
+- **cftp**: a file or a text mail sent with CFTP (Annex V, SAP 12, docs/cftp.md), so any CFTP node can take it;
 - **perf**: N messages of S bytes, timing each confirmation and, optionally, each round trip.
 
 Every activity needs the tool running at both ends: the far end receives files, checks them and echoes performance messages. Either the interactive mode or `serve` does that.
@@ -33,6 +34,7 @@ A plain line-mode screen that works over ssh. Type a line to send it as chat. Co
 |---|---|
 | `/to 0.0.1.2` | send to one node; `16.x.y.z` to `31.x.y.z` is a group, `/all` is broadcast |
 | `/file path [none\|node\|client]` | send a file; client confirmation by default |
+| `/cftp path` | send a file as a CFTP mail; an `.eml` goes as it is, anything else as an attachment |
 | `/perf 10 200 [nonarq] [none\|node\|client] [echo] [window 8]` | 10 messages of 200 bytes |
 | `/info` | the node's speed, interleaver and SNR per peer |
 | `/help`, `/quit` | |
@@ -46,12 +48,13 @@ For scripts and tests. Each command prints a JSON result and exits 0 on pass, 1 
 ```
 s5066-test chat --node 127.0.0.1:5066 --to 0.0.1.2 --text "hello"
 s5066-test file --node 127.0.0.1:5066 --to 0.0.1.2 --path report.pdf --confirm client
+s5066-test cftp --node 127.0.0.1:5066 --to 0.0.1.2 --bytes 5000
 s5066-test perf --node 127.0.0.1:5066 --to 0.0.1.2 --count 20 --size 500 --echo
 s5066-test info --node 127.0.0.1:5066
 s5066-test serve --node 127.0.0.1:5067 --save-dir received
 ```
 
-Other options: `--sap` (the data SAP, default 13), `--priority`, `--ttl` (in 2 s units, 0 for the node's default), `--window` (U_PDUs waiting for an answer at once, default 8), `--mode arq|nonarq`, `--repeats` (non-ARQ), `--segment-bytes` (data bytes per file U_PDU, default the MTU less 9), `--no-verdict` (do not wait for the far end's hash), `--timeout` seconds, `--json file` (write the result there instead of stdout).
+Other options: `--sap` (the data SAP, default 13), `--priority`, `--ttl` (in 2 s units, 0 for the node's default), `--window` (U_PDUs waiting for an answer at once, default 8), `--mode arq|nonarq`, `--repeats` (non-ARQ), `--segment-bytes` (data bytes per file U_PDU, default the MTU less 9), `--rcpt` and `--return-path` (the mail addresses of `cftp`), `--no-verdict` (do not wait for the far end's hash), `--timeout` seconds, `--json file` (write the result there instead of stdout).
 
 ### Scenarios
 
@@ -71,7 +74,7 @@ Other options: `--sap` (the data SAP, default 13), `--priority`, `--ttl` (in 2 s
 }
 ```
 
-Steps: `chat`, `expect_chat`, `file` (`path` relative to the scenario, or `bytes` of random data), `expect_file`, `perf`, `info` and `sleep` (`seconds`). Each takes the same options as the commands above, in snake_case, plus `timeout_s` (120 s by default, 900 s for files and perf). Top level: `sap`, `save_dir` and `continue_on_failure`.
+Steps: `chat`, `expect_chat`, `file` (`path` relative to the scenario, or `bytes` of random data), `expect_file`, `cftp` (`path`, or `bytes` of random text; `recipients` and `return_path` optional), `expect_cftp`, `perf`, `info` and `sleep` (`seconds`). Each takes the same options as the commands above, in snake_case, plus `timeout_s` (120 s by default, 900 s for files and perf). Top level: `sap`, `save_dir` and `continue_on_failure`.
 
 The result lists every step with `pass`, `elapsed_ms`, an `error` if it failed, and a `detail`: the confirmation status for chat; for a file the U_PDUs confirmed and rejected (with reasons), the goodput and whether the far end's hash matches; for perf the counts, minimum, mean, median and maximum confirmation and round-trip times, and the goodput.
 
@@ -80,7 +83,8 @@ The result lists every step with `pass`, `elapsed_ms`, an `error` if it failed, 
 - chat: confirmed (to one node) or sent (to a group);
 - file: every U_PDU confirmed, none rejected, and the far end's SHA-256 matches;
 - perf: every message sent, every one confirmed when confirmation was asked for, every one echoed with `echo`;
-- expect steps: the line or file arrived before the timeout, and a file's hash matched.
+- cftp: the far end acknowledged the mail;
+- expect steps: the line, file or mail arrived before the timeout, and a file's hash matched; a mail sent from the same run must arrive unchanged.
 
 Without confirmation the sender cannot see delivery. A file with `confirm` `none` still waits for the far end's hash, so it proves delivery; with `--no-verdict` as well it passes once the node has taken every U_PDU. Perf with `none` and no `echo` passes once the node has taken every message, and its goodput is then only the rate the node accepted them. Use `echo` or a confirmation to measure the link.
 
@@ -91,7 +95,7 @@ These are the tool's own choices, not part of STANAG 5066:
 - Files and perf use SAP 13 by default, which Annex F leaves unallocated [Ed4 F Table F-1, p.F-1]; a deployment prefers unallocated SAPs for its own applications [Ed4 F.2, p.F-2]. Change it with `--sap` (the same at both ends).
 - Each U_PDU starts with a kind byte, a random transfer ID and a sequence number, so the client library can match each confirmation to its send. Files are a header (size, segment count, SHA-256, name), then segments that fill the MTU; the far end answers with its own SHA-256. Perf messages are padded to the size asked for; an echo is the first 10 bytes only, so a round trip is S bytes out and 10 back.
 - Times are measured from when a U_PDU is handed to the client library, so they include any wait while the node has flow off.
-- File transfer uses plain ARQ unidata. It will move to CFTP (Annex V) once that exists.
+- `file` uses plain ARQ unidata on the data SAP, with the tool's own framing. `cftp` uses the standard protocol on SAP 12: a file that is not an `.eml` goes as a base64 attachment of a short mail from `s5066-test@localhost` to `postmaster@` the destination address, unless `--rcpt` and `--return-path` say otherwise. With `--save-dir` the far end keeps the compressed file under its MessageID, the message as `<MessageID>.eml` and the addresses as `<MessageID>.rcpt`.
 
 ## The monitor
 

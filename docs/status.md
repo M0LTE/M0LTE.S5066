@@ -22,7 +22,7 @@ Open from phase 3: the reception window commitment drops the last repeat of a U_
 | 7. Rate selection | done 2026-11-10: P7-1 to P7-10, final sweep published in docs/rate-selection.md (30 of 33 points pass; the three Poor-SSB failures at 0, 3 and 6 dB are links lost only, issue #109) |
 | 8. Station and packaging | s5066d radio medium (CM108 sound card and PTT) built, not yet on the bench; P8-2 (optional CW ID, station status page) in review; P8-4 (optional CAT through rigctld) in review |
 | 9. On air | not started |
-| 10. Applications | not started |
+| 10. Applications | P10-1 (CFTP, Annex V) in review; P10-2 (IP client) and P10-3 (bridges) not started |
 | C++ port | not started |
 
 ## Phase 0 outcome
