@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The Annex U IP client (s5066-ip, P10-2): encapsulation and policy, and two clients over two loopback hosts with in-memory devices. -->
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
+    <ProjectReference Include="../../tools/s5066-ip/S5066Ip.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../M0LTE.S5066.Host.Tests/TestNodes.cs" Link="TestNodes.cs" />
+  </ItemGroup>
+
+</Project>
