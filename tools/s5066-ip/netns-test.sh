@@ -92,7 +92,9 @@ try_ping() { # <description> <ping args...>
 try_ping "IPv4 ping across the 5066 link" -I 10.66.1.1 10.66.2.1
 try_ping "IPv6 ping across the 5066 link" -6 -I fd66:1::1 fd66:2::1
 # A ping too big for the link with DF set: the kernel or s5066-ip answers with the MTU, nothing is sent.
-if ip netns exec "$NA" ping -n -c 1 -W 5 -M do -s 3000 -I 10.66.1.1 10.66.2.1 2>&1 | tee /dev/stderr | grep -qiE "too long|mtu|frag needed"; then
+OUT="$(ip netns exec "$NA" ping -n -c 1 -W 5 -M do -s 3000 -I 10.66.1.1 10.66.2.1 2>&1)"
+echo "$OUT"
+if echo "$OUT" | grep -qiE "too long|mtu|frag needed"; then
   echo "PASS oversized DF ping refused with the MTU"
 else
   echo "FAIL oversized DF ping"; FAIL=1
