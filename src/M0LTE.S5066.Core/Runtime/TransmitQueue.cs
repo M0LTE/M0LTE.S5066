@@ -424,11 +424,6 @@ internal sealed class TransmitQueue : ITransmissionSource
             {
                 _context.Timers.Start(AckWaitTimer(peer), AnswerWaitMs());
             }
-
-            if (!_context.Config.Drc.Table.IsEmpty)
-            {
-                RateStateOf(peer)?.Sender.OnDataTransmissionEnded(_context.Now + AnswerWaitMs());   // issue #109
-            }
         }
 
         _sentArqPeers.Clear();
@@ -534,15 +529,13 @@ internal sealed class TransmitQueue : ITransmissionSource
         // The transmission whose acknowledgement the sender's rate state awaits has had every D_PDU still
         // awaiting failed, none acknowledged: unanswered, as at an expiry (interp C-1281). A data
         // acknowledgement above has already cleared the awaited state, so this is then a no-op.
-        if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate rate)
+        if (!_context.Config.Drc.Table.IsEmpty && RateStateOf(peer)?.Sender is SenderRate rate
+            && rate.DataAwaited && rate.DataTransmission is long awaited && failedIn.Contains(awaited)
+            && !link.Outstanding.Any(f => f.SentIn == awaited && f.State == ArqFrameState.Awaiting))
         {
-            foreach (long awaited in rate.Pending.Select(p => p.Transmission).Where(failedIn.Contains).ToList())
+            if (rate.OnDataAllFailed(awaited, _context.Config.Drc.Table))
             {
-                if (!link.Outstanding.Any(f => f.SentIn == awaited && f.State == ArqFrameState.Awaiting)
-                    && rate.OnDataAllFailed(awaited, _context.Config.Drc.Table))
-                {
-                    FailedTrialSet?.Invoke();
-                }
+                FailedTrialSet?.Invoke();
             }
         }
 
@@ -802,11 +795,6 @@ internal sealed class TransmitQueue : ITransmissionSource
 
         if (state?.Sender is SenderRate s)
         {
-            for (int n = s.ExpireAnswerWaits(_context.Now, table); n > 0; n--)
-            {
-                FailedTrialSet?.Invoke();   // issue #109: an answer wait run out under a later transmission
-            }
-
             if (s.Ceiling is int c)
             {
                 position = Math.Min(position, c);
