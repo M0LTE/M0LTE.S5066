@@ -3,6 +3,7 @@
     <Project Path="samples/HfChat/HfChat.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/M0LTE.S5066.Cftp/M0LTE.S5066.Cftp.csproj" />
     <Project Path="src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
     <Project Path="src/M0LTE.S5066.Core/M0LTE.S5066.Core.csproj" />
     <Project Path="src/M0LTE.S5066.Host/M0LTE.S5066.Host.csproj" />
@@ -10,6 +11,7 @@
     <Project Path="src/s5066d/s5066d.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/M0LTE.S5066.Cftp.Tests/M0LTE.S5066.Cftp.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Core.Tests/M0LTE.S5066.Core.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Host.Tests/M0LTE.S5066.Host.Tests.csproj" />
     <Project Path="tests/M0LTE.S5066.Radio.Tests/M0LTE.S5066.Radio.Tests.csproj" />

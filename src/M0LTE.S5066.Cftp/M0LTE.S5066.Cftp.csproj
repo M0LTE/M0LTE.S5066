@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.S5066.Cftp</PackageId>
+    <Title>M0LTE.S5066.Cftp</Title>
+    <Description>Compressed File Transfer Protocol (CFTP, STANAG 5066 Edition 4 Annex V) over the SIS client: send and receive compressed mail on SAP 12, with the RCOPv1 and BFTPv1 codecs and a deterministic sender and receiver engine. Licensed AGPL-3.0-or-later; commercial licences are available from the copyright holder (see the repository README).</Description>
+    <PackageTags>stanag-5066;stanag;hf;cftp;mail</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Cftp.Tests" />
+  </ItemGroup>
+
+</Project>
