@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Builds the s5066d, s5066-test and s5066-ip .debs for one architecture.
+# Builds the s5066d, s5066-test, s5066-ip and s5066-mail .debs for one architecture.
 #
 #   packaging/build-deb.sh <version> [amd64|arm64] [outdir]
 #
-# Produces <outdir>/s5066d_<version>_<arch>.deb, <outdir>/s5066-test_<version>_<arch>.deb and
-# <outdir>/s5066-ip_<version>_<arch>.deb, each a self-contained single-file build (no .NET
-# runtime dependency on the target). Not trimmed and not NativeAOT: build each architecture on
-# its own native runner. Default outdir
-# is <repo>/artifacts.
+# Produces <outdir>/s5066d_<version>_<arch>.deb, <outdir>/s5066-test_<version>_<arch>.deb,
+# <outdir>/s5066-ip_<version>_<arch>.deb and <outdir>/s5066-mail_<version>_<arch>.deb, each a
+# self-contained single-file build (no .NET runtime dependency on the target). Not trimmed and
+# not NativeAOT: build each architecture on its own native runner. Default outdir is
+# <repo>/artifacts.
 #
 # Layout: PublishSingleFile bundles the managed code and the runtime but leaves native shims
 # loose beside the executable, resolved relative to the real path of the binary, so the payload
@@ -334,3 +334,89 @@ fi
 exit 0
 EOF
 build s5066-ip
+
+# ------------------------------------------------------------------ s5066-mail
+publish tools/s5066-mail/S5066Mail.csproj s5066-mail "$STAGE/pub-mail"
+stage_pkg s5066-mail "$STAGE/pub-mail" s5066-mail
+R="$STAGE/s5066-mail/root"
+mkdir -p "$R/usr/lib/systemd/system" "$R/etc/s5066-mail"
+install -m 0644 "$HERE/s5066-mail.service" "$R/usr/lib/systemd/system/s5066-mail.service"
+install -m 0644 "$ROOT/tools/s5066-mail/example.json" "$R/etc/s5066-mail/example.json"
+printf '%s\n' /etc/s5066-mail/example.json > "$R/DEBIAN/conffiles"
+install -m 0644 "$ROOT/docs/s5066-mail.md" "$R/usr/share/doc/s5066-mail/s5066-mail.md"
+DEPS="$(depends_for s5066-mail adduser)"
+cat > "$R/DEBIAN/control" <<CTL
+Package: s5066-mail
+Version: $VERSION
+Architecture: $ARCH
+Maintainer: Tom Fanning M0LTE <tom@m0lte.uk>
+Installed-Size: $(du -k -s --exclude=DEBIAN "$R" | cut -f1)
+Depends: $DEPS
+Suggests: s5066d, postfix | mail-transport-agent
+Section: hamradio
+Priority: optional
+Homepage: https://github.com/M0LTE/M0LTE.S5066
+Description: STANAG 5066 CFTP mail gateway (Annex V)
+ Passes mail between an SMTP mail server and a STANAG 5066 node (s5066d, or
+ another implementation that serves the SIS) with the Compressed File
+ Transfer Protocol on SAP 12. Mail that arrives over HF goes to an SMTP relay;
+ a small SMTP listener takes mail for configured domains or addresses and
+ sends it by CFTP to the 5066 node each maps to. Mail waits in a spool while
+ it cannot go, is tried again, and is bounced when it cannot be delivered.
+ .
+ Installs a systemd unit that is NOT enabled: copy
+ /etc/s5066-mail/example.json to /etc/s5066-mail/s5066-mail.json, edit it,
+ then "systemctl enable --now s5066-mail". The service runs as the
+ s5066-mail user; its spool is /var/lib/s5066-mail.
+ .
+ AGPL-3.0-or-later; see /usr/share/doc/s5066-mail/copyright.
+CTL
+
+cat > "$R/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+case "$1" in
+  configure)
+    if ! getent passwd s5066-mail >/dev/null; then
+        adduser --system --no-create-home --home /var/lib/s5066-mail --group s5066-mail
+    fi
+    if [ -z "${2:-}" ]; then
+        echo "s5066-mail: not enabled. Copy /etc/s5066-mail/example.json to /etc/s5066-mail/s5066-mail.json, edit it,"
+        echo "            then: systemctl enable --now s5066-mail"
+    fi
+    ;;
+esac
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    systemctl --system daemon-reload >/dev/null || true
+    if [ -n "${2:-}" ] && command -v deb-systemd-invoke >/dev/null; then
+        deb-systemd-invoke try-restart s5066-mail.service >/dev/null || true
+    fi
+fi
+exit 0
+EOF
+cat > "$R/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ] && [ "$1" = "remove" ] && command -v deb-systemd-invoke >/dev/null; then
+    deb-systemd-invoke stop s5066-mail.service >/dev/null || true
+fi
+exit 0
+EOF
+cat > "$R/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    systemctl --system daemon-reload >/dev/null || true
+fi
+if [ "$1" = "purge" ]; then
+    # s5066-mail.json, any credentials file and the spool in /var/lib/s5066-mail are the
+    # operator's (mail may still be waiting there) and stay; /etc/s5066-mail goes only if empty.
+    rm -f /etc/systemd/system/multi-user.target.wants/s5066-mail.service
+    rmdir --ignore-fail-on-non-empty /etc/s5066-mail 2>/dev/null || true
+    if getent passwd s5066-mail >/dev/null; then
+        deluser --system --quiet s5066-mail >/dev/null 2>&1 || true
+    fi
+fi
+exit 0
+EOF
+build s5066-mail

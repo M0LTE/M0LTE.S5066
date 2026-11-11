@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="M0LTE.S5066.Mail.Tests" />
+    <InternalsVisibleTo Include="M0LTE.S5066.T4.Tests" />
   </ItemGroup>
 
 </Project>

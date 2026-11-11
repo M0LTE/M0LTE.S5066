@@ -172,7 +172,7 @@ public class TwoNodeAudioTests
     }
 
     /// <summary>A copy of a bench configuration with its fixed ports swapped for free ones, so tests and a running bench never collide.</summary>
-    private static string WriteConfig(string dir, string name, int sis, int listen, int peer)
+    internal static string WriteConfig(string dir, string name, int sis, int listen, int peer)
     {
         string text = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "bench", name));
         string[] fixedPorts = name == "bench-node1.json" ? ["5066", "7300", "7301"] : ["5067", "7301", "7300"];
@@ -185,7 +185,7 @@ public class TwoNodeAudioTests
         return path;
     }
 
-    private static Process Start(string dll, string arguments, string tag, StringBuilder log)
+    internal static Process Start(string dll, string arguments, string tag, StringBuilder log)
     {
         var psi = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet", $"\"{Path.Combine(AppContext.BaseDirectory, dll)}\" {arguments}")
         {
@@ -212,7 +212,7 @@ public class TwoNodeAudioTests
         return p;
     }
 
-    private static async Task WaitForListenAsync(int port, Process node)
+    internal static async Task WaitForListenAsync(int port, Process node)
     {
         var sw = Stopwatch.StartNew();
         while (true)
@@ -231,7 +231,7 @@ public class TwoNodeAudioTests
     }
 
     /// <summary>Two TCP and two UDP ports, all held open until all four are chosen, so none repeats.</summary>
-    private static (int SisA, int SisB, int AudioA, int AudioB) FreePorts()
+    internal static (int SisA, int SisB, int AudioA, int AudioB) FreePorts()
     {
         using var ta = new TcpListener(IPAddress.Loopback, 0);
         using var tb = new TcpListener(IPAddress.Loopback, 0);
