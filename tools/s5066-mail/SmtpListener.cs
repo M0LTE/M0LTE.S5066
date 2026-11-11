@@ -45,7 +45,9 @@ internal sealed class SmtpListener : IAsyncDisposable
     private readonly string _hostname;
     private readonly Action<string> _log;
     private readonly CancellationTokenSource _stop = new();
+    private readonly CancellationTokenSource _sessionsStop = new();
     private readonly SemaphoreSlim _slots = new(MaxConnections);
+    private readonly HashSet<Task> _sessions = [];
     private Task _accept = Task.CompletedTask;
 
     public SmtpListener(IPEndPoint endpoint, string hostname, ISmtpHandler handler, Action<string> log)
@@ -65,6 +67,13 @@ internal sealed class SmtpListener : IAsyncDisposable
         _accept = Task.Run(AcceptLoopAsync);
     }
 
+    /// <summary>How long open sessions get to finish at shutdown before they are cut off.</summary>
+    internal TimeSpan ShutdownGrace { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Stops taking connections, gives open sessions up to <see cref="ShutdownGrace"/> to finish
+    /// (a mail being spooled is not cut off half way), then cancels the rest and waits for them.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         await _stop.CancelAsync().ConfigureAwait(false);
@@ -77,8 +86,29 @@ internal sealed class SmtpListener : IAsyncDisposable
         {
         }
 
+        Task all;
+        lock (_sessions)
+        {
+            all = Task.WhenAll(_sessions);
+        }
+
+        if (!all.IsCompleted)
+        {
+            _log($"s5066-mail: waiting up to {ShutdownGrace.TotalSeconds:0} s for open SMTP sessions");
+            await Task.WhenAny(all, Task.Delay(ShutdownGrace)).ConfigureAwait(false);
+        }
+
+        await _sessionsStop.CancelAsync().ConfigureAwait(false);
+
+        // A session cancelled ends at its next read or write; one stuck past that is left behind,
+        // and so is the semaphore it releases.
+        await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
         _stop.Dispose();
-        _slots.Dispose();
+        if (all.IsCompleted)
+        {
+            _slots.Dispose();
+            _sessionsStop.Dispose();
+        }
     }
 
     private async Task AcceptLoopAsync()
@@ -106,13 +136,13 @@ internal sealed class SmtpListener : IAsyncDisposable
                 continue;
             }
 
-            _ = Task.Run(async () =>
+            Task session = Task.Run(async () =>
             {
                 try
                 {
                     using (client)
                     {
-                        await SessionAsync(client, _stop.Token).ConfigureAwait(false);
+                        await SessionAsync(client, _sessionsStop.Token).ConfigureAwait(false);
                     }
                 }
                 catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
@@ -127,6 +157,11 @@ internal sealed class SmtpListener : IAsyncDisposable
                     _slots.Release();
                 }
             });
+            lock (_sessions)
+            {
+                _sessions.Add(session);
+                _sessions.RemoveWhere(t => t.IsCompleted);
+            }
         }
     }
 

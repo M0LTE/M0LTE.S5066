@@ -42,6 +42,12 @@ internal sealed record SpoolItem(
     public DateTimeOffset NextAttempt { get; init; }
 
     public string? LastError { get; init; }
+
+    /// <summary>
+    /// For mail taken by the listener, a digest of what was given (return path, recipients for
+    /// this node, node, message), so a client's retry does not queue the same part twice.
+    /// </summary>
+    public string? Key { get; init; }
 }
 
 /// <summary>
@@ -116,6 +122,53 @@ internal sealed partial class Spool
         Save(item);
     }
 
+    /// <summary>
+    /// Adds several mails as one: every file is written to tmp/ first, and only when all are whole
+    /// are they renamed in, so a failure (a full disk) leaves none of them queued.
+    /// </summary>
+    public void AddAll(IReadOnlyList<(SpoolItem Item, byte[] Message)> mails)
+    {
+        var staged = new List<string>();
+        try
+        {
+            foreach ((SpoolItem item, byte[] message) in mails)
+            {
+                string eml = Path.Combine(_root, "tmp", item.Id + ".eml");
+                staged.Add(eml);
+                WriteDurably(eml, message);
+                string json = Path.Combine(_root, "tmp", item.Id + ".json");
+                staged.Add(json);
+                WriteDurably(json, JsonSerializer.SerializeToUtf8Bytes(item, Json));
+            }
+        }
+        catch
+        {
+            foreach (string f in staged)
+            {
+                try
+                {
+                    File.Delete(f);
+                }
+                catch (IOException)
+                {
+                }
+            }
+
+            throw;
+        }
+
+        foreach ((SpoolItem item, _) in mails)
+        {
+            File.Move(Path.Combine(_root, "tmp", item.Id + ".eml"), Path.Combine(Dir(item.Queue), item.Id + ".eml"), overwrite: true);
+            File.Move(Path.Combine(_root, "tmp", item.Id + ".json"), Path.Combine(Dir(item.Queue), item.Id + ".json"), overwrite: true);
+        }
+
+        foreach (SpoolQueue q in mails.Select(m => m.Item.Queue).Distinct())
+        {
+            SyncDirectory(Dir(q));
+        }
+    }
+
     /// <summary>Rewrites a mail's record, after a try.</summary>
     public void Save(SpoolItem item)
     {
@@ -166,14 +219,25 @@ internal sealed partial class Spool
         }
     }
 
-    /// <summary>Remembers a mail taken in from HF, after it is spooled.</summary>
+    /// <summary>Remembers a mail taken in from HF, after it is spooled. Returns once the line is on disk.</summary>
     public void Remember(string fromNode, string messageId, DateTimeOffset now)
     {
         string key = fromNode + " " + messageId;
         lock (_gate)
         {
             _received[key] = now;
-            File.AppendAllText(Path.Combine(_root, "received.txt"), string.Create(CultureInfo.InvariantCulture, $"{now.ToUnixTimeSeconds()} {key}\n"));
+            string path = Path.Combine(_root, "received.txt");
+            bool created = !File.Exists(path);
+            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+            {
+                fs.Write(System.Text.Encoding.ASCII.GetBytes(string.Create(CultureInfo.InvariantCulture, $"{now.ToUnixTimeSeconds()} {key}\n")));
+                fs.Flush(flushToDisk: true);
+            }
+
+            if (created)
+            {
+                SyncDirectory(_root);
+            }
         }
     }
 
@@ -182,8 +246,9 @@ internal sealed partial class Spool
     private void RewriteReceived()
     {
         string tmp = Path.Combine(_root, "tmp", "received.txt");
-        File.WriteAllLines(tmp, _received.Select(kv => string.Create(CultureInfo.InvariantCulture, $"{kv.Value.ToUnixTimeSeconds()} {kv.Key}")));
+        WriteDurably(tmp, System.Text.Encoding.ASCII.GetBytes(string.Concat(_received.Select(kv => string.Create(CultureInfo.InvariantCulture, $"{kv.Value.ToUnixTimeSeconds()} {kv.Key}\n")))));
         File.Move(tmp, Path.Combine(_root, "received.txt"), overwrite: true);
+        SyncDirectory(_root);
     }
 
     /// <summary>
