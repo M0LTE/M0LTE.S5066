@@ -5,7 +5,7 @@ using M0LTE.S5066.Core.Runtime;
 namespace M0LTE.S5066.Sweep;
 
 /// <summary>One D_PDU as laid in a transmission, from the sender's bytes.</summary>
-internal readonly record struct SentDpdu(int Offset, int Length, int HeaderLength, int Eot, bool Data, bool Retransmission, bool AckOnly, bool Padding);
+internal readonly record struct SentDpdu(int Offset, int Length, int HeaderLength, int Eot, bool Data, bool Retransmission, bool AckOnly, bool Padding, string Tag = "");
 
 /// <summary>What happened to one transmission: the sender's view and the far node's.</summary>
 internal sealed class TxRecord
@@ -51,6 +51,9 @@ internal sealed class TxRecord
 
     public int DpdusOk { get; private set; }
 
+    /// <summary>Per D_PDU (PADDING excluded), its tag and whether the far node got it right, for the detailed timeline.</summary>
+    public string Detail { get; private set; } = "";
+
     public long? PredictedEndMs { get; private set; }
 
     /// <summary>clean, partial, failed (locked, no D_PDU right), missed (never locked) or collided (the far node keyed during it).</summary>
@@ -67,6 +70,7 @@ internal sealed class TxRecord
     {
         byte[] rx = Blocks.SelectMany(b => b.Bytes).ToArray();
         int ok = 0;
+        var detail = new List<string>();
         long? predicted = null;
         long? latest = null;
         long? earliest = null;
@@ -75,6 +79,11 @@ internal sealed class TxRecord
             if (!d.Padding && rx.Length >= d.Offset + d.Length && rx.AsSpan(d.Offset, d.Length).SequenceEqual(Bytes.AsSpan(d.Offset, d.Length)))
             {
                 ok++;
+                detail.Add(d.Tag);
+            }
+            else if (!d.Padding)
+            {
+                detail.Add(d.Tag + "x");
             }
 
             int headerEnd = d.Offset + d.HeaderLength;
@@ -89,6 +98,7 @@ internal sealed class TxRecord
         }
 
         DpdusOk = ok;
+        Detail = string.Join(' ', detail);
         PredictedEndMs = predicted;
         Outcome = Collided ? "collided"
             : !Locked ? "missed"
@@ -172,7 +182,15 @@ internal sealed class TxRecord
 
             Dpdu p = whole.Value!;
             bool data = p is DataOnly or DataAck or ExpeditedDataOnly or NonArqData or ExpeditedNonArqData;
-            list.Add(new SentDpdu(pos, whole.Consumed, header.Consumed, p.Header.Eot, data, data && isRetransmission(p), p is AckOnly or ExpeditedAckOnly, p is Padding));
+            string tag = p switch
+            {
+                DataOnly d => $"D{d.TxFsn}:{d.Segment.Length}{(d.Flags.CPduStart ? "s" : "")}{(d.Flags.CPduEnd ? "e" : "")}",
+                DataAck d => $"DA{d.TxFsn}:{d.Segment.Length}{(d.Flags.CPduStart ? "s" : "")}{(d.Flags.CPduEnd ? "e" : "")}",
+                AckOnly a => $"A{a.RxLwe}",
+                Padding => "P",
+                _ => p.GetType().Name,
+            };
+            list.Add(new SentDpdu(pos, whole.Consumed, header.Consumed, p.Header.Eot, data, data && isRetransmission(p), p is AckOnly or ExpeditedAckOnly, p is Padding, tag));
             pos += whole.Consumed;
         }
 

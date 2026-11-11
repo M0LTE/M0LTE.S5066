@@ -13,7 +13,7 @@ namespace M0LTE.S5066.Sweep
 
               run       one run on the virtual clock; prints a summary, --json writes the result
                         --channel awgn|poor|moderate[-ssb]  --snr <dB>  --config fixed:wn6-long|adaptive:<table>[@wnN-il]
-                        [--seed 1] [--duration-s 600] [--warmup-s 60] [--node-config file] [--first-data-ms N] [--json file] [--timeline 1]
+                        [--seed 1] [--duration-s 600] [--warmup-s 60] [--node-config file] [--first-data-ms N] [--json file] [--timeline 1|2]
               plan      print a sweep's runs and size     [--profile smoke|baseline|adaptive|final] [grid options]
               sweep     run a sweep (resumable, shardable) --out <dir> [--workers N] [--shard i/n] [--profile ...] [grid options]
               merge     merge a sweep's runs into aggregate/ --out <dir> [--profile ...] [grid options]
@@ -77,7 +77,7 @@ namespace M0LTE.S5066.Sweep
         private static int RunOne(Options o)
         {
             RunSettings s = Single(o);
-            RunResult r = new Simulation(s) { Timeline = o.Get("timeline") == "1" ? Console.WriteLine : null }.Run();
+            RunResult r = new Simulation(s) { Timeline = o.Get("timeline") is "1" or "2" ? Console.WriteLine : null, Detailed = o.Get("timeline") == "2" }.Run();
             if (o.Get("json") is { } path)
             {
                 File.WriteAllText(path, r.ToJson());
