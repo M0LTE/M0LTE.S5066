@@ -18,9 +18,9 @@
   // Without it multicast is dropped.
   // "multicast": { "group": "16.0.0.9", "repeats": 1 },
 
-  // Defaults: everything ARQ at priority 4, ICMP at priority 8 (0 lowest, 15 highest).
+  // Defaults: everything ARQ at priority 6 (the Annex F default for the IP client), ICMP at priority 8 (0 lowest, 15 highest).
   "mode": "arq",
-  "priority": 4,
+  "priority": 6,
   "icmp_priority": 8,
   // Per-packet choices, first match wins. Match on prefix (destination), protocol
   // (icmp, icmpv6, tcp, udp or a number) and port (source or destination).

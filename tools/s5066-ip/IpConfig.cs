@@ -44,8 +44,8 @@ internal sealed record IpConfig
     /// <summary>The SAP the client binds (U-0012).</summary>
     public const byte Sap = 9;
 
-    /// <summary>Default priority of a datagram no rule names (interp U-0038).</summary>
-    public const byte DefaultPriority = 4;
+    /// <summary>Default priority of a datagram no rule names: 6, the IP client's default in [Ed4 F.3, Table F-2, p.F-2] (interp U-0038).</summary>
+    public const byte DefaultPriority = 6;
 
     /// <summary>Default priority of ICMP and ICMPv6 (U-0035 item 4, interp U-0038).</summary>
     public const byte DefaultIcmpPriority = 8;

@@ -57,7 +57,7 @@ public class PolicyTests
         drop.Should().BeNull();
         s!.Destination.Should().Be(NodeB);
         s.Mode.Should().Be(new ServiceType(1, Confirm: 1, Order: 0));
-        s.Priority.Should().Be(4);
+        s.Priority.Should().Be(6, "the IP client default of Annex F Table F-2");
         Policy.BindServiceType.Should().Be(s.Mode, "the bind's default is the most likely traffic (U-0015)");
     }
 

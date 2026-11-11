@@ -40,13 +40,13 @@ internal sealed partial class LinuxTun : IPacketDevice
     /// <exception cref="IOException">The kernel refused; the message says why.</exception>
     public static LinuxTun Open(string name)
     {
+        var req = Ifreq.For(name);
         int fd = open("/dev/net/tun", ORdWr | OCloExec);
         if (fd < 0)
         {
             throw Error("open /dev/net/tun");
         }
 
-        var req = Ifreq.For(name);
         req.Short = IffTun | IffNoPi;
         if (ioctl(fd, TunSetIff, ref req) < 0)
         {
