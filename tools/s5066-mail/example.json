@@ -1,0 +1,24 @@
+// s5066-mail example: this station takes mail for example.org from HF and hands it to the local
+// mail server; mail for the far station's domain (5066 node 0.0.1.2) goes out by CFTP.
+// Copy to /etc/s5066-mail/s5066-mail.json and edit. See /usr/share/doc/s5066-mail/s5066-mail.md.
+{
+  // The node's SIS (s5066d's host.sis_listen, or any other 5066 node).
+  "sis": "127.0.0.1:5066",
+  // Mail from HF goes to this SMTP server. "credentials" names a file holding the user name on
+  // line 1 and the password on line 2, readable only by the s5066-mail user.
+  "relay": { "host": "127.0.0.1", "port": 25, "starttls": false },
+  // "relay": { "host": "smtp.example.org", "port": 587, "starttls": true, "credentials": "/etc/s5066-mail/relay-credentials" },
+
+  // The SMTP listener for mail on its way to HF. Point your mail server's transport here.
+  // null turns it off (receive only).
+  "listen": "127.0.0.1:2525",
+  // Which 5066 node each recipient lives behind: an address, a domain, or *.domain for its
+  // subdomains. An address beats a domain, which beats the longest *.domain.
+  "routes": [
+    { "match": "far.example.net", "node": "0.0.1.2" }
+  ],
+
+  // Optional: the name in greetings and bounces (default: this machine's name), and the spool.
+  // "hostname": "gw.example.org",
+  "spool": "/var/lib/s5066-mail"
+}

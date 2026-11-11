@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    s5066-mail: the CFTP mail gateway (P10-3, Annex V step 10, matrix V-0069). Mail received by CFTP
+    on SAP 12 goes to an SMTP relay; mail taken by a small SMTP listener goes out by CFTP to the
+    5066 node its recipients map to.
+
+    Licence: it links only M0LTE.S5066.Cftp and M0LTE.S5066.Client (and through them
+    M0LTE.S5066.Core), no pdn-soundmodem and no third-party mail library (its SMTP client and
+    server are its own), so it is AGPL-3.0-or-later, and like those libraries also available under
+    a commercial licence from the copyright holder (see the repository README).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>s5066-mail</AssemblyName>
+    <RootNamespace>M0LTE.S5066.Mail</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Cftp/M0LTE.S5066.Cftp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Mail.Tests" />
+  </ItemGroup>
+
+</Project>
