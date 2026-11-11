@@ -38,6 +38,15 @@ internal sealed class RecommendationState
     /// <summary>The LOW-SPEED recommendation, a ladder position, or null.</summary>
     public int? LowSpeed { get; set; }
 
+    /// <summary>
+    /// An ARQ connection with the peer exists and no complete C_PDU from it has been received on it yet
+    /// (coordinator ruling 2026-11-11, issue #109, interp C-1293): the probe of interp C-1291 is held, so
+    /// MAX-SPEED does not move up without the estimate until the link's first C_PDU is through. Set at
+    /// D_CONNECTION_MADE, cleared by the first complete C_PDU received from the peer and at the
+    /// connection's end.
+    /// </summary>
+    public bool ProbeHeld { get; set; }
+
     /// <summary>MAX-SEGMENT kept for a fixed-speed sender (interp C-1272).</summary>
     public int Segment { get; set; } = SegmentMax;
 
@@ -185,7 +194,9 @@ internal static class Recommender
     /// <c>rx_error_limit_ppt</c> or with a lost block (<paramref name="downTrigger"/>), and then at most one
     /// position of the walk, however low the estimate's target (interp C-1291); the caps still apply after. And for LOW-SPEED
     /// (<paramref name="bulk"/> false) the clean run that backs a move up may be that of the burst's own rung
-    /// when it is above the recommendation, not only that of the recommended rung (interp C-1270).
+    /// when it is above the recommendation, not only that of the recommended rung (interp C-1270). The probe
+    /// is held while <see cref="RecommendationState.ProbeHeld"/>: on a link whose first C_PDU from the peer has
+    /// not yet been received complete (coordinator ruling 2026-11-11, interp C-1293).
     /// </summary>
     private static int? Walk(DrcTable table, RecommendationState st, int? r, IReadOnlyList<int> walk, IReadOnlyList<int?>? row, int? smoothed, int pos, int? ceiling, int? probeRun, bool downTrigger, bool bulk)
     {
@@ -234,7 +245,7 @@ internal static class Recommender
                 }
 
                 int? next = Above(walk, current);
-                if (probeRun is int n && target <= current && r == current && next is int up && run >= n)
+                if (probeRun is int n && !st.ProbeHeld && target <= current && r == current && next is int up && run >= n)
                 {
                     r = up;   // the probe: the next position of the walk, after probe_run clean bursts on the rung (interp C-1291)
                 }

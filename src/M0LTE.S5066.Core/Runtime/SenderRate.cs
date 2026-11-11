@@ -51,6 +51,14 @@ internal sealed class SenderRate
     /// </summary>
     public bool DataAwaited { get; set; }
 
+    /// <summary>
+    /// A C_PDU sent to this peer on the current connection has been acknowledged in full (coordinator
+    /// ruling 2026-11-11, issue #109, interp C-1293). Until then no transmission to the peer goes above
+    /// <see cref="AnsweredRung"/>, so the first C_PDU of a link is never held up by trials of rungs the
+    /// path may not carry. False until the first such confirmation and again at each new connection.
+    /// </summary>
+    public bool CpduConfirmed { get; set; }
+
     /// <summary>The last transmission that carried a D_PDU to this peer carried ARQ data.</summary>
     public bool LastSentData { get; set; }
 
@@ -81,6 +89,7 @@ internal sealed class SenderRate
     public void OnConnectionMade(int defaultRung)
     {
         AnsweredRung = defaultRung;
+        CpduConfirmed = false;   // interp C-1293: a new link, so no trial until its first C_PDU is confirmed
         TrialRung = null;
         FailedSinceAnswer = false;
         DataAwaited = false;
@@ -92,6 +101,7 @@ internal sealed class SenderRate
     public void OnConnectionEnded()
     {
         AnsweredRung = null;
+        CpduConfirmed = false;
         TrialRung = null;
         FailedSinceAnswer = false;
         DataAwaited = false;
@@ -159,6 +169,13 @@ internal sealed class SenderRate
         DataAwaited = false;
         Proven(DataRung);
     }
+
+    /// <summary>
+    /// Every D_PDU of an ARQ C_PDU to this peer has been acknowledged and its D_UNIDATA_REQUEST is
+    /// confirmed (C-0679, C-0680, C-1130): from now on, on this connection, a transmission to the peer may
+    /// go above the answered rung (coordinator ruling 2026-11-11, interp C-1293).
+    /// </summary>
+    public void OnCpduConfirmed() => CpduConfirmed = true;
 
     private void Proven(int? rung)
     {

@@ -349,6 +349,7 @@ internal sealed class DtsPeers
         if (!drc.Table.IsEmpty)
         {
             peer.Sender.OnConnectionMade(RateChoice.Map(drc.Table, drc.DefaultSpeed));   // interp C-1281
+            peer.Recommendations.ProbeHeld = true;   // interp C-1293: no probe until the link's first C_PDU is received
         }
 
         _tx.OpenLink(c.Peer, c.ShortFamily);   // the ARQ machine starts from the initial window edges of its family (C-0782, C-0787)
@@ -443,11 +444,13 @@ internal sealed class DtsPeers
             foreach (ReadOnlyMemory<byte> cpdu in link.Receive(txFsn, f.CPduStart, f.CPduEnd, f.DeliverInOrder, f.DropCPdu, seg.Span))
             {
                 _context.Enqueue(new DUnidataIndication(h.Src, h.Dst, false, true, cpdu));
+                peer.Recommendations.ProbeHeld = false;   // a complete C_PDU from the peer: the probe may run (interp C-1293)
             }
 
             if (link.LastHeld is { } held)
             {
                 _context.Enqueue(new DCpduHeld(h.Src, held));   // interp B-0460: received, held for in-order delivery
+                peer.Recommendations.ProbeHeld = false;   // complete, held only for order (interp C-1293)
             }
 
             _tx.AckOwed();
@@ -513,6 +516,7 @@ internal sealed class DtsPeers
         peer.Received.MaxSegment = null;
         peer.Received.Ed3BasicRate = null;
         peer.Sender.OnConnectionEnded();
+        peer.Recommendations.ProbeHeld = false;
         EndExchange(peerAddress, peer);
         peer.Expedited.Reset();
         _tx.RemoveControl(c => c is ResetItem or ExpeditedAckItem && c.Dst == peerAddress);

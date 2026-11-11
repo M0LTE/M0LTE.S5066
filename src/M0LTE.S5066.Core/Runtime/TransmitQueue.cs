@@ -550,6 +550,10 @@ internal sealed class TransmitQueue : ITransmissionSource
             if (!a.Dropped)
             {
                 _context.Enqueue(new DUnidataRequestConfirm(a.Request.Handle));   // C-0679, C-0680, C-1130
+                if (!_context.Config.Drc.Table.IsEmpty)
+                {
+                    RateStateOf(peer)?.Sender.OnCpduConfirmed();   // the link's first confirmed C_PDU frees trials (interp C-1293)
+                }
             }
         }
 
@@ -760,8 +764,9 @@ internal sealed class TransmitQueue : ITransmissionSource
     /// have no usable recommendation, interp C-1284), <c>drc.default_speed</c>. Then the sender's own
     /// evidence (interp C-1281, C-1282): never above a failed-trial ceiling, never above the answered
     /// rung after a failed trial until the peer answers (P7-9 round 3: otherwise straight to the
-    /// recommendation, no one-rung climb limit), and down one rung for each step down after silence,
-    /// never below the lowest rung (going lower never exceeds a recommendation, plan 5.3).
+    /// recommendation, no one-rung climb limit), never above the answered rung on a connection whose
+    /// first C_PDU has not yet been confirmed (interp C-1293), and down one rung for each step down after
+    /// silence, never below the lowest rung (going lower never exceeds a recommendation, plan 5.3).
     /// </summary>
     private (int Position, Speed? Wn0) PeerPosition(uint peer, int defaultPosition)
     {
@@ -810,6 +815,11 @@ internal sealed class TransmitQueue : ITransmissionSource
             if (s.FailedSinceAnswer && s.AnsweredRung is int answered)
             {
                 position = Math.Min(position, answered);   // after a failed trial, no trial until an answer (round 3)
+            }
+
+            if (!s.CpduConfirmed && s.AnsweredRung is int unconfirmed)
+            {
+                position = Math.Min(position, unconfirmed);   // a new link: no trial until its first C_PDU is confirmed (interp C-1293)
             }
 
             position = Math.Max(0, position - s.StepDown);
