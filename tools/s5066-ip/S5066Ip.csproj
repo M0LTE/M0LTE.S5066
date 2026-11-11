@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    s5066-ip: the Annex U IP client (P10-2, matrix U.tsv). Binds SAP 9 over the SIS to any 5066 node
+    and carries IPv4 and IPv6 datagrams through a Linux tun device, router model only.
+
+    Licence: it links only M0LTE.S5066.Client and M0LTE.S5066.Core (no pdn-soundmodem), so it is
+    AGPL-3.0-or-later, and like those libraries also available under a commercial licence from the
+    copyright holder (see the repository README).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>s5066-ip</AssemblyName>
+    <RootNamespace>M0LTE.S5066.Ip</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.S5066.Client/M0LTE.S5066.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.S5066.Ip.Tests" />
+  </ItemGroup>
+
+</Project>
