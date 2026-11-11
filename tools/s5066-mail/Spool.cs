@@ -113,9 +113,13 @@ internal sealed partial class Spool
     public static string NewId(DateTimeOffset now) =>
         now.UtcDateTime.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + RandomNumberGenerator.GetString("abcdefghijklmnopqrstuvwxyz0123456789", 8);
 
+    /// <summary>For tests: runs before each mail is written, and may throw to stand for a full disk.</summary>
+    internal Action<SpoolItem>? BeforeWrite { get; set; }
+
     /// <summary>Adds a mail. Returns once both files are on disk.</summary>
     public void Add(SpoolItem item, ReadOnlySpan<byte> message)
     {
+        BeforeWrite?.Invoke(item);
         string tmpEml = Path.Combine(_root, "tmp", item.Id + ".eml");
         WriteDurably(tmpEml, message);
         File.Move(tmpEml, Path.Combine(Dir(item.Queue), item.Id + ".eml"), overwrite: true);
@@ -133,6 +137,7 @@ internal sealed partial class Spool
         {
             foreach ((SpoolItem item, byte[] message) in mails)
             {
+                BeforeWrite?.Invoke(item);
                 string eml = Path.Combine(_root, "tmp", item.Id + ".eml");
                 staged.Add(eml);
                 WriteDurably(eml, message);

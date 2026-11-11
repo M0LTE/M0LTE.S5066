@@ -121,6 +121,78 @@ public class SpoolTests
         new Spool(dir, T0.AddDays(6)).Seen("0.0.1.2", "M1", T0.AddDays(6)).Should().BeTrue();
         new Spool(dir, T0.AddDays(8)).Seen("0.0.1.2", "M1", T0.AddDays(8)).Should().BeFalse();
     }
+
+    [Fact]
+    public void A_received_MessageID_is_in_the_file_when_remember_returns()
+    {
+        string dir = Directory.CreateTempSubdirectory("s5066-mail-spool-").FullName;
+        var s = new Spool(dir, T0);
+        s.Remember("0.0.1.2", "M1", T0);
+        s.Remember("0.0.1.2", "M2", T0);
+        File.ReadAllLines(Path.Combine(dir, "received.txt")).Should().Equal($"{T0.ToUnixTimeSeconds()} 0.0.1.2 M1", $"{T0.ToUnixTimeSeconds()} 0.0.1.2 M2");
+    }
+
+    [Fact]
+    public void Several_mails_added_together_are_all_queued_or_none()
+    {
+        string dir = Directory.CreateTempSubdirectory("s5066-mail-spool-").FullName;
+        var s = new Spool(dir, T0) { BeforeWrite = i => { if (i.Id == "p2") { throw new IOException("disk full"); } } };
+        Action add = () => s.AddAll([(Item("p1"), "one"u8.ToArray()), (Item("p2"), "two"u8.ToArray())]);
+        add.Should().Throw<IOException>();
+        s.List(SpoolQueue.Hf).Should().BeEmpty();
+        Directory.EnumerateFiles(Path.Combine(dir, "tmp")).Should().BeEmpty();
+
+        s.BeforeWrite = null;
+        s.AddAll([(Item("p1"), "one"u8.ToArray()), (Item("p2"), "two"u8.ToArray())]);
+        s.List(SpoolQueue.Hf).Select(i => i.Id).Should().Equal("p1", "p2");
+    }
+}
+
+/// <summary>The gateway's SMTP side without a node: queueing, retries and trace lines.</summary>
+public class GatewayUnitTests
+{
+    private static MailGateway Gateway(string spool, List<string> log) => new(MailConfig.Parse($$"""
+        {
+          "spool": "{{spool.Replace("\\", "\\\\", StringComparison.Ordinal)}}",
+          "hostname": "gw.test",
+          "relay": { "host": "127.0.0.1", "port": 25 },
+          "routes": [ { "match": "b.test", "node": "0.0.1.2" }, { "match": "c.test", "node": "0.0.1.3" } ]
+        }
+        """), log.Add);
+
+    [Fact]
+    public void A_mail_for_two_nodes_that_half_fails_to_spool_is_queued_once_when_the_client_tries_again()
+    {
+        string dir = Directory.CreateTempSubdirectory("s5066-mail-gw-").FullName;
+        var log = new List<string>();
+        MailGateway g = Gateway(dir, log);
+        var env = new SmtpEnvelope("m0lte@a.test", ["x@b.test", "y@c.test"], "client.test", null);
+        byte[] message = "Subject: two nodes\r\n\r\nbody\r\n"u8.ToArray();
+
+        int fails = 1;
+        g.Spool.BeforeWrite = i => { if (i.Node == "0.0.1.3" && fails-- > 0) { throw new IOException("disk full"); } };
+        g.Deliver(env, message).Code.Should().Be(451);
+        g.Spool.List(SpoolQueue.Hf).Should().BeEmpty("the part for 0.0.1.2 is not left queued when the part for 0.0.1.3 fails");
+
+        g.Deliver(env, message).Code.Should().Be(250);
+        g.Spool.List(SpoolQueue.Hf).Select(i => i.Node).Should().BeEquivalentTo(["0.0.1.2", "0.0.1.3"]);
+
+        // The client did not see the 250 (a dropped connection) and tries again: nothing new is queued.
+        g.Deliver(env, message).Code.Should().Be(250);
+        g.Spool.List(SpoolQueue.Hf).Should().HaveCount(2);
+        log.Count(l => l.Contains("already queued", StringComparison.Ordinal)).Should().Be(2);
+
+        // The same message to other recipients is another mail, queued as usual.
+        g.Deliver(env with { Recipients = ["x@b.test", "z@b.test"] }, message).Code.Should().Be(250);
+        g.Spool.List(SpoolQueue.Hf).Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void The_trace_line_for_mail_from_hf_names_the_node_and_cftp()
+    {
+        MailGateway.HfReceivedHeader(SisAddress.FromParts(0, 0, 1, 3), "gw.test", "ID1", ["g4abc@b.test"], new DateTimeOffset(2026, 11, 11, 9, 5, 0, TimeSpan.Zero))
+            .Should().Be("Received: from s5066-0-0-1-3\r\n\tby gw.test (s5066-mail) via STANAG-5066 with CFTP id ID1\r\n\tfor <g4abc@b.test>; Wed, 11 Nov 2026 09:05:00 +0000\r\n");
+    }
 }
 
 /// <summary>The configuration file.</summary>
