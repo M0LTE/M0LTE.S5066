@@ -278,6 +278,31 @@ public class CftpEngineTests
     }
 
     [Fact]
+    public void Timers_due_together_run_in_deadline_order_not_destination_order()
+    {
+        // Determinism for the port: a destination added first but due later goes second.
+        const uint C = 0x0000103;
+        var e = new CftpEngine(new CftpOptions { AckWait = TimeSpan.FromSeconds(10) });
+        e.Submit(B, "b"u8.ToArray(), Data(5), 2048, 0);
+        e.Submit(C, "c"u8.ToArray(), Data(5), 2048, 0);
+        CftpSendUPdu[] first = [.. e.Drain().OfType<CftpSendUPdu>()];
+        e.SendDone(first[1].SendId, true, 0, 1_000);
+        e.SendDone(first[0].SendId, true, 0, 2_000);
+        e.Tick(20_000);
+        e.Drain().OfType<CftpSendUPdu>().Select(s => s.Destination).Should().Equal(C, B);
+
+        // Partly received files are dropped oldest first, whatever order they were created in.
+        var r = new CftpEngine(new CftpOptions { ReassemblyTimeout = TimeSpan.FromMinutes(1) });
+        byte[] pdu = new Bftp1Pdu("x"u8.ToArray(), Data(50)).Encode();
+        r.Receive(B, new Rcop1Pdu(0, 0, 0, pdu[..20]).Encode(), 5_000);
+        r.Receive(A, new Rcop1Pdu(0, 0, 0, pdu[..20]).Encode(), 1_000);
+        r.Tick(100_000);
+        r.Drain().OfType<CftpNote>().Select(n => n.Text).Should().SatisfyRespectively(
+            n => n.Should().Contain($"{A:x7}"),
+            n => n.Should().Contain($"{B:x7}"));
+    }
+
+    [Fact]
     public void A_partly_received_file_is_dropped_after_the_reassembly_timeout()
     {
         var e = new CftpEngine(new CftpOptions { ReassemblyTimeout = TimeSpan.FromMinutes(1) });

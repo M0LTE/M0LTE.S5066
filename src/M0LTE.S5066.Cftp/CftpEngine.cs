@@ -231,42 +231,55 @@ public sealed class CftpEngine
         TryComplete(key, p, now);
     }
 
-    /// <summary>Runs every timer due at or before <paramref name="now"/>.</summary>
+    /// <summary>
+    /// Runs every timer due at or before <paramref name="now"/>, in a total order that does not
+    /// depend on how a dictionary happens to enumerate, so a port produces the same actions in
+    /// the same order: transfers by (deadline, transfer ID), then partly received files by
+    /// (deadline, source, connection ID, U_PDU ID).
+    /// </summary>
     public void Tick(long now)
     {
-        foreach (Destination dest in _destinations.Values.ToList())
+        List<Transfer> due = [.. _destinations.Values
+            .SelectMany(d => d.Active)
+            .Where(t => t.Deadline is { } d && d <= now)
+            .OrderBy(t => t.Deadline!.Value)
+            .ThenBy(t => t.Id)];
+        foreach (Transfer t in due)
         {
-            foreach (Transfer t in dest.Active.ToList())
+            if (t.Done || t.Deadline is not { } d || d > now)
             {
-                if (t.Deadline is not { } d || d > now)
+                continue;
+            }
+
+            t.Deadline = null;
+            if (t.Waiting == Wait.Ack && t.Attempts >= _options.MaxAttempts)
+            {
+                Finish(t, false, $"no acknowledgement after {t.Attempts} attempts", now);
+            }
+            else
+            {
+                if (t.Waiting == Wait.Ack)
                 {
-                    continue;
+                    Note($"no acknowledgement for U_PDU ID {t.UPduId} to {t.Destination:x7}; sending it again");
                 }
 
-                t.Deadline = null;
-                if (t.Waiting == Wait.Ack && t.Attempts >= _options.MaxAttempts)
-                {
-                    Finish(t, false, $"no acknowledgement after {t.Attempts} attempts", now);
-                }
-                else
-                {
-                    if (t.Waiting == Wait.Ack)
-                    {
-                        Note($"no acknowledgement for U_PDU ID {t.UPduId} to {t.Destination:x7}; sending it again");
-                    }
-
-                    StartAttempt(t);
-                }
+                StartAttempt(t);
             }
         }
 
-        foreach ((var key, Partial p) in _partials.ToList())
+        long timeout = Ms(_options.ReassemblyTimeout);
+        var stale = _partials
+            .Where(kv => kv.Value.LastHeard + timeout <= now)
+            .OrderBy(kv => kv.Value.LastHeard)
+            .ThenBy(kv => kv.Key.Src)
+            .ThenBy(kv => kv.Key.Conn)
+            .ThenBy(kv => kv.Key.Id)
+            .Select(kv => kv.Key)
+            .ToList();
+        foreach (var key in stale)
         {
-            if (p.LastHeard + Ms(_options.ReassemblyTimeout) <= now)
-            {
-                _partials.Remove(key);
-                Note($"dropped a partly received file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}): no segment for {_options.ReassemblyTimeout}");
-            }
+            _partials.Remove(key);
+            Note($"dropped a partly received file from {key.Src:x7} (connection {key.Conn}, U_PDU ID {key.Id}): no segment for {_options.ReassemblyTimeout}");
         }
     }
 
