@@ -16,6 +16,8 @@
     <AssemblyName>s5066-mail</AssemblyName>
     <RootNamespace>M0LTE.S5066.Mail</RootNamespace>
     <IsPackable>false</IsPackable>
+    <!-- fsync of the spool directories (Spool.SyncDirectory) is a libc call. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

@@ -208,6 +208,7 @@ public sealed class SisClient : IAsyncDisposable
     /// once it is written, with a task for its outcome: the node's confirmation or rejection when the
     /// delivery mode asks for one, otherwise <see cref="SendStatus.Sent"/> at once. A caller that
     /// awaits each write before starting the next keeps its U_PDUs in order at the node.
+    /// <paramref name="cancellationToken"/> also cancels the wait for the outcome.
     /// </summary>
     /// <exception cref="InvalidOperationException">Not bound.</exception>
     /// <exception cref="ArgumentException">The U_PDU is longer than the MTU of the bind (the client splits messages, A-0003).</exception>

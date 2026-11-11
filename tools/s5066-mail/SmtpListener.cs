@@ -405,7 +405,9 @@ internal sealed class SmtpListener : IAsyncDisposable
     /// <summary>A Received trace line for a message taken in (RFC 5321 4.4).</summary>
     internal static string ReceivedHeader(SmtpEnvelope env, string hostname, string id, DateTimeOffset now)
     {
-        string from = env.Remote is IPEndPoint ip ? $"{env.Helo} ([{ip.Address}])" : env.Helo;
+        // The EHLO name is the client's own text: printable ASCII only, so it cannot break the header.
+        string helo = new([.. env.Helo.Take(255).Select(c => c is > ' ' and < (char)0x7F ? c : '?')]);
+        string from = env.Remote is IPEndPoint ip ? $"{helo} ([{ip.Address}])" : helo;
         var sb = new StringBuilder();
         sb.Append(CultureInfo.InvariantCulture, $"Received: from {from}\r\n\tby {hostname} (s5066-mail) with ESMTP id {id}");
         if (env.Recipients.Count == 1)

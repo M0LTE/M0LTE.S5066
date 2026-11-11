@@ -54,6 +54,9 @@ internal sealed class SmtpLines(Stream stream)
             int take = lf < 0 ? _end - _start : lf - _start;
             if (line.Length + take > maxLength + 1)
             {
+                // Skip the rest of the line, so the next read starts at the next line rather than
+                // in the middle of this one (a split line could otherwise end DATA early).
+                await SkipLineAsync(ct).ConfigureAwait(false);
                 throw new SmtpLineTooLongException();
             }
 
@@ -78,6 +81,32 @@ internal sealed class SmtpLines(Stream stream)
 
             // A bare LF inside a line: keep it as data and read on (RFC 5321 2.3.8).
             line.WriteByte((byte)'\n');
+        }
+    }
+
+    /// <summary>Discards octets up to and including the next LF, or to the end of the stream.</summary>
+    private async Task SkipLineAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            if (_start == _end)
+            {
+                _start = 0;
+                _end = await Stream.ReadAsync(_buffer, ct).ConfigureAwait(false);
+                if (_end == 0)
+                {
+                    return;
+                }
+            }
+
+            int lf = Array.IndexOf(_buffer, (byte)'\n', _start, _end - _start);
+            if (lf >= 0)
+            {
+                _start = lf + 1;
+                return;
+            }
+
+            _start = _end;
         }
     }
 

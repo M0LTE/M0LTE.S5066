@@ -190,7 +190,8 @@ public class GatewayTests
         await using Side b = Start(medium, "0.0.1.2", "0000000000000002", ToA, relayPort: FreePort());
 
         await Submit(a, "m0lte@a.test", ["g4abc@b.test"], "Subject: patience\r\n\r\nbody\r\n");
-        await Until(() => b.Gateway.Spool.List(SpoolQueue.Smtp) is [{ Failures: 1 }], "a failed try at b's relay", b);
+        // The record is saved before the log line is written, so wait for both.
+        await Until(() => b.Gateway.Spool.List(SpoolQueue.Smtp) is [{ Failures: 1 }] && b.LogText.Contains("try 2 in 1 min", StringComparison.Ordinal), "a failed try at b's relay", b);
         SpoolItem waiting = b.Gateway.Spool.List(SpoolQueue.Smtp)[0];
         waiting.NextAttempt.Should().BeCloseTo(b.Time.GetUtcNow() + TimeSpan.FromMinutes(1), TimeSpan.FromSeconds(10));
         waiting.LastError.Should().StartWith("relay 127.0.0.1:");

@@ -58,9 +58,11 @@ sudo install -m 600 -o s5066-mail -g s5066-mail /dev/null /etc/s5066-mail/relay-
 sudo nano /etc/s5066-mail/relay-credentials
 ```
 
-With `starttls` true the relay must offer STARTTLS and present a valid certificate, or nothing is sent. AUTH uses PLAIN or LOGIN.
+With `starttls` true the relay must offer STARTTLS and present a valid certificate, or nothing is sent. AUTH uses PLAIN or LOGIN, and `credentials` needs `starttls` true unless the relay is on this machine, so the password never crosses a network in clear.
 
 The listener has no authentication or TLS: keep it on localhost, or on a network you trust. It only takes mail for routed recipients, so it is not an open relay to the internet, but anyone who can reach it can send over your HF link.
+
+The other way round, anyone who can reach your node over HF on SAP 12 can hand the gateway mail for any address, and it goes to your `relay` with the return path they chose. Give the gateway a relay that only delivers where you are happy for HF stations to send, for example a Postfix that accepts from it only for your own domains.
 
 ## With Postfix
 

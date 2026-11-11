@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using M0LTE.S5066.Cftp;
 
 namespace M0LTE.S5066.Mail.Tests;
 
@@ -127,6 +128,46 @@ public class SmtpTests
         (await SmtpReply.ReadAsync(lines, ct)).Code.Should().Be(250);
         (await Cmd("QUIT")).Code.Should().Be(221);
         Encoding.ASCII.GetString(sink.Mail.Should().ContainSingle().Subject.Message).Should().Be("Subject: s\r\n\r\nline\n.\nstill data\r\n");
+    }
+
+    [Fact]
+    public async Task An_over_long_data_line_is_dropped_whole_so_its_tail_cannot_end_data()
+    {
+        await using var sink = new SmtpSink();
+        using var tcp = new TcpClient { NoDelay = true };
+        CancellationToken ct = TestContext.Current.CancellationToken;
+        await tcp.ConnectAsync(IPAddress.Loopback, sink.Port, ct);
+        var lines = new SmtpLines(tcp.GetStream());
+
+        async Task<SmtpReply> Cmd(string c)
+        {
+            await lines.WriteLineAsync(c, ct);
+            return await SmtpReply.ReadAsync(lines, ct);
+        }
+
+        (await SmtpReply.ReadAsync(lines, ct)).Code.Should().Be(220);
+        (await Cmd("EHLO me")).Code.Should().Be(250);
+        (await Cmd("MAIL FROM:<a@x.test>")).Code.Should().Be(250);
+        (await Cmd("RCPT TO:<b@x.test>")).Code.Should().Be(250);
+        (await Cmd("DATA")).Code.Should().Be(354);
+
+        // One line: exactly the limit of x, then (in a later read) a dot, CR LF. The dot is the tail
+        // of an over-long line, not a lone dot, so VRFY after it is still message text.
+        await tcp.GetStream().WriteAsync(Enumerable.Repeat((byte)'x', 65537).ToArray(), ct);
+        await Task.Delay(300, ct);
+        await tcp.GetStream().WriteAsync(".\r\nVRFY x\r\n.\r\n"u8.ToArray(), ct);
+        (await SmtpReply.ReadAsync(lines, ct)).Code.Should().Be(552);
+        (await Cmd("HELP")).Code.Should().Be(214, "nothing inside the message was taken as a command");
+        (await Cmd("QUIT")).Code.Should().Be(221);
+        sink.Mail.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Bare_cr_and_lf_go_to_the_relay_as_cr_lf()
+    {
+        // RFC 5321 2.3.8; a bare LF before a dot must not reach a relay that might end DATA on it.
+        SmtpRelayClient.CrLf("a\n.\r\nb\rc\r\nd"u8.ToArray()).Should().Equal("a\r\n.\r\nb\r\nc\r\nd"u8.ToArray());
+        SmtpData.Stuff(SmtpRelayClient.CrLf("x\n.\nMAIL FROM:<e@vil>\n"u8.ToArray())).Should().Equal("x\r\n..\r\nMAIL FROM:<e@vil>\r\n.\r\n"u8.ToArray());
     }
 
     [Fact]

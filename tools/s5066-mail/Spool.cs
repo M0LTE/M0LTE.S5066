@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -50,7 +51,7 @@ internal sealed record SpoolItem(
 /// before the record, so a mail is in the spool only once both are whole. received.txt keeps the
 /// MessageIDs of mail taken from HF for a week, so a file sent again is not forwarded twice.
 /// </summary>
-internal sealed class Spool
+internal sealed partial class Spool
 {
     /// <summary>How long a received MessageID is remembered.</summary>
     public static readonly TimeSpan RememberReceived = TimeSpan.FromDays(7);
@@ -121,6 +122,7 @@ internal sealed class Spool
         string tmp = Path.Combine(_root, "tmp", item.Id + ".json");
         WriteDurably(tmp, JsonSerializer.SerializeToUtf8Bytes(item, Json));
         File.Move(tmp, Path.Combine(Dir(item.Queue), item.Id + ".json"), overwrite: true);
+        SyncDirectory(Dir(item.Queue));
     }
 
     /// <summary>Removes a mail that has gone or was bounced.</summary>
@@ -182,6 +184,49 @@ internal sealed class Spool
         string tmp = Path.Combine(_root, "tmp", "received.txt");
         File.WriteAllLines(tmp, _received.Select(kv => string.Create(CultureInfo.InvariantCulture, $"{kv.Value.ToUnixTimeSeconds()} {kv.Key}")));
         File.Move(tmp, Path.Combine(_root, "received.txt"), overwrite: true);
+    }
+
+    /// <summary>
+    /// Flushes a directory, so a rename into it survives a power cut as well as the file's octets
+    /// do (fsync of the file alone does not make its new name durable on Linux).
+    /// </summary>
+    private static void SyncDirectory(string dir)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        int fd = Native.open(dir, 0);
+        if (fd < 0)
+        {
+            throw new IOException($"cannot open {dir} to flush it (errno {Marshal.GetLastPInvokeError()})");
+        }
+
+        try
+        {
+            if (Native.fsync(fd) != 0)
+            {
+                throw new IOException($"cannot flush {dir} (errno {Marshal.GetLastPInvokeError()})");
+            }
+        }
+        finally
+        {
+            _ = Native.close(fd);
+        }
+    }
+
+    private static partial class Native
+    {
+        // open(2) with O_RDONLY (0), which opens a directory for fsync(2).
+        [LibraryImport("libc", EntryPoint = "open", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+        public static partial int open(string path, int flags);
+
+        [LibraryImport("libc", SetLastError = true)]
+        public static partial int fsync(int fd);
+
+        [LibraryImport("libc", SetLastError = true)]
+        public static partial int close(int fd);
     }
 
     private static void WriteDurably(string path, ReadOnlySpan<byte> data)

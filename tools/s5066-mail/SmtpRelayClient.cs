@@ -150,13 +150,45 @@ internal sealed class SmtpRelayClient(RelayConfig relay, string hostname, SmtpCr
             return [.. results.Select(r => r.Outcome == RecipientOutcome.Accepted ? r with { Outcome = data.Transient ? RecipientOutcome.Transient : RecipientOutcome.Permanent, Reply = data.ToString() } : r)];
         }
 
-        await lines.Stream.WriteAsync(SmtpData.Stuff(message), ct).ConfigureAwait(false);
+        await lines.Stream.WriteAsync(SmtpData.Stuff(CrLf(message)), ct).ConfigureAwait(false);
         await lines.Stream.FlushAsync(ct).ConfigureAwait(false);
         SmtpReply done = await SmtpReply.ReadAsync(lines, ct).ConfigureAwait(false);
         await QuitAsync(lines, ct).ConfigureAwait(false);
         return [.. results.Select(r => r.Outcome == RecipientOutcome.Accepted && !done.Positive
             ? r with { Outcome = done.Transient ? RecipientOutcome.Transient : RecipientOutcome.Permanent, Reply = done.ToString() }
             : r)];
+    }
+
+    /// <summary>
+    /// The message with every bare CR and bare LF made CR LF: they are not sent on the wire (RFC 5321
+    /// 2.3.8), and a relay that took a bare LF as a line end could be fed a second mail inside the
+    /// first (SMTP smuggling).
+    /// </summary>
+    internal static byte[] CrLf(byte[] message)
+    {
+        using var ms = new MemoryStream(message.Length + 16);
+        for (int i = 0; i < message.Length; i++)
+        {
+            byte c = message[i];
+            if (c == '\r')
+            {
+                ms.Write("\r\n"u8);
+                if (i + 1 < message.Length && message[i + 1] == '\n')
+                {
+                    i++;
+                }
+            }
+            else if (c == '\n')
+            {
+                ms.Write("\r\n"u8);
+            }
+            else
+            {
+                ms.WriteByte(c);
+            }
+        }
+
+        return ms.ToArray();
     }
 
     private async Task<(SmtpReply Reply, HashSet<string> Extensions)> HelloAsync(SmtpLines lines, CancellationToken ct)

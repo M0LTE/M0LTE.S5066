@@ -150,6 +150,24 @@ public class MailConfigTests
     }
 
     [Fact]
+    public void Credentials_need_starttls_unless_the_relay_is_on_this_machine()
+    {
+        Action act = () => MailConfig.Parse("""{ "relay": { "host": "smtp.example.org", "credentials": "/etc/c" } }""");
+        act.Should().Throw<MailConfigException>().Which.Message.Should().Contain("starttls");
+        MailConfig.Parse("""{ "relay": { "host": "smtp.example.org", "starttls": true, "credentials": "/etc/c" } }""").Relay!.CredentialsFile.Should().Be("/etc/c");
+        MailConfig.Parse("""{ "relay": { "host": "127.0.0.1", "credentials": "/etc/c" } }""").Relay!.CredentialsFile.Should().Be("/etc/c");
+    }
+
+    [Fact]
+    public void A_received_message_id_that_is_not_letters_and_digits_is_replaced_by_a_digest()
+    {
+        MailGateway.SafeMessageId("Abc123").Should().Be("Abc123");
+        string odd = MailGateway.SafeMessageId("a b\r\nc");
+        odd.Should().MatchRegex("^x[0-9A-F]{40}$");
+        MailGateway.SafeMessageId("a b\r\nc").Should().Be(odd, "the same ID gives the same key, so duplicates are still caught");
+    }
+
+    [Fact]
     public void Listen_null_turns_the_listener_off()
     {
         MailConfig.Parse("""{ "relay": { "host": "h" }, "listen": null }""").Listen.Should().BeNull();

@@ -270,27 +270,40 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
                 continue;
             }
 
-            DateTimeOffset now = Now;
-            if (_spool.Seen(from, mail.MessageId, now))
+            // The MessageID keys duplicate suppression and appears in the spool and the log; one that
+            // is not plain letters and digits (interp V-0085) is replaced by a digest of itself.
+            string messageId = SafeMessageId(mail.MessageId);
+            string returnPath = Unbracket(mail.Envelope.ReturnPath);
+            List<string> recipients = [.. mail.Envelope.Recipients.Select(Unbracket)];
+            if ((returnPath.Length > 0 && !SmtpListener.IsAddress(returnPath)) || !recipients.All(SmtpListener.IsAddress))
             {
-                _log($"s5066-mail: mail {mail.MessageId} from node {from} was already taken in; not forwarded again");
+                // The addresses go into SMTP commands to the relay: refuse anything that is not a
+                // plain ASCII user@domain rather than pass on control characters.
+                _log($"s5066-mail: mail {messageId} from node {from} has an address that is not a plain user@domain; dropped");
                 continue;
             }
 
-            var item = new SpoolItem(Spool.NewId(now), SpoolQueue.Smtp, now, Unbracket(mail.Envelope.ReturnPath),
-                [.. mail.Envelope.Recipients.Select(Unbracket)], null, mail.MessageId, from) { NextAttempt = now };
+            DateTimeOffset now = Now;
+            if (_spool.Seen(from, messageId, now))
+            {
+                _log($"s5066-mail: mail {messageId} from node {from} was already taken in; not forwarded again");
+                continue;
+            }
+
+            var item = new SpoolItem(Spool.NewId(now), SpoolQueue.Smtp, now, returnPath,
+                recipients, null, messageId, from) { NextAttempt = now };
             try
             {
                 _spool.Add(item, mail.Message.Span);
-                _spool.Remember(from, mail.MessageId, now);
+                _spool.Remember(from, messageId, now);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                _log($"s5066-mail: could not spool mail {mail.MessageId} from node {from}: {e.Message}; it is lost unless sent again");
+                _log($"s5066-mail: could not spool mail {messageId} from node {from}: {e.Message}; it is lost unless sent again");
                 continue;
             }
 
-            _log($"s5066-mail: {item.Id} mail {mail.MessageId} from node {from} for {item.Recipients.Count} recipient(s), {mail.Message.Length} octets");
+            _log($"s5066-mail: {item.Id} mail {messageId} from node {from} for {item.Recipients.Count} recipient(s), {mail.Message.Length} octets");
             _smtpWork.Set();
         }
     }
@@ -535,6 +548,12 @@ internal sealed class MailGateway : ISmtpHandler, IAsyncDisposable
     private static string Minutes(TimeSpan t) => t.TotalMinutes < 120
         ? string.Create(CultureInfo.InvariantCulture, $"{Math.Max(0, t.TotalMinutes):0} min")
         : string.Create(CultureInfo.InvariantCulture, $"{t.TotalHours:0.#} h");
+
+    /// <summary>The MessageID if it is 1 to 255 ASCII letters and digits, otherwise a digest of it.</summary>
+    internal static string SafeMessageId(string id) =>
+        id.Length is > 0 and < CftpMail.MaxMessageIdLength && id.All(char.IsAsciiLetterOrDigit)
+            ? id
+            : "x" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.Latin1.GetBytes(id)))[..40];
 
     /// <summary>An address as written in a RecipientList, without angle brackets (interp V-0091).</summary>
     internal static string Unbracket(string a)

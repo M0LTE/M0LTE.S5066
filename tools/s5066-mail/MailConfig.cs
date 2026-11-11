@@ -109,7 +109,13 @@ internal sealed record MailConfig
                 JsonValue v when v.TryGetValue(out bool b) => b,
                 _ => throw new MailConfigException("relay.starttls: true or false"),
             };
-            c = c with { Relay = new RelayConfig(host, port, tls, Str(r, "credentials")) };
+            string? credentials = Str(r, "credentials");
+            if (credentials is not null && !tls && !IsLoopback(host))
+            {
+                throw new MailConfigException("relay.credentials: needs \"starttls\": true, so the password is not sent in clear (or a relay on localhost)");
+            }
+
+            c = c with { Relay = new RelayConfig(host, port, tls, credentials) };
         }
         else if (o["relay"] is not null)
         {
@@ -140,6 +146,9 @@ internal sealed record MailConfig
 
         return c with { Routes = new RouteTable(routes) };
     }
+
+    private static bool IsLoopback(string host) =>
+        host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || (IPAddress.TryParse(host, out IPAddress? a) && IPAddress.IsLoopback(a));
 
     private static (string Host, int Port) HostPort(string s, string key)
     {
